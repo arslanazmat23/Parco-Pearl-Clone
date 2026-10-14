@@ -1,0 +1,6 @@
+{
+  "name": "Blue Gas",
+  "description": "Digital LPG ordering platform for Pakistan piloting in Lahore & Islamabad. Features Customer App, Rider App with offline outbox, and Staff Operations Portal.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
