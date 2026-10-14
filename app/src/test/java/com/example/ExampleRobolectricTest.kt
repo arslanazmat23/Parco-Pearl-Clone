@@ -5,6 +5,7 @@ import androidx.test.core.app.ApplicationProvider
 import com.example.bluegas.lifecycle.OrderStateMachine
 import com.example.bluegas.lifecycle.TransitionResult
 import com.example.bluegas.model.*
+import com.example.bluegas.viewmodel.BlueGasViewModel
 import org.junit.Assert.*
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -103,5 +104,198 @@ class ExampleRobolectricTest {
 
         val legal = OrderStateMachine.getLegalNextTransitions(order)
         assertTrue(legal.isEmpty())
+    }
+
+    @Test
+    fun `SharedAppState StateFlow in ViewModel provides cross-surface single source of truth`() {
+        val viewModel = BlueGasViewModel()
+        val initialState = viewModel.appState.value
+
+        assertEquals(AppSurface.CUSTOMER, initialState.activeSurface)
+        assertFalse(initialState.isRiderOffline)
+        val initialOrderCount = initialState.orders.size
+
+        // 1. Customer surface places an order
+        val (newOrder, err) = viewModel.createOrder(
+            customerId = "CUST-001",
+            addressId = "ADDR-001",
+            fulfilmentMode = FulfilmentMode.DELIVERY,
+            sku = "SKU-LPG-11-8",
+            quantity = 1,
+            includeDeposit = true,
+            paymentMethod = PaymentMethod.ONLINE_HOSTED
+        )
+        assertNull(err)
+        assertNotNull(newOrder)
+
+        // StateFlow immediately reflects updated SharedAppState
+        val stateAfterOrder = viewModel.appState.value
+        assertEquals(initialOrderCount + 1, stateAfterOrder.orders.size)
+        assertTrue(stateAfterOrder.orders.any { it.id == newOrder?.id })
+
+        // 2. Rider surface toggles offline
+        viewModel.toggleRiderOffline(true)
+        val stateAfterOffline = viewModel.appState.value
+        assertTrue(stateAfterOffline.isRiderOffline)
+
+        // 3. Staff surface switches active role to Finance
+        viewModel.switchStaffSubRole(StaffSubRole.FINANCE)
+        val stateAfterRoleSwitch = viewModel.appState.value
+        assertEquals(StaffSubRole.FINANCE, stateAfterRoleSwitch.activeStaffSubRole)
+
+        // 4. Switch surface to Staff Portal
+        viewModel.switchSurface(AppSurface.STAFF)
+        assertEquals(AppSurface.STAFF, viewModel.appState.value.activeSurface)
+    }
+
+    @Test
+    fun `rider lifecycle transitions order from assigned through to completed with exact serial and POD`() {
+        val viewModel = BlueGasViewModel()
+        val store = viewModel.store
+
+        // Switch to Bilal Ahmed (RIDER-001)
+        store.switchRider("RIDER-001")
+        val activeRider = store.getActiveRider()
+        assertNotNull(activeRider)
+        assertEquals("Bilal Ahmed", activeRider?.name)
+
+        // Find the seeded pending order ORD-SEED-105 in ORD_ASGN
+        val pendingOrder = store.orders.find { it.id == "ORD-SEED-105" }
+        assertNotNull(pendingOrder)
+        assertEquals(OrderStatus.ORD_ASGN, pendingOrder?.status)
+
+        // 1. Rider accepts order (ORD_ASGN -> ORD_ACPT)
+        val (acceptOk, acceptMsg) = store.riderAcceptOrder("ORD-SEED-105")
+        assertTrue(acceptOk)
+        assertEquals(OrderStatus.ORD_ACPT, pendingOrder?.status)
+
+        // 2. Rider begins preparation (ORD_ACPT -> ORD_PREP)
+        val (prepOk, prepMsg) = store.riderStartPreparing("ORD-SEED-105")
+        assertTrue(prepOk)
+        assertEquals(OrderStatus.ORD_PREP, pendingOrder?.status)
+
+        // 3. Rider scans and binds exact cylinder serial
+        val (bindOk, bindMsg) = store.riderSelectAndBindSerial("ORD-SEED-105", "BG-LHR-002")
+        assertTrue(bindOk)
+        assertEquals("BG-LHR-002", pendingOrder?.allocatedSerial)
+
+        // 4. Rider dispatches delivery (ORD_PREP -> ORD_DISP)
+        val (dispOk, dispMsg) = store.riderStartDeliveryOrStagePickup("ORD-SEED-105")
+        assertTrue(dispOk)
+        assertEquals(OrderStatus.ORD_DISP, pendingOrder?.status)
+
+        // 5. Rider arrives at customer doorstep (ORD_DISP -> ORD_ATHO)
+        val (arriveOk, arriveMsg) = store.arriveAtHandover("ORD-SEED-105")
+        assertTrue(arriveOk)
+        assertEquals(OrderStatus.ORD_ATHO, pendingOrder?.status)
+
+        // 6. Rider completes safety check, COD collection, and POD (ORD_ATHO -> ORD_HOC -> ORD_COMP)
+        val (compOk, compMsg) = store.completeHandover(
+            orderId = "ORD-SEED-105",
+            nonTechInstallationPassed = true,
+            proofOfDeliveryNote = "Bubble leak test passed. Seal intact.",
+            collectedCashPaisa = pendingOrder?.totalAmountPaisa,
+            customerSignature = "Customer Sig"
+        )
+        assertTrue(compOk)
+        assertEquals(OrderStatus.ORD_COMP, pendingOrder?.status)
+        assertNotNull(pendingOrder?.podReference)
+
+        // Verify cylinder custody moved to customer premises
+        val deliveredCyl = store.cylinders.find { it.serialNumber == "BG-LHR-002" }
+        assertEquals(InventoryState.INV_CONSUMED, deliveredCyl?.status)
+        assertEquals(CylinderCustody.CUSTOMER_PREMISES, deliveredCyl?.custody)
+
+        // Verify payment settled and ledger updated
+        val payment = store.payments.find { it.orderId == "ORD-SEED-105" }
+        assertEquals(PaymentState.SETTLED, payment?.state)
+    }
+
+    @Test
+    fun `rider offline queue records events with idempotency keys and replays sequentially`() {
+        val viewModel = BlueGasViewModel()
+        val store = viewModel.store
+
+        store.switchRider("RIDER-001")
+        val order = store.orders.find { it.id == "ORD-SEED-106" }
+        assertNotNull(order)
+        assertEquals(OrderStatus.ORD_ACPT, order?.status)
+
+        // Turn offline mode ON
+        store.isRiderOffline = true
+
+        // Queue preparation while offline
+        val (offlinePrepOk, offlinePrepMsg) = store.riderStartPreparing("ORD-SEED-106")
+        assertTrue(offlinePrepOk)
+        assertTrue(offlinePrepMsg.contains("queued in Offline Outbox"))
+        assertEquals(1, store.riderOutbox.size)
+        assertEquals("START_PREPARING", store.riderOutbox[0].action)
+        assertNotNull(store.riderOutbox[0].idempotencyKey)
+
+        // Turn offline mode OFF and replay
+        store.isRiderOffline = false
+        val replayReport = store.replayRiderOutbox()
+        assertTrue(replayReport.contains("APPLIED"))
+        assertEquals(OrderStatus.ORD_PREP, order?.status)
+        assertEquals("APPLIED", store.riderOutbox[0].syncStatus)
+    }
+
+    @Test
+    fun `invalid rider transition is rejected and cites legal transitions`() {
+        val viewModel = BlueGasViewModel()
+        val store = viewModel.store
+
+        val order = store.orders.find { it.id == "ORD-SEED-106" }
+        assertNotNull(order)
+        assertEquals(OrderStatus.ORD_ACPT, order?.status)
+
+        // Attempt invalid skip from ACPT directly to ATHO
+        val (arriveOk, errMsg) = store.arriveAtHandover("ORD-SEED-106")
+        assertFalse(arriveOk)
+        assertTrue(errMsg.contains("Legal transitions"))
+    }
+
+    @Test
+    fun `rider multi-step POD flow records safety checklist, COD cash, photo evidence, and digital signature`() {
+        val viewModel = BlueGasViewModel()
+        val store = viewModel.store
+
+        store.switchRider("RIDER-001")
+        val order = store.orders.find { it.id == "ORD-SEED-105" }
+        assertNotNull(order)
+
+        // Advance order to ATHO
+        store.riderAcceptOrder("ORD-SEED-105")
+        store.riderStartPreparing("ORD-SEED-105")
+        store.riderSelectAndBindSerial("ORD-SEED-105", "BG-LHR-002")
+        store.riderStartDeliveryOrStagePickup("ORD-SEED-105")
+        store.arriveAtHandover("ORD-SEED-105")
+
+        assertEquals(OrderStatus.ORD_ATHO, order?.status)
+
+        // Complete multi-step POD flow
+        val (ok, msg) = store.completeHandover(
+            orderId = "ORD-SEED-105",
+            nonTechInstallationPassed = true,
+            proofOfDeliveryNote = "Bubble leak test passed. Hose secured. Empty returned.",
+            collectedCashPaisa = order?.totalAmountPaisa,
+            customerSignature = "Digitally Signed by Bilal Customer",
+            photoEvidenceCaptured = true,
+            signerName = "Bilal Customer",
+            changeReturnedPaisa = 11500L,
+            emptyCylinderCollected = true,
+            emptyCylinderSerial = "BG-LHR-OLD-812"
+        )
+
+        assertTrue(ok)
+        assertEquals(OrderStatus.ORD_COMP, order?.status)
+
+        val delivery = store.deliveries.find { it.orderId == "ORD-SEED-105" }
+        assertNotNull(delivery)
+        assertTrue(delivery?.nonTechnicalInstallationPassed == true)
+        assertTrue(delivery?.customerSignatureCaptured == true)
+        assertTrue(delivery?.photoEvidenceCaptured == true)
+        assertEquals("Bilal Customer", delivery?.signerName)
+        assertEquals(11500L, delivery?.changeReturnedPaisa)
     }
 }

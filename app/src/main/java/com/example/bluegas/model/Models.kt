@@ -190,6 +190,19 @@ data class Node(
     val capacity: Int
 )
 
+data class Rider(
+    val id: String,
+    val name: String,
+    val phone: String,
+    val cnic: String,
+    val zoneId: String,
+    val zoneName: String,
+    val nodeId: String,
+    val vehicleNumber: String,
+    val status: String, // "ACTIVE", "INACTIVE", "UNDER_REVIEW"
+    val onboardingStatus: String = "APPROVED" // "SUBMITTED", "UNDER_REVIEW", "APPROVED", "REJECTED"
+)
+
 data class ProductVariant(
     val id: String,
     val sku: String,
@@ -252,7 +265,14 @@ data class Delivery(
     val arrivedAtHandoverAt: Long? = null,
     val completedAt: Long? = null,
     val nonTechnicalInstallationPassed: Boolean = false,
-    val proofOfDeliveryNote: String? = null
+    val proofOfDeliveryNote: String? = null,
+    val podReference: String? = null,
+    val customerSignatureCaptured: Boolean = false,
+    val signatureUnavailableReason: String? = null,
+    val photoEvidenceCaptured: Boolean = false,
+    val photoEvidenceTimestamp: Long? = null,
+    val signerName: String? = null,
+    val changeReturnedPaisa: Long? = null
 )
 
 data class StockBalance(
@@ -418,9 +438,13 @@ data class OfflineOutboxEvent(
     val idempotencyKey: String,
     val orderId: String,
     val action: String,
-    val scannedSerial: String?,
-    val timestamp: Long,
-    var syncStatus: String // "PENDING", "APPLIED", "DUPLICATE", "REJECTED", "CONFLICT_QUEUED"
+    val fromStatus: OrderStatus? = null,
+    val toStatus: OrderStatus? = null,
+    val scannedSerial: String? = null,
+    val timestamp: Long = System.currentTimeMillis(),
+    val payloadNotes: String? = null,
+    var syncStatus: String = "PENDING", // "PENDING", "APPLIED", "DUPLICATE", "REJECTED", "CONFLICT_QUEUED"
+    var rejectionReason: String? = null
 )
 
 data class Order(
@@ -443,7 +467,10 @@ data class Order(
     var exceptionReason: ExceptionReason? = null,
     var exceptionDetails: String? = null,
     val holdExpiresAt: Long? = null,
-    val createdAt: Long = System.currentTimeMillis()
+    val createdAt: Long = System.currentTimeMillis(),
+    var assignedAt: Long? = null,
+    var acceptedAt: Long? = null,
+    var podReference: String? = null
 )
 
 fun formatPaisaToPkr(paisa: Long): String {

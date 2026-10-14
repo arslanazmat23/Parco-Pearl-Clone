@@ -145,7 +145,7 @@ fun AiAdvisorDialog(store: BlueGasStore, onDismiss: () -> Unit) {
                         },
                         enabled = inputQuery.isNotBlank() && !isLoading
                     ) {
-                        Icon(Icons.Default.Send, contentDescription = "Send", tint = Color(0xFF0052CC))
+                        Icon(Icons.AutoMirrored.Filled.Send, contentDescription = "Send", tint = Color(0xFF0052CC))
                     }
                 }
             }

@@ -96,10 +96,12 @@ object OrderStateMachine {
         // Check if transition is in the static allowed transitions table
         val allowedTargets = allowedTransitionsMap[currentStatus] ?: emptySet()
         if (!allowedTargets.contains(targetStatus)) {
+            val legal = getLegalNextTransitions(order).map { it.canonicalLabel }
+            val legalStr = if (legal.isEmpty()) "None (Terminal)" else legal.joinToString(", ")
             return TransitionResult.Failure(
                 fromStatus = currentStatus,
                 attemptedStatus = targetStatus,
-                errorMessage = "Invalid transition path: ${currentStatus.canonicalLabel} -> ${targetStatus.canonicalLabel} is strictly forbidden by the 42-rule lifecycle table.",
+                errorMessage = "Invalid transition: ${currentStatus.canonicalLabel} -> ${targetStatus.canonicalLabel} is strictly forbidden by the 42-rule lifecycle table. Legal next transitions from ${currentStatus.code}: $legalStr.",
                 violatorRole = role
             )
         }
@@ -107,10 +109,12 @@ object OrderStateMachine {
         // Check contextual guard conditions
         val guardError = validateGuards(order, targetStatus, exceptionReason)
         if (guardError.isNotEmpty()) {
+            val legal = getLegalNextTransitions(order).map { it.canonicalLabel }
+            val legalStr = if (legal.isEmpty()) "None" else legal.joinToString(", ")
             return TransitionResult.Failure(
                 fromStatus = currentStatus,
                 attemptedStatus = targetStatus,
-                errorMessage = guardError,
+                errorMessage = "$guardError (Legal transitions from ${currentStatus.code}: $legalStr)",
                 violatorRole = role
             )
         }

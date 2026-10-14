@@ -11,7 +11,7 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import com.example.bluegas.data.BlueGasStore
+import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.bluegas.model.AppSurface
 import com.example.bluegas.ui.components.AiAdvisorDialog
 import com.example.bluegas.ui.components.DevInspectorDialog
@@ -20,6 +20,7 @@ import com.example.bluegas.ui.components.PersistentTopBar
 import com.example.bluegas.ui.customer.CustomerAppScreen
 import com.example.bluegas.ui.rider.RiderAppScreen
 import com.example.bluegas.ui.staff.StaffPortalScreen
+import com.example.bluegas.viewmodel.BlueGasViewModel
 import com.example.ui.theme.MyApplicationTheme
 
 class MainActivity : ComponentActivity() {
@@ -35,9 +36,9 @@ class MainActivity : ComponentActivity() {
 }
 
 @Composable
-fun BlueGasAppRoot() {
-    val store = remember { BlueGasStore() }
-    val version by store.stateVersion.collectAsStateWithLifecycle()
+fun BlueGasAppRoot(viewModel: BlueGasViewModel = viewModel()) {
+    // Single source of truth StateFlow for the entire app
+    val appState by viewModel.appState.collectAsStateWithLifecycle()
 
     var showDevDrawer by remember { mutableStateOf(false) }
     var showNotifications by remember { mutableStateOf(false) }
@@ -47,38 +48,38 @@ fun BlueGasAppRoot() {
         modifier = Modifier.fillMaxSize(),
         topBar = {
             PersistentTopBar(
-                store = store,
+                store = viewModel.store,
                 onOpenDevDrawer = { showDevDrawer = true },
                 onOpenNotifications = { showNotifications = true },
                 onOpenAiAdvisor = { showAiAdvisor = true }
             )
         }
     ) { innerPadding ->
-        // version triggers recomposition across all surfaces
-        key(version) {
+        // Direct key on appState guarantees cross-surface re-emission
+        key(appState) {
             Box(
                 modifier = Modifier
                     .fillMaxSize()
                     .padding(innerPadding)
             ) {
-                when (store.activeSurface) {
-                    AppSurface.CUSTOMER -> CustomerAppScreen(store = store)
-                    AppSurface.RIDER -> RiderAppScreen(store = store)
-                    AppSurface.STAFF -> StaffPortalScreen(store = store)
+                when (appState.activeSurface) {
+                    AppSurface.CUSTOMER -> CustomerAppScreen(store = viewModel.store)
+                    AppSurface.RIDER -> RiderAppScreen(store = viewModel.store)
+                    AppSurface.STAFF -> StaffPortalScreen(store = viewModel.store)
                 }
             }
         }
     }
 
     if (showDevDrawer) {
-        DevInspectorDialog(store = store, onDismiss = { showDevDrawer = false })
+        DevInspectorDialog(store = viewModel.store, onDismiss = { showDevDrawer = false })
     }
 
     if (showNotifications) {
-        NotificationCenterDialog(store = store, onDismiss = { showNotifications = false })
+        NotificationCenterDialog(store = viewModel.store, onDismiss = { showNotifications = false })
     }
 
     if (showAiAdvisor) {
-        AiAdvisorDialog(store = store, onDismiss = { showAiAdvisor = false })
+        AiAdvisorDialog(store = viewModel.store, onDismiss = { showAiAdvisor = false })
     }
 }

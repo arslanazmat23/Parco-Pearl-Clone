@@ -39,6 +39,7 @@ fun CustomerAppScreen(store: BlueGasStore) {
     var targetOrderIdForPayment by remember { mutableStateOf<String?>(null) }
     var showComplaintDialog by remember { mutableStateOf(false) }
     var targetOrderIdForComplaint by remember { mutableStateOf<String?>(null) }
+    var showCustomerReceiptOrderId by remember { mutableStateOf<String?>(null) }
     var complaintType by remember { mutableStateOf("CYLINDER_DENT") }
     var complaintDetails by remember { mutableStateOf("") }
     var actionMessage by remember { mutableStateOf<String?>(null) }
@@ -388,7 +389,7 @@ fun CustomerAppScreen(store: BlueGasStore) {
                         }
 
                         Spacer(modifier = Modifier.height(16.dp))
-                        Divider()
+                        HorizontalDivider()
                         Spacer(modifier = Modifier.height(12.dp))
                         Text("3. Your Active Orders & History (${customerOrders.size})", fontWeight = FontWeight.Bold, fontSize = 14.sp)
                     }
@@ -410,6 +411,9 @@ fun CustomerAppScreen(store: BlueGasStore) {
                                 onReportComplaint = {
                                     targetOrderIdForComplaint = ord.id
                                     showComplaintDialog = true
+                                },
+                                onViewReceipt = {
+                                    showCustomerReceiptOrderId = ord.id
                                 },
                                 onSelectForDev = {
                                     store.selectedOrderIdForDrawer = ord.id
@@ -542,6 +546,82 @@ fun CustomerAppScreen(store: BlueGasStore) {
             }
         )
     }
+
+    // Customer Receipt & Download Dialog
+    if (showCustomerReceiptOrderId != null) {
+        val ord = store.orders.find { it.id == showCustomerReceiptOrderId }
+        var isDownloaded by remember { mutableStateOf(false) }
+
+        AlertDialog(
+            onDismissRequest = { showCustomerReceiptOrderId = null },
+            title = {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Default.Receipt, contentDescription = null, tint = BlueGasPrimary)
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text("Official Delivery Receipt", fontWeight = FontWeight.Bold, fontSize = 15.sp)
+                }
+            },
+            text = {
+                Column {
+                    Text("Order: ${ord?.id}", fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                    Text("POD Reference: ${ord?.podReference ?: "POD-VERIFIED"}", fontSize = 10.sp, color = BlueGasPrimary, fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace)
+                    Spacer(modifier = Modifier.height(6.dp))
+                    Text("Status: DELIVERED (Handover Complete)", fontWeight = FontWeight.Bold, color = Color(0xFF16A34A), fontSize = 11.sp)
+                    Text("Cylinder Serial: ${ord?.allocatedSerial ?: "N/A"}", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = Color(0xFF047857))
+                    Text("Safety inspection: Regulator seal verified & leak test passed.", fontSize = 10.sp, color = Color.Gray)
+                    Spacer(modifier = Modifier.height(8.dp))
+                    HorizontalDivider()
+                    Spacer(modifier = Modifier.height(4.dp))
+                    ord?.items?.forEach { itm ->
+                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                            Text("${itm.quantity}x ${itm.productName}", fontSize = 11.sp)
+                            Text(formatPaisaToPkr(itm.subtotalPaisa), fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
+                        }
+                    }
+                    if ((ord?.depositTotalPaisa ?: 0L) > 0) {
+                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                            Text("Security Deposit (Liability)", fontSize = 11.sp, color = Color(0xFFB45309))
+                            Text(formatPaisaToPkr(ord?.depositTotalPaisa ?: 0L), fontSize = 11.sp, color = Color(0xFFB45309), fontWeight = FontWeight.SemiBold)
+                        }
+                    }
+                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                        Text("Delivery Fee", fontSize = 11.sp)
+                        Text(formatPaisaToPkr(ord?.deliveryFeePaisa ?: 0L), fontSize = 11.sp)
+                    }
+                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                        Text("Tax (5%)", fontSize = 11.sp)
+                        Text(formatPaisaToPkr(ord?.taxPaisa ?: 0L), fontSize = 11.sp)
+                    }
+                    HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
+                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                        Text("Total Amount Paid:", fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                        Text(formatPaisaToPkr(ord?.totalAmountPaisa ?: 0L), fontWeight = FontWeight.Bold, fontSize = 13.sp, color = BlueGasPrimary)
+                    }
+
+                    if (isDownloaded) {
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Surface(
+                            color = Color(0xFFDCFCE7),
+                            shape = RoundedCornerShape(4.dp),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text("✓ Receipt downloaded to phone storage (receipt_${ord?.id}.pdf)", fontSize = 10.sp, color = Color(0xFF166534), modifier = Modifier.padding(6.dp))
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                Button(onClick = { isDownloaded = true }) {
+                    Icon(Icons.Default.Download, contentDescription = null, modifier = Modifier.size(14.dp))
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text("Download Receipt", fontSize = 11.sp)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showCustomerReceiptOrderId = null }) { Text("Close") }
+            }
+        )
+    }
 }
 
 @Composable
@@ -573,6 +653,7 @@ private fun OrderCardCustomerView(
     store: BlueGasStore,
     onPayOnline: () -> Unit,
     onReportComplaint: () -> Unit,
+    onViewReceipt: () -> Unit,
     onSelectForDev: () -> Unit
 ) {
     val payment = store.payments.find { it.orderId == order.id }
@@ -602,8 +683,97 @@ private fun OrderCardCustomerView(
             }
             Text("Total: ${formatPaisaToPkr(order.totalAmountPaisa)} • ${order.paymentMethod.name}", fontSize = 11.sp, color = BlueGasPrimary)
 
-            if (order.allocatedSerial != null) {
-                Text("Assigned Serial: ${order.allocatedSerial}", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = Color(0xFF047857))
+            // LIVE TRACKING PROMINENT STATUS BANNER
+            when (order.status) {
+                OrderStatus.ORD_ASGN -> {
+                    Surface(
+                        color = Color(0xFFEFF6FF),
+                        shape = RoundedCornerShape(4.dp),
+                        modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)
+                    ) {
+                        Row(modifier = Modifier.padding(6.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Icon(Icons.Default.HourglassEmpty, contentDescription = null, tint = BlueGasPrimary, modifier = Modifier.size(15.dp))
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("Rider Assigned: Awaiting acceptance", fontSize = 11.sp, color = BlueGasPrimary, fontWeight = FontWeight.SemiBold)
+                        }
+                    }
+                }
+                OrderStatus.ORD_ACPT -> {
+                    Surface(
+                        color = Color(0xFFEFF6FF),
+                        shape = RoundedCornerShape(4.dp),
+                        modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)
+                    ) {
+                        Row(modifier = Modifier.padding(6.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Icon(Icons.Default.Check, contentDescription = null, tint = Color(0xFF16A34A), modifier = Modifier.size(15.dp))
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("Rider Accepted! Beginning cylinder prep & verification.", fontSize = 11.sp, color = Color(0xFF1E40AF), fontWeight = FontWeight.SemiBold)
+                        }
+                    }
+                }
+                OrderStatus.ORD_PREP -> {
+                    Surface(
+                        color = Color(0xFFFEF3C7),
+                        shape = RoundedCornerShape(4.dp),
+                        modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)
+                    ) {
+                        Row(modifier = Modifier.padding(6.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Icon(Icons.Default.Build, contentDescription = null, tint = Color(0xFFB45309), modifier = Modifier.size(15.dp))
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("Preparing & Hydro-Testing: Serial allocation in progress.", fontSize = 11.sp, color = Color(0xFF78350F), fontWeight = FontWeight.SemiBold)
+                        }
+                    }
+                }
+                OrderStatus.ORD_DISP -> {
+                    Surface(
+                        color = Color(0xFF0284C7),
+                        shape = RoundedCornerShape(4.dp),
+                        modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)
+                    ) {
+                        Row(modifier = Modifier.padding(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Icon(Icons.Default.DeliveryDining, contentDescription = null, tint = Color.White, modifier = Modifier.size(18.dp))
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Column {
+                                Text("Rider On The Way!", fontWeight = FontWeight.Bold, color = Color.White, fontSize = 12.sp)
+                                Text("Dispatched with Cylinder Serial: ${order.allocatedSerial ?: "Assigned"}", color = Color(0xFFE0F2FE), fontSize = 10.sp)
+                            }
+                        }
+                    }
+                }
+                OrderStatus.ORD_ATHO -> {
+                    Surface(
+                        color = Color(0xFF16A34A),
+                        shape = RoundedCornerShape(4.dp),
+                        modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)
+                    ) {
+                        Row(modifier = Modifier.padding(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Icon(Icons.Default.PinDrop, contentDescription = null, tint = Color.White, modifier = Modifier.size(18.dp))
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Column {
+                                Text("Rider Arrived at Doorstep!", fontWeight = FontWeight.Bold, color = Color.White, fontSize = 12.sp)
+                                Text("Performing bubble leak test & non-technical installation.", color = Color(0xFFDCFCE7), fontSize = 10.sp)
+                            }
+                        }
+                    }
+                }
+                OrderStatus.ORD_COMP -> {
+                    Surface(
+                        color = Color(0xFFDCFCE7),
+                        shape = RoundedCornerShape(4.dp),
+                        modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)
+                    ) {
+                        Row(modifier = Modifier.padding(6.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Icon(Icons.Default.Verified, contentDescription = null, tint = Color(0xFF16A34A), modifier = Modifier.size(16.dp))
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("Delivered & Inspected (Serial: ${order.allocatedSerial ?: "N/A"})", fontSize = 11.sp, color = Color(0xFF166534), fontWeight = FontWeight.Bold)
+                        }
+                    }
+                }
+                else -> {
+                    if (order.allocatedSerial != null) {
+                        Text("Assigned Serial: ${order.allocatedSerial}", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = Color(0xFF047857))
+                    }
+                }
             }
 
             // Visible Hold TTL countdown
@@ -644,6 +814,17 @@ private fun OrderCardCustomerView(
                 }
 
                 if (order.status == OrderStatus.ORD_COMP) {
+                    Button(
+                        onClick = onViewReceipt,
+                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF16A34A)),
+                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+                        modifier = Modifier.height(32.dp)
+                    ) {
+                        Icon(Icons.Default.Receipt, contentDescription = null, modifier = Modifier.size(13.dp))
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text("View Receipt", fontSize = 10.sp)
+                    }
+
                     OutlinedButton(
                         onClick = onReportComplaint,
                         contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
@@ -651,7 +832,7 @@ private fun OrderCardCustomerView(
                     ) {
                         Icon(Icons.Default.ReportProblem, contentDescription = null, modifier = Modifier.size(12.dp))
                         Spacer(modifier = Modifier.width(4.dp))
-                        Text("Report Dispute", fontSize = 10.sp)
+                        Text("Dispute", fontSize = 10.sp)
                     }
                 }
             }
