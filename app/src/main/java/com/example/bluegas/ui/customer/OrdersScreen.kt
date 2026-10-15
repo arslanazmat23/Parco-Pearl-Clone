@@ -53,6 +53,8 @@ fun OrdersScreen(
     var showComplaintOrderId by remember { mutableStateOf<String?>(null) }
     var complaintType by remember { mutableStateOf("LEAKAGE_SAFETY") }
     var complaintDetails by remember { mutableStateOf("") }
+    var showCancelOrderId by remember { mutableStateOf<String?>(null) }
+    var cancelReason by remember { mutableStateOf("Changed my mind") }
 
     val activeCustomer = store.customers.find { it.id == store.activeCustomerId } ?: store.customers.first()
     val allCustomerOrders = store.orders.filter { it.customerId == activeCustomer.id }.sortedByDescending { it.createdAt }
@@ -198,6 +200,10 @@ fun OrdersScreen(
                         },
                         onReportComplaint = {
                             showComplaintOrderId = order.id
+                        },
+                        onCancelOrder = {
+                            showCancelOrderId = order.id
+                            cancelReason = "Changed my mind"
                         }
                     )
                 }
@@ -449,6 +455,73 @@ fun OrdersScreen(
             }
         )
     }
+
+    // Dialog 4: Cancel Order Dialog
+    if (showCancelOrderId != null) {
+        val ord = store.orders.find { it.id == showCancelOrderId }
+        val cancelReasons = listOf(
+            "Changed my mind",
+            "Ordered wrong cylinder size",
+            "Delivery taking too long",
+            "Need delivery to different address",
+            "Financial / emergency reason"
+        )
+
+        AlertDialog(
+            onDismissRequest = { showCancelOrderId = null },
+            title = {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Default.Cancel, contentDescription = null, tint = Color(0xFFDC2626))
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text("Cancel Order", fontWeight = FontWeight.Bold, fontSize = 15.sp)
+                }
+            },
+            text = {
+                Column {
+                    Text("Order ID: ${ord?.id}", fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        "Are you sure you want to cancel this order? Any active stock holds and allocated cylinders will be released back to inventory. If you already paid online, a full refund will be processed.",
+                        fontSize = 11.sp,
+                        color = Color(0xFF64748B),
+                        lineHeight = 15.sp
+                    )
+                    Spacer(modifier = Modifier.height(10.dp))
+                    Text("Select cancellation reason:", fontWeight = FontWeight.SemiBold, fontSize = 11.sp)
+                    Spacer(modifier = Modifier.height(4.dp))
+                    cancelReasons.forEach { r ->
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable { cancelReason = r }
+                        ) {
+                            RadioButton(selected = cancelReason == r, onClick = { cancelReason = r })
+                            Text(r, fontSize = 11.sp)
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        val (_, msg) = store.cancelOrder(showCancelOrderId ?: "", cancelReason)
+                        onActionMessage(msg)
+                        showCancelOrderId = null
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFDC2626)),
+                    modifier = Modifier.testTag("confirm_cancel_order_button")
+                ) {
+                    Text("Confirm Cancellation")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showCancelOrderId = null }) {
+                    Text("Keep Order")
+                }
+            }
+        )
+    }
 }
 
 @Composable
@@ -458,7 +531,8 @@ private fun CustomerOrderCard(
     onTrackOrder: () -> Unit,
     onPayOnline: () -> Unit,
     onViewReceipt: () -> Unit,
-    onReportComplaint: () -> Unit
+    onReportComplaint: () -> Unit,
+    onCancelOrder: () -> Unit
 ) {
     val payment = store.payments.find { it.orderId == order.id }
 
@@ -664,6 +738,35 @@ private fun CustomerOrderCard(
                         Icon(Icons.Default.ReportProblem, contentDescription = null, tint = Color(0xFFDC2626), modifier = Modifier.size(13.dp))
                         Spacer(modifier = Modifier.width(4.dp))
                         Text("Dispute", fontSize = 11.sp, color = Color(0xFFDC2626))
+                    }
+                }
+
+                // Cancel button for active orders prior to final dispatch
+                val isCancellable = order.status in setOf(
+                    OrderStatus.ORD_DRAFT,
+                    OrderStatus.ORD_VALPEND,
+                    OrderStatus.ORD_PAYPEND,
+                    OrderStatus.ORD_CONF,
+                    OrderStatus.ORD_RSVD,
+                    OrderStatus.ORD_ASGN,
+                    OrderStatus.ORD_ACPT,
+                    OrderStatus.ORD_PREP,
+                    OrderStatus.ORD_EXC
+                )
+
+                if (isCancellable) {
+                    OutlinedButton(
+                        onClick = onCancelOrder,
+                        modifier = Modifier
+                            .weight(1f)
+                            .height(34.dp)
+                            .testTag("cancel_order_${order.id}"),
+                        colors = ButtonDefaults.outlinedButtonColors(contentColor = Color(0xFFDC2626)),
+                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp)
+                    ) {
+                        Icon(Icons.Default.Cancel, contentDescription = null, tint = Color(0xFFDC2626), modifier = Modifier.size(13.dp))
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text("Cancel", fontSize = 11.sp, color = Color(0xFFDC2626))
                     }
                 }
             }

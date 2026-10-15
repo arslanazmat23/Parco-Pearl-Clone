@@ -1543,6 +1543,85 @@ class BlueGasStore {
         return Pair(true, "Support case $caseId opened. Order status remains ${order.status.canonicalLabel}.")
     }
 
+    // --- Order Cancellation ---
+
+    /**
+     * Cancel an active order that is in a cancellable state according to OrderStateMachine.
+     * Transitions order to ORD_CANC, releases stock holds and reservations, returns bound
+     * cylinders to inventory, and initiates payment refund/cancellation.
+     */
+    fun cancelOrder(
+        orderId: String,
+        reason: String = "Cancelled by Customer",
+        actor: String = "Customer",
+        role: AccountableRole = AccountableRole.OPERATIONS
+    ): Pair<Boolean, String> {
+        val order = orders.find { it.id == orderId } ?: return Pair(false, "Order not found")
+
+        val tCanc = OrderStateMachine.transition(
+            order = order,
+            targetStatus = OrderStatus.ORD_CANC,
+            actor = actor,
+            role = role,
+            trigger = "Order cancelled: $reason"
+        )
+        if (tCanc is TransitionResult.Failure) {
+            return Pair(false, tCanc.errorMessage)
+        }
+        recordHistory(tCanc)
+
+        // Release ephemeral stock holds
+        stockHolds.removeAll { it.orderId == orderId }
+
+        // Release firm stock reservations
+        stockReservations.removeAll { it.orderId == orderId }
+
+        // Release allocated cylinder back to available inventory if already allocated
+        order.allocatedSerial?.let { s ->
+            val cyl = cylinders.find { it.serialNumber == s }
+            if (cyl != null) {
+                val idx = cylinders.indexOf(cyl)
+                cylinders[idx] = cyl.copy(
+                    status = InventoryState.INV_AVAIL,
+                    custody = CylinderCustody.DISTRIBUTOR_NODE,
+                    allocatedOrderId = null
+                )
+            }
+            order.allocatedSerial = null
+        }
+
+        // Cancel payment or initiate refund if already captured
+        val payment = payments.find { it.orderId == orderId }
+        if (payment != null) {
+            if (payment.method == PaymentMethod.CASH_ON_DELIVERY) {
+                payment.state = PaymentState.PAYMENT_CANCELLED
+            } else {
+                if (payment.capturedAmountPaisa > 0) {
+                    executeRefund(
+                        orderId = orderId,
+                        amountPaisa = payment.capturedAmountPaisa,
+                        reason = "Order cancellation ($reason)",
+                        actor = actor
+                    )
+                } else {
+                    payment.state = PaymentState.PAYMENT_CANCELLED
+                }
+            }
+        }
+
+        addNotification(
+            surface = AppSurface.CUSTOMER,
+            title = "Order Cancelled",
+            message = "Order $orderId has been cancelled ($reason).",
+            canonicalStatus = order.status.canonicalLabel,
+            orderId = orderId
+        )
+
+        logAudit("Order", orderId, "CANCEL_ORDER", actor, role, "Order cancelled: $reason")
+        notifyChanged()
+        return Pair(true, "Order $orderId cancelled successfully.")
+    }
+
     // --- Refunds (Handled in Payment, Order stays ORD_CANC if cancelled) ---
 
     fun executeRefund(

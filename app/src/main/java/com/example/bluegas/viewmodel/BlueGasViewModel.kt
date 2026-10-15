@@ -124,4 +124,8 @@ class BlueGasViewModel(
     fun executeRefund(orderId: String, amountPaisa: Long, reason: String): Pair<Boolean, String> {
         return store.executeRefund(orderId, amountPaisa, reason)
     }
+
+    fun cancelOrder(orderId: String, reason: String = "Cancelled by Customer"): Pair<Boolean, String> {
+        return store.cancelOrder(orderId, reason)
+    }
 }

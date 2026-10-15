@@ -58,6 +58,8 @@ fun TrackingScreen(
     val deliveryInfo = store.deliveries.find { it.orderId == currentOrder?.id }
 
     var showCallRiderDialog by remember { mutableStateOf(false) }
+    var showCancelDialog by remember { mutableStateOf(false) }
+    var cancelReason by remember { mutableStateOf("Changed my mind") }
 
     Column(
         modifier = modifier
@@ -250,6 +252,116 @@ fun TrackingScreen(
                                     color = Color(0xFFF1F5F9),
                                     lineHeight = 15.sp
                                 )
+                            }
+                        }
+                    }
+                }
+
+                // If Order is Cancelled, show dedicated cancellation card
+                if (currentOrder.status == OrderStatus.ORD_CANC) {
+                    item {
+                        Card(
+                            colors = CardDefaults.cardColors(containerColor = Color(0xFFFEF2F2)),
+                            shape = RoundedCornerShape(12.dp),
+                            border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFFFECACA)),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .testTag("cancelled_order_notice_card")
+                        ) {
+                            Column(modifier = Modifier.padding(14.dp)) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Icon(
+                                        imageVector = Icons.Default.Cancel,
+                                        contentDescription = null,
+                                        tint = Color(0xFFDC2626),
+                                        modifier = Modifier.size(20.dp)
+                                    )
+                                    Spacer(modifier = Modifier.width(8.dp))
+                                    Text(
+                                        text = "Order Cancelled",
+                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 14.sp,
+                                        color = Color(0xFF991B1B)
+                                    )
+                                }
+                                Spacer(modifier = Modifier.height(6.dp))
+                                Text(
+                                    text = "This order was cancelled. Reserved cylinders, distributor allocations, and temporary stock holds have been returned to inventory. Any online payments have been refunded.",
+                                    fontSize = 11.sp,
+                                    color = Color(0xFF7F1D1D),
+                                    lineHeight = 15.sp
+                                )
+                                Spacer(modifier = Modifier.height(10.dp))
+                                Button(
+                                    onClick = onBackToOrders,
+                                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFDC2626)),
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .height(36.dp)
+                                        .testTag("back_to_orders_from_cancelled"),
+                                    contentPadding = PaddingValues(vertical = 4.dp)
+                                ) {
+                                    Text("Back to Orders List", fontSize = 12.sp)
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Cancel Order CTA if order is in a cancellable status
+                val isCancellableInTracking = currentOrder.status in setOf(
+                    OrderStatus.ORD_DRAFT,
+                    OrderStatus.ORD_VALPEND,
+                    OrderStatus.ORD_PAYPEND,
+                    OrderStatus.ORD_CONF,
+                    OrderStatus.ORD_RSVD,
+                    OrderStatus.ORD_ASGN,
+                    OrderStatus.ORD_ACPT,
+                    OrderStatus.ORD_PREP,
+                    OrderStatus.ORD_EXC
+                )
+
+                if (isCancellableInTracking) {
+                    item {
+                        Card(
+                            colors = CardDefaults.cardColors(containerColor = Color.White),
+                            shape = RoundedCornerShape(12.dp),
+                            border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFFFCA5A5)),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .testTag("cancel_order_tracking_card")
+                        ) {
+                            Row(
+                                modifier = Modifier
+                                    .padding(12.dp)
+                                    .fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        text = "Need to cancel this order?",
+                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 12.sp,
+                                        color = Color(0xFF991B1B)
+                                    )
+                                    Text(
+                                        text = "Orders can be cancelled before dispatch without penalty.",
+                                        fontSize = 10.sp,
+                                        color = Color(0xFF7F1D1D)
+                                    )
+                                }
+                                OutlinedButton(
+                                    onClick = { showCancelDialog = true },
+                                    colors = ButtonDefaults.outlinedButtonColors(contentColor = Color(0xFFDC2626)),
+                                    modifier = Modifier
+                                        .height(34.dp)
+                                        .testTag("tracking_cancel_button")
+                                ) {
+                                    Icon(Icons.Default.Cancel, contentDescription = null, modifier = Modifier.size(14.dp))
+                                    Spacer(modifier = Modifier.width(4.dp))
+                                    Text("Cancel Order", fontSize = 11.sp, color = Color(0xFFDC2626))
+                                }
                             }
                         }
                     }
@@ -770,6 +882,69 @@ fun TrackingScreen(
             },
             dismissButton = {
                 TextButton(onClick = { showCallRiderDialog = false }) { Text("Dismiss") }
+            }
+        )
+    }
+
+    // Cancel Order Dialog simulation
+    if (showCancelDialog && currentOrder != null) {
+        val cancelReasons = listOf(
+            "Changed my mind",
+            "Ordered wrong cylinder size",
+            "Delivery taking too long",
+            "Need delivery to different address",
+            "Emergency / other reason"
+        )
+
+        AlertDialog(
+            onDismissRequest = { showCancelDialog = false },
+            title = {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Default.Cancel, contentDescription = null, tint = Color(0xFFDC2626))
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text("Cancel Order ${currentOrder.id}", fontWeight = FontWeight.Bold, fontSize = 15.sp)
+                }
+            },
+            text = {
+                Column {
+                    Text(
+                        "Are you sure you want to cancel this order? Active stock holds and allocated cylinders will be returned to inventory. Any online payments will be refunded.",
+                        fontSize = 11.sp,
+                        color = Color(0xFF64748B),
+                        lineHeight = 15.sp
+                    )
+                    Spacer(modifier = Modifier.height(10.dp))
+                    Text("Reason for cancellation:", fontWeight = FontWeight.SemiBold, fontSize = 11.sp)
+                    Spacer(modifier = Modifier.height(4.dp))
+                    cancelReasons.forEach { r ->
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable { cancelReason = r }
+                        ) {
+                            RadioButton(selected = cancelReason == r, onClick = { cancelReason = r })
+                            Text(r, fontSize = 11.sp)
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        store.cancelOrder(currentOrder.id, cancelReason)
+                        showCancelDialog = false
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFDC2626)),
+                    modifier = Modifier.testTag("confirm_cancel_tracking_button")
+                ) {
+                    Text("Confirm Cancellation")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showCancelDialog = false }) {
+                    Text("Keep Order")
+                }
             }
         )
     }
