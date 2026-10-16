@@ -21,6 +21,7 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.bluegas.data.BlueGasStore
 import com.example.bluegas.model.*
 import com.example.ui.theme.BlueGasDark
@@ -35,11 +36,12 @@ fun HomeScreen(
     onTrackOrder: (String) -> Unit,
     modifier: Modifier = Modifier
 ) {
-    val activeCustomer = store.customers.find { it.id == store.activeCustomerId } ?: store.customers.first()
-    val customerAddresses = store.addresses.filter { it.customerId == activeCustomer.id }
+    val snapshot by store.appState.collectAsStateWithLifecycle()
+    val activeCustomer = snapshot.activeCustomer ?: return
+    val customerAddresses = snapshot.addresses.filter { it.customerId == activeCustomer.id }
 
     var selectedAddressId by remember(activeCustomer.id) {
-        mutableStateOf(customerAddresses.firstOrNull { it.isServiceable }?.id ?: customerAddresses.firstOrNull()?.id ?: store.addresses.first().id)
+        mutableStateOf(customerAddresses.firstOrNull { it.isServiceable }?.id ?: customerAddresses.firstOrNull()?.id ?: snapshot.addresses.firstOrNull()?.id ?: "")
     }
     var selectedSku by remember { mutableStateOf("SKU-LPG-11-8") }
     var selectedMode by remember { mutableStateOf(FulfilmentMode.DELIVERY) }
@@ -52,20 +54,32 @@ fun HomeScreen(
     var createdOrderIdForPayment by remember { mutableStateOf<String?>(null) }
     var orderCreationError by remember { mutableStateOf<String?>(null) }
 
-    val activeAddress = store.addresses.find { it.id == selectedAddressId } ?: store.addresses.first()
-    val selectedProduct = store.productVariants.find { it.sku == selectedSku }
+    val activeAddress = snapshot.addresses.find { it.id == selectedAddressId }
+        ?: customerAddresses.firstOrNull()
+        ?: snapshot.addresses.firstOrNull()
+        ?: Address(
+            id = "",
+            customerId = activeCustomer.id,
+            label = "No Address",
+            street = "No address on file",
+            area = "N/A",
+            city = "Lahore",
+            zoneId = "Z-01",
+            isServiceable = false
+        )
+    val selectedProduct = snapshot.productVariants.find { it.sku == selectedSku }
 
-    val price = store.priceBookConfig.productPricesPaisa[selectedSku] ?: 325000L
+    val price = snapshot.priceBookConfig.productPricesPaisa[selectedSku] ?: 325000L
     val depositPerUnit = if (!hasEmptyCylinderToExchange && (selectedProduct?.isCylinder == true)) {
-        store.priceBookConfig.depositAmountPaisa[selectedSku] ?: 750000L
+        snapshot.priceBookConfig.depositAmountPaisa[selectedSku] ?: 750000L
     } else 0L
 
     val subtotalPaisa = price * quantity
     val depositTotalPaisa = depositPerUnit * quantity
-    val platformFeePaisa = store.priceBookConfig.platformFeePaisa
-    val deliveryFeePaisa = if (selectedMode == FulfilmentMode.DELIVERY) store.priceBookConfig.deliveryFeePaisa else 0L
+    val platformFeePaisa = snapshot.priceBookConfig.platformFeePaisa
+    val deliveryFeePaisa = if (selectedMode == FulfilmentMode.DELIVERY) snapshot.priceBookConfig.deliveryFeePaisa else 0L
     val taxableBase = subtotalPaisa + platformFeePaisa + deliveryFeePaisa
-    val taxPaisa = (taxableBase * store.priceBookConfig.taxRateBps) / 10000L
+    val taxPaisa = (taxableBase * snapshot.priceBookConfig.taxRateBps) / 10000L
     val estimatedTotalPaisa = taxableBase + taxPaisa + depositTotalPaisa
 
     LazyColumn(
@@ -75,6 +89,30 @@ fun HomeScreen(
             .testTag("customer_home_screen"),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
+        // Greeting Banner
+        item {
+            val hour = java.util.Calendar.getInstance().get(java.util.Calendar.HOUR_OF_DAY)
+            val greeting = when {
+                hour < 12 -> "Good Morning"
+                hour < 17 -> "Good Afternoon"
+                else -> "Good Evening"
+            }
+
+            Column(modifier = Modifier.padding(horizontal = 4.dp, vertical = 4.dp)) {
+                Text(
+                    text = "$greeting, ${activeCustomer.name.split(" ").first()} 👋",
+                    fontSize = 20.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = BlueGasDark
+                )
+                Text(
+                    text = "Order safe, certified LPG delivered to your doorstep",
+                    fontSize = 12.sp,
+                    color = Color(0xFF64748B)
+                )
+            }
+        }
+
         // Hero Card
         item {
             Card(
@@ -254,8 +292,8 @@ fun HomeScreen(
             }
         }
 
-        items(store.productVariants) { pv ->
-            val pvPrice = store.priceBookConfig.productPricesPaisa[pv.sku] ?: 0L
+        items(snapshot.productVariants) { pv ->
+            val pvPrice = snapshot.priceBookConfig.productPricesPaisa[pv.sku] ?: 0L
             val isSelected = pv.sku == selectedSku
 
             Card(
@@ -387,7 +425,7 @@ fun HomeScreen(
                                     text = if (hasEmptyCylinderToExchange)
                                         "✓ You will exchange an empty cylinder. No security deposit charged."
                                     else
-                                        "⚠️ Adding ${formatPaisaToPkr(store.priceBookConfig.depositAmountPaisa[selectedSku] ?: 750000L)} refundable security deposit.",
+                                        "⚠️ Adding ${formatPaisaToPkr(snapshot.priceBookConfig.depositAmountPaisa[selectedSku] ?: 750000L)} refundable security deposit.",
                                     fontSize = 11.sp,
                                     color = Color(0xFF92400E)
                                 )
@@ -547,7 +585,7 @@ fun HomeScreen(
 
                     QuoteLineRow("Digital Platform Convenience Fee", formatPaisaToPkr(platformFeePaisa))
                     QuoteLineRow("Fulfilment / Delivery Fee", formatPaisaToPkr(deliveryFeePaisa))
-                    QuoteLineRow("Sales Tax (${store.priceBookConfig.taxRateBps / 100.0}%)", formatPaisaToPkr(taxPaisa))
+                    QuoteLineRow("Sales Tax (${snapshot.priceBookConfig.taxRateBps / 100.0}%)", formatPaisaToPkr(taxPaisa))
 
                     HorizontalDivider(modifier = Modifier.padding(vertical = 6.dp))
 
@@ -614,6 +652,8 @@ fun HomeScreen(
                                 createdOrderIdForPayment = newOrder.id
                                 showPaymentGatewayDialog = true
                             } else {
+                                // COD: immediately confirm payment to advance order from PAYPEND → CONF
+                                store.confirmPaymentAndAdvance(newOrder.id, actor = activeCustomer.id)
                                 onNavigateToOrders()
                             }
                         }
@@ -652,8 +692,8 @@ fun HomeScreen(
 
     // Hosted Payment Gateway Dialog
     if (showPaymentGatewayDialog && createdOrderIdForPayment != null) {
-        val ord = store.orders.find { it.id == createdOrderIdForPayment }
-        val pay = store.payments.find { it.orderId == createdOrderIdForPayment }
+        val ord = snapshot.orders.find { it.id == createdOrderIdForPayment }
+        val pay = snapshot.payments.find { it.orderId == createdOrderIdForPayment }
 
         AlertDialog(
             onDismissRequest = {

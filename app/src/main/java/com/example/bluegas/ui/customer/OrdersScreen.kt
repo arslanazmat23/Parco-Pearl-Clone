@@ -22,7 +22,10 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import kotlinx.coroutines.delay
 import com.example.bluegas.data.BlueGasStore
+import com.example.bluegas.data.SharedAppState
 import com.example.bluegas.model.*
 import com.example.bluegas.ui.components.CanonicalStatusChip
 import com.example.ui.theme.BlueGasDark
@@ -56,8 +59,9 @@ fun OrdersScreen(
     var showCancelOrderId by remember { mutableStateOf<String?>(null) }
     var cancelReason by remember { mutableStateOf("Changed my mind") }
 
-    val activeCustomer = store.customers.find { it.id == store.activeCustomerId } ?: store.customers.first()
-    val allCustomerOrders = store.orders.filter { it.customerId == activeCustomer.id }.sortedByDescending { it.createdAt }
+    val snapshot by store.appState.collectAsStateWithLifecycle()
+    val activeCustomer = snapshot.activeCustomer ?: return
+    val allCustomerOrders = snapshot.orders.filter { it.customerId == activeCustomer.id }.sortedByDescending { it.createdAt }
 
     val filteredOrders = allCustomerOrders.filter { order ->
         val matchesSearch = searchQuery.isBlank() ||
@@ -139,11 +143,11 @@ fun OrdersScreen(
 
         // Filter Tabs
         SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth()) {
-            OrdersFilterTab.values().forEachIndexed { index, tab ->
+            OrdersFilterTab.entries.forEachIndexed { index, tab ->
                 SegmentedButton(
                     selected = selectedFilter == tab,
                     onClick = { selectedFilter = tab },
-                    shape = SegmentedButtonDefaults.itemShape(index = index, count = OrdersFilterTab.values().size)
+                    shape = SegmentedButtonDefaults.itemShape(index = index, count = OrdersFilterTab.entries.size)
                 ) {
                     Text(tab.label, fontSize = 11.sp, maxLines = 1)
                 }
@@ -190,6 +194,7 @@ fun OrdersScreen(
                     CustomerOrderCard(
                         order = order,
                         store = store,
+                        snapshot = snapshot,
                         onTrackOrder = { onTrackOrder(order.id) },
                         onPayOnline = {
                             selectedOrderIdForPayment = order.id
@@ -216,7 +221,7 @@ fun OrdersScreen(
 
     // Dialog 1: Hosted Payment Gateway Dialog
     if (showPaymentGatewayDialog && selectedOrderIdForPayment != null) {
-        val ord = store.orders.find { it.id == selectedOrderIdForPayment }
+        val ord = snapshot.orders.find { it.id == selectedOrderIdForPayment }
 
         AlertDialog(
             onDismissRequest = { showPaymentGatewayDialog = false },
@@ -285,7 +290,7 @@ fun OrdersScreen(
 
     // Dialog 2: Official Delivery Receipt Dialog
     if (showReceiptOrderId != null) {
-        val ord = store.orders.find { it.id == showReceiptOrderId }
+        val ord = snapshot.orders.find { it.id == showReceiptOrderId }
         var isDownloaded by remember { mutableStateOf(false) }
 
         AlertDialog(
@@ -458,7 +463,7 @@ fun OrdersScreen(
 
     // Dialog 4: Cancel Order Dialog
     if (showCancelOrderId != null) {
-        val ord = store.orders.find { it.id == showCancelOrderId }
+        val ord = snapshot.orders.find { it.id == showCancelOrderId }
         val cancelReasons = listOf(
             "Changed my mind",
             "Ordered wrong cylinder size",
@@ -528,13 +533,14 @@ fun OrdersScreen(
 private fun CustomerOrderCard(
     order: Order,
     store: BlueGasStore,
+    snapshot: SharedAppState,
     onTrackOrder: () -> Unit,
     onPayOnline: () -> Unit,
     onViewReceipt: () -> Unit,
     onReportComplaint: () -> Unit,
     onCancelOrder: () -> Unit
 ) {
-    val payment = store.payments.find { it.orderId == order.id }
+    val payment = snapshot.payments.find { it.orderId == order.id }
 
     Card(
         colors = CardDefaults.cardColors(containerColor = Color.White),
@@ -645,8 +651,20 @@ private fun CustomerOrderCard(
 
             // Hold TTL countdown for ORD_PAYPEND
             if (order.status == OrderStatus.ORD_PAYPEND && order.holdExpiresAt != null) {
-                val remainingMs = order.holdExpiresAt - System.currentTimeMillis()
-                val remainingMins = (remainingMs / 60000).coerceAtLeast(0)
+                var countdownTick by remember { mutableIntStateOf(0) }
+                LaunchedEffect(order.id, order.holdExpiresAt) {
+                    while (true) {
+                        delay(1000L)
+                        countdownTick++
+                    }
+                }
+                val now = System.currentTimeMillis() + (countdownTick * 0L)
+                val remainingMs = order.holdExpiresAt - now
+                val countdownText = if (remainingMs <= 0L) {
+                    "Expired"
+                } else {
+                    "${remainingMs / 60000}m ${(remainingMs % 60000) / 1000}s"
+                }
                 Spacer(modifier = Modifier.height(6.dp))
                 Surface(
                     color = Color(0xFFFFFBEB),
@@ -666,7 +684,7 @@ private fun CustomerOrderCard(
                         )
                         Spacer(modifier = Modifier.width(6.dp))
                         Text(
-                            text = "Stock Hold TTL: ~${remainingMins} min remaining before auto-release",
+                            text = if (remainingMs <= 0L) "Stock Hold TTL: Expired" else "Stock Hold TTL: $countdownText remaining before auto-release",
                             fontSize = 10.sp,
                             color = Color(0xFFB45309),
                             fontWeight = FontWeight.Bold

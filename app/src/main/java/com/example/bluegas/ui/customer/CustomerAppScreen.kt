@@ -21,7 +21,9 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.bluegas.data.BlueGasStore
+import com.example.bluegas.model.AppSurface
 import com.example.bluegas.model.OrderStatus
 import com.example.bluegas.ui.components.CanonicalStatusChip
 import com.example.ui.theme.BlueGasDark
@@ -41,12 +43,13 @@ fun CustomerAppScreen(store: BlueGasStore, modifier: Modifier = Modifier) {
     var selectedTrackingOrderId by remember { mutableStateOf<String?>(null) }
     var notificationBannerMessage by remember { mutableStateOf<String?>(null) }
 
-    val activeCustomer = store.customers.find { it.id == store.activeCustomerId } ?: store.customers.firstOrNull()
-    val activeAddress = store.addresses.find { it.customerId == activeCustomer?.id && it.isServiceable }
-        ?: store.addresses.find { it.customerId == activeCustomer?.id }
-        ?: store.addresses.firstOrNull()
+    val snapshot by store.appState.collectAsStateWithLifecycle()
+    val activeCustomer = snapshot.activeCustomer
+    val activeAddress = snapshot.addresses.find { it.customerId == activeCustomer?.id && it.isServiceable }
+        ?: snapshot.addresses.find { it.customerId == activeCustomer?.id }
+        ?: snapshot.addresses.firstOrNull()
 
-    val customerOrders = store.orders.filter { it.customerId == activeCustomer?.id }
+    val customerOrders = snapshot.orders.filter { it.customerId == activeCustomer?.id }
     val activeOrdersCount = customerOrders.count { !it.status.isTerminal }
     val inTransitOrder = customerOrders.find {
         it.status == OrderStatus.ORD_DISP || it.status == OrderStatus.ORD_ATHO || it.status == OrderStatus.ORD_PREP
@@ -54,7 +57,7 @@ fun CustomerAppScreen(store: BlueGasStore, modifier: Modifier = Modifier) {
 
     // Default tracking order to the latest active order or most recent order
     LaunchedEffect(customerOrders.size, currentTab) {
-        if (selectedTrackingOrderId == null || store.orders.none { it.id == selectedTrackingOrderId }) {
+        if (selectedTrackingOrderId == null || snapshot.orders.none { it.id == selectedTrackingOrderId }) {
             selectedTrackingOrderId = inTransitOrder?.id
                 ?: customerOrders.firstOrNull { !it.status.isTerminal }?.id
                 ?: customerOrders.firstOrNull()?.id
@@ -204,7 +207,7 @@ fun CustomerAppScreen(store: BlueGasStore, modifier: Modifier = Modifier) {
                         tonalElevation = 8.dp,
                         modifier = Modifier.testTag("customer_bottom_navigation")
                     ) {
-                        CustomerTab.values().forEach { tab ->
+                        CustomerTab.entries.forEach { tab ->
                             val selected = currentTab == tab
                             NavigationBarItem(
                                 selected = selected,
@@ -231,6 +234,19 @@ fun CustomerAppScreen(store: BlueGasStore, modifier: Modifier = Modifier) {
                                                             contentColor = Color.White
                                                         ) {
                                                             Text("LIVE")
+                                                        }
+                                                    }
+                                                }
+                                                CustomerTab.PROFILE -> {
+                                                    val unreadCount = snapshot.notifications.count {
+                                                        !it.isRead && it.surface == AppSurface.CUSTOMER
+                                                    }
+                                                    if (unreadCount > 0) {
+                                                        Badge(
+                                                            containerColor = Color(0xFFDC2626),
+                                                            contentColor = Color.White
+                                                        ) {
+                                                            Text(unreadCount.toString())
                                                         }
                                                     }
                                                 }
@@ -315,7 +331,7 @@ fun CustomerAppScreen(store: BlueGasStore, modifier: Modifier = Modifier) {
                                     store = store,
                                     onOrderCreated = { newOrder ->
                                         selectedTrackingOrderId = newOrder.id
-                                        notificationBannerMessage = "Order ${newOrder.id} placed! Stock held for ${store.priceBookConfig.holdTtlMinutes} min."
+                                        notificationBannerMessage = "Order ${newOrder.id} placed! Stock held for ${snapshot.priceBookConfig.holdTtlMinutes} min."
                                     },
                                     onNavigateToOrders = {
                                         currentTab = CustomerTab.ORDERS
@@ -335,6 +351,12 @@ fun CustomerAppScreen(store: BlueGasStore, modifier: Modifier = Modifier) {
                                     },
                                     onActionMessage = { msg ->
                                         notificationBannerMessage = msg
+                                    },
+                                    onReorder = { order ->
+                                        currentTab = CustomerTab.HOME
+                                    },
+                                    onNavigateToHome = {
+                                        currentTab = CustomerTab.HOME
                                     }
                                 )
                             }

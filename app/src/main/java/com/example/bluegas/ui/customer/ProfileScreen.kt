@@ -1,6 +1,7 @@
 package com.example.bluegas.ui.customer
 
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -22,10 +23,16 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.bluegas.data.BlueGasStore
 import com.example.bluegas.model.*
 import com.example.ui.theme.BlueGasDark
 import com.example.ui.theme.BlueGasPrimary
+
+fun maskCnic(cnic: String): String {
+    if (cnic.length < 13) return cnic
+    return cnic.take(7) + "XXXXX" + cnic.takeLast(1)
+}
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -34,11 +41,12 @@ fun ProfileScreen(
     onCustomerChanged: () -> Unit,
     modifier: Modifier = Modifier
 ) {
-    val activeCustomer = store.customers.find { it.id == store.activeCustomerId } ?: store.customers.first()
-    val customerAddresses = store.addresses.filter { it.customerId == activeCustomer.id }
-    val customerHoldings = store.customerHoldings.filter { it.customerId == activeCustomer.id }
-    val customerCases = store.supportCases.filter { it.customerId == activeCustomer.id }
-    val customerOrdersCount = store.orders.count { it.customerId == activeCustomer.id }
+    val snapshot by store.appState.collectAsStateWithLifecycle()
+    val activeCustomer = snapshot.activeCustomer ?: return
+    val customerAddresses = snapshot.addresses.filter { it.customerId == activeCustomer.id }
+    val customerHoldings = snapshot.customerHoldings.filter { it.customerId == activeCustomer.id }
+    val customerCases = snapshot.supportCases.filter { it.customerId == activeCustomer.id }
+    val customerOrdersCount = snapshot.orders.count { it.customerId == activeCustomer.id }
 
     var showCustomerSwitchMenu by remember { mutableStateOf(false) }
     var showSafetyHelplineDialog by remember { mutableStateOf(false) }
@@ -101,7 +109,7 @@ fun ProfileScreen(
                                     )
                                 }
                                 Text(
-                                    text = "CNIC: ${activeCustomer.cnic} • NADRA Verified",
+                                    text = "CNIC: ${maskCnic(activeCustomer.cnic)} • NADRA Verified",
                                     fontSize = 11.sp,
                                     color = Color(0xFF64748B)
                                 )
@@ -109,6 +117,11 @@ fun ProfileScreen(
                                     text = "Phone: ${activeCustomer.phone}",
                                     fontSize = 11.sp,
                                     color = Color(0xFF475569)
+                                )
+                                Text(
+                                    text = "Member since ${formatTimestamp(System.currentTimeMillis() - 90L * 24 * 60 * 60 * 1000)}",
+                                    fontSize = 11.sp,
+                                    color = Color(0xFF64748B)
                                 )
                             }
                         }
@@ -129,7 +142,7 @@ fun ProfileScreen(
                                 expanded = showCustomerSwitchMenu,
                                 onDismissRequest = { showCustomerSwitchMenu = false }
                             ) {
-                                store.customers.forEach { cust ->
+                                snapshot.customers.forEach { cust ->
                                     DropdownMenuItem(
                                         text = {
                                             Column {
@@ -339,6 +352,20 @@ fun ProfileScreen(
                                 }
                             }
                         }
+                    }
+
+                    Spacer(modifier = Modifier.height(4.dp))
+                    OutlinedButton(
+                        onClick = { /* TODO: Address form dialog */ },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 4.dp),
+                        border = BorderStroke(1.dp, Color(0xFFCBD5E1)),
+                        shape = RoundedCornerShape(8.dp)
+                    ) {
+                        Icon(Icons.Default.AddLocation, contentDescription = null, tint = Color(0xFF64748B), modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text("Add New Address", fontSize = 12.sp, color = Color(0xFF64748B))
                     }
                 }
             }

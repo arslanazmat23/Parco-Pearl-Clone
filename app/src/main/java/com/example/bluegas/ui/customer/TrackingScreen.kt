@@ -2,6 +2,8 @@ package com.example.bluegas.ui.customer
 
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -27,6 +29,7 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.bluegas.data.BlueGasStore
 import com.example.bluegas.model.*
 import com.example.bluegas.ui.components.CanonicalStatusChip
@@ -42,8 +45,9 @@ fun TrackingScreen(
     onBackToOrders: () -> Unit,
     modifier: Modifier = Modifier
 ) {
-    val activeCustomer = store.customers.find { it.id == store.activeCustomerId } ?: store.customers.first()
-    val customerOrders = store.orders.filter { it.customerId == activeCustomer.id }.sortedByDescending { it.createdAt }
+    val snapshot by store.appState.collectAsStateWithLifecycle()
+    val activeCustomer = snapshot.activeCustomer ?: return
+    val customerOrders = snapshot.orders.filter { it.customerId == activeCustomer.id }.sortedByDescending { it.createdAt }
 
     var selectedOrderId by remember(initialOrderId, customerOrders.size) {
         mutableStateOf(
@@ -53,13 +57,14 @@ fun TrackingScreen(
     }
 
     val currentOrder = customerOrders.find { it.id == selectedOrderId }
-    val assignedRider = store.riders.find { it.id == currentOrder?.assignedRiderId }
-    val assignedNode = store.nodes.find { it.id == assignedRider?.nodeId }
-    val deliveryInfo = store.deliveries.find { it.orderId == currentOrder?.id }
+    val assignedRider = snapshot.riders.find { it.id == currentOrder?.assignedRiderId }
+    val assignedNode = snapshot.nodes.find { it.id == assignedRider?.nodeId }
+    val deliveryInfo = snapshot.deliveries.find { it.orderId == currentOrder?.id }
 
     var showCallRiderDialog by remember { mutableStateOf(false) }
     var showCancelDialog by remember { mutableStateOf(false) }
     var cancelReason by remember { mutableStateOf("Changed my mind") }
+    var notificationBannerMessage by remember { mutableStateOf<String?>(null) }
 
     Column(
         modifier = modifier
@@ -132,6 +137,51 @@ fun TrackingScreen(
         }
 
         Spacer(modifier = Modifier.height(10.dp))
+
+        // Notification / action feedback banner
+        AnimatedVisibility(
+            visible = notificationBannerMessage != null,
+            enter = fadeIn(),
+            exit = fadeOut()
+        ) {
+            Surface(
+                color = Color(0xFFFEF3C7),
+                shape = RoundedCornerShape(8.dp),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(bottom = 8.dp)
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Info,
+                        contentDescription = null,
+                        tint = Color(0xFFB45309),
+                        modifier = Modifier.size(16.dp)
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        text = notificationBannerMessage ?: "",
+                        fontSize = 11.sp,
+                        color = Color(0xFF78350F),
+                        modifier = Modifier.weight(1f)
+                    )
+                    IconButton(
+                        onClick = { notificationBannerMessage = null },
+                        modifier = Modifier.size(24.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Close,
+                            contentDescription = "Dismiss",
+                            tint = Color(0xFF78350F),
+                            modifier = Modifier.size(14.dp)
+                        )
+                    }
+                }
+            }
+        }
 
         if (currentOrder == null) {
             Box(
@@ -253,6 +303,41 @@ fun TrackingScreen(
                                     lineHeight = 15.sp
                                 )
                             }
+                        }
+                    }
+                }
+
+                // Show "I've Arrived" button for pickup orders at ORD_RDYPU
+                if (currentOrder.fulfilmentMode == FulfilmentMode.PICKUP && currentOrder.status == OrderStatus.ORD_RDYPU) {
+                    item {
+                        Button(
+                            onClick = {
+                                store.addNotification(
+                                    surface = AppSurface.STAFF,
+                                    title = "Customer Arrived for Pickup",
+                                    message = "Customer has arrived at hub for order ${currentOrder.id}",
+                                    canonicalStatus = currentOrder.status.canonicalLabel,
+                                    orderId = currentOrder.id
+                                )
+                                store.addNotification(
+                                    surface = AppSurface.CUSTOMER,
+                                    title = "Arrival Confirmed",
+                                    message = "Your arrival has been notified. Please proceed to the collection counter.",
+                                    canonicalStatus = currentOrder.status.canonicalLabel,
+                                    orderId = currentOrder.id
+                                )
+                                store.notifyChanged()
+                                notificationBannerMessage = "Arrival notified to hub counter!"
+                            },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(vertical = 4.dp)
+                                .height(48.dp),
+                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF047857))
+                        ) {
+                            Icon(Icons.Default.PinDrop, contentDescription = null, tint = Color.White)
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text("I've Arrived at Hub", fontWeight = FontWeight.Bold, color = Color.White)
                         }
                     }
                 }
@@ -439,7 +524,9 @@ fun TrackingScreen(
 
                                 Box(
                                     modifier = Modifier
-                                        .align(Alignment.Center)
+                                        .fillMaxWidth(riderProgress)
+                                        .align(Alignment.CenterStart)
+                                        .wrapContentWidth(Alignment.End)
                                         .padding(bottom = 10.dp)
                                 ) {
                                     Surface(
@@ -774,18 +861,39 @@ fun TrackingScreen(
                             )
                             Spacer(modifier = Modifier.height(10.dp))
 
-                            val steps = listOf(
-                                Triple("1. Order Placed & Confirmed", OrderStatus.ORD_CONF, "Validation passed, stock reserved"),
-                                Triple("2. Rider Assigned & Accepted", OrderStatus.ORD_ACPT, "Rider accepted, heading to hub"),
-                                Triple("3. Cylinder Serial Bound", OrderStatus.ORD_PREP, "Inspected & allocated to vehicle"),
-                                Triple("4. Dispatched & In Transit", OrderStatus.ORD_DISP, "En route to delivery premises"),
-                                Triple("5. Arrived at Handover", OrderStatus.ORD_ATHO, "Leak test & regulator check"),
-                                Triple("6. Delivered & Handover Complete", OrderStatus.ORD_COMP, "Official POD & receipt generated")
-                            )
+                            val orderHistory = snapshot.orderStatusHistory.filter { it.orderId == currentOrder.id }
 
-                            steps.forEachIndexed { idx, (label, statusThreshold, desc) ->
+                            val steps = if (currentOrder.fulfilmentMode == FulfilmentMode.PICKUP) {
+                                listOf(
+                                    Triple("1. Order Placed & Confirmed", OrderStatus.ORD_CONF, "Validation passed, stock reserved"),
+                                    Triple("2. Distributor Assigned", OrderStatus.ORD_ACPT, "Pickup hub confirmed"),
+                                    Triple("3. Cylinder Prepared", OrderStatus.ORD_PREP, "Inspected & ready for collection"),
+                                    Triple("4. Ready for Pickup", OrderStatus.ORD_RDYPU, "Awaiting your arrival at hub"),
+                                    Triple("5. Customer at Hub", OrderStatus.ORD_ATHO, "Handover & safety check"),
+                                    Triple("6. Pickup Complete", OrderStatus.ORD_COMP, "Official POD & receipt generated")
+                                )
+                            } else {
+                                listOf(
+                                    Triple("1. Order Placed & Confirmed", OrderStatus.ORD_CONF, "Validation passed, stock reserved"),
+                                    Triple("2. Rider Assigned & Accepted", OrderStatus.ORD_ACPT, "Rider accepted, heading to hub"),
+                                    Triple("3. Cylinder Serial Bound", OrderStatus.ORD_PREP, "Inspected & allocated to vehicle"),
+                                    Triple("4. Dispatched & In Transit", OrderStatus.ORD_DISP, "En route to delivery premises"),
+                                    Triple("5. Arrived at Handover", OrderStatus.ORD_ATHO, "Leak test & regulator check"),
+                                    Triple("6. Delivered & Handover Complete", OrderStatus.ORD_COMP, "Official POD & receipt generated")
+                                )
+                            }
+
+                            steps.forEachIndexed { idx, (label, statusThreshold, defaultDesc) ->
                                 val isDone = isStepCompleted(currentOrder.status, statusThreshold)
                                 val isCurrent = isStepCurrent(currentOrder.status, statusThreshold)
+
+                                // Pull real timestamp if this step has been reached
+                                val historyEntry = orderHistory.find { it.toStatus == statusThreshold }
+                                val displayDesc = if (historyEntry != null) {
+                                    "${defaultDesc} • ${formatTimestamp(historyEntry.timestamp)}"
+                                } else {
+                                    defaultDesc
+                                }
 
                                 Row(modifier = Modifier.fillMaxWidth()) {
                                     Column(horizontalAlignment = Alignment.CenterHorizontally) {
@@ -833,7 +941,7 @@ fun TrackingScreen(
                                             color = if (isCurrent) BlueGasPrimary else if (isDone) Color(0xFF0F172A) else Color(0xFF94A3B8)
                                         )
                                         Text(
-                                            text = desc,
+                                            text = displayDesc,
                                             fontSize = 10.sp,
                                             color = if (isCurrent || isDone) Color(0xFF475569) else Color(0xFF94A3B8)
                                         )
@@ -932,7 +1040,12 @@ fun TrackingScreen(
             confirmButton = {
                 Button(
                     onClick = {
-                        store.cancelOrder(currentOrder.id, cancelReason)
+                        val (cancelSuccess, cancelMsg) = store.cancelOrder(currentOrder.id, cancelReason)
+                        if (cancelSuccess) {
+                            notificationBannerMessage = cancelMsg ?: "Order cancelled successfully"
+                        } else {
+                            notificationBannerMessage = cancelMsg ?: "Unable to cancel order"
+                        }
                         showCancelDialog = false
                     },
                     colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFDC2626)),
@@ -978,7 +1091,7 @@ private fun isStepCurrent(current: OrderStatus, target: OrderStatus): Boolean {
         OrderStatus.ORD_CONF -> current == OrderStatus.ORD_CONF || current == OrderStatus.ORD_RSVD || current == OrderStatus.ORD_PAYPEND || current == OrderStatus.ORD_VALPEND
         OrderStatus.ORD_ACPT -> current == OrderStatus.ORD_ASGN || current == OrderStatus.ORD_ACPT
         OrderStatus.ORD_PREP -> current == OrderStatus.ORD_PREP
-        OrderStatus.ORD_DISP -> current == OrderStatus.ORD_DISP || current == OrderStatus.ORD_RDYPU
+        OrderStatus.ORD_DISP, OrderStatus.ORD_RDYPU -> current == OrderStatus.ORD_DISP || current == OrderStatus.ORD_RDYPU
         OrderStatus.ORD_ATHO -> current == OrderStatus.ORD_ATHO || current == OrderStatus.ORD_INSP || current == OrderStatus.ORD_ADJ
         OrderStatus.ORD_COMP -> current == OrderStatus.ORD_HOC || current == OrderStatus.ORD_COMP
         else -> false
