@@ -108,6 +108,8 @@ fun OpenSequencingDecisionBadge() {
 @Composable
 fun PersistentTopBar(
     store: BlueGasStore,
+    activeSurface: AppSurface,
+    isRiderOffline: Boolean,
     onOpenDevDrawer: () -> Unit,
     onOpenNotifications: () -> Unit,
     onOpenAiAdvisor: () -> Unit
@@ -237,7 +239,7 @@ fun PersistentTopBar(
             ) {
                 SurfaceTab(
                     label = "1. Customer App",
-                    selected = store.activeSurface == AppSurface.CUSTOMER,
+                    selected = activeSurface == AppSurface.CUSTOMER,
                     icon = Icons.Default.PhoneAndroid,
                     onClick = {
                         store.activeSurface = AppSurface.CUSTOMER
@@ -247,7 +249,7 @@ fun PersistentTopBar(
                 )
                 SurfaceTab(
                     label = "2. Rider App",
-                    selected = store.activeSurface == AppSurface.RIDER,
+                    selected = activeSurface == AppSurface.RIDER,
                     icon = Icons.Default.TwoWheeler,
                     onClick = {
                         store.activeSurface = AppSurface.RIDER
@@ -257,7 +259,7 @@ fun PersistentTopBar(
                 )
                 SurfaceTab(
                     label = "3. Staff Portal",
-                    selected = store.activeSurface == AppSurface.STAFF,
+                    selected = activeSurface == AppSurface.STAFF,
                     icon = Icons.Default.Dashboard,
                     onClick = {
                         store.activeSurface = AppSurface.STAFF
@@ -274,15 +276,18 @@ fun PersistentTopBar(
                     .padding(top = 6.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                val identityText = when (store.activeSurface) {
+                val identityText = when (activeSurface) {
                     AppSurface.CUSTOMER -> "Identity: Fatima Khan (Gulberg III, Lahore) • Customer"
-                    AppSurface.RIDER -> "Identity: Tariq Mahmood (Van 04, Lahore Hub) • Rider ${if (store.isRiderOffline) "• [OFFLINE]" else "• [ONLINE]"}"
+                    AppSurface.RIDER -> {
+                        val rider = store.getActiveRider()
+                        "Identity: ${rider?.name ?: "Unknown Rider"} (${rider?.vehicleNumber ?: "N/A"}, ${rider?.zoneName ?: "N/A"}) • Rider ${if (isRiderOffline) "• [OFFLINE]" else "• [ONLINE]"}"
+                    }
                     AppSurface.STAFF -> "Role: Staff Portal (${store.activeStaffSubRole.displayName}) • Accountable Human Authority"
                 }
                 Text(
                     text = identityText,
                     fontSize = 11.sp,
-                    color = if (store.isRiderOffline && store.activeSurface == AppSurface.RIDER) Color(0xFFFCA5A5) else Color(0xFFCBD5E1),
+                    color = if (isRiderOffline && activeSurface == AppSurface.RIDER) Color(0xFFFCA5A5) else Color(0xFFCBD5E1),
                     fontWeight = FontWeight.Medium
                 )
             }

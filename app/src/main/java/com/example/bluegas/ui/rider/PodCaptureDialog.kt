@@ -89,7 +89,13 @@ fun PodCaptureDialog(
     var signerRelation by remember { mutableStateOf("Self") }
     var riderNotes by remember { mutableStateOf("") }
 
-    val activeRider = store.getActiveRider() ?: store.riders.first()
+    val activeRider = store.getActiveRider() ?: store.riders.firstOrNull()
+    if (activeRider == null) {
+        Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+            Text("No riders configured. Please contact admin.", fontWeight = FontWeight.Bold)
+        }
+        return
+    }
     val customerAddress = store.addresses.find { it.id == order.addressId }
     val zoneLabel = customerAddress?.let { "${it.city} (${it.zoneId})" } ?: activeRider.zoneName
 

@@ -88,15 +88,6 @@ class BlueGasViewModel(
         return store.arriveAtHandover(orderId)
     }
 
-    fun completeHandover(
-        orderId: String,
-        nonTechInstallationPassed: Boolean,
-        proofOfDeliveryNote: String,
-        collectedCashPaisa: Long? = null
-    ): Pair<Boolean, String> {
-        return store.completeHandover(orderId, nonTechInstallationPassed, proofOfDeliveryNote, collectedCashPaisa)
-    }
-
     fun replayRiderOutbox(): String {
         return store.replayRiderOutbox()
     }

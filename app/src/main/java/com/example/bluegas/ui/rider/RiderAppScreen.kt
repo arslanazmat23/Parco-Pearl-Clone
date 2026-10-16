@@ -21,6 +21,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.bluegas.data.BlueGasStore
 import com.example.bluegas.model.*
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.bluegas.ui.components.CanonicalStatusChip
 import com.example.ui.theme.BlueGasDark
 import com.example.ui.theme.BlueGasPrimary
@@ -35,6 +36,7 @@ enum class RiderTab {
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun RiderAppScreen(store: BlueGasStore) {
+    val appState by store.appState.collectAsStateWithLifecycle()
     var selectedTab by remember { mutableStateOf(RiderTab.PENDING) }
     var actionBanner by remember { mutableStateOf<String?>(null) }
     var isErrorBanner by remember { mutableStateOf(false) }
@@ -54,21 +56,20 @@ fun RiderAppScreen(store: BlueGasStore) {
 
     var showPodDialog by remember { mutableStateOf(false) }
     var orderForPodId by remember { mutableStateOf<String?>(null) }
-    var leakCheckPassed by remember { mutableStateOf(true) }
-    var valveIntact by remember { mutableStateOf(true) }
-    var emptyCylinderCollected by remember { mutableStateOf(true) }
-    var emptyCylinderSerial by remember { mutableStateOf("BG-OLD-8821") }
-    var customerSignature by remember { mutableStateOf("Signed: Customer Verified") }
-    var cashCollectedConfirmed by remember { mutableStateOf(true) }
-    var podCustomerNotes by remember { mutableStateOf("") }
 
     var showOutboxDialog by remember { mutableStateOf(false) }
     var showReceiptOrderId by remember { mutableStateOf<String?>(null) }
 
-    val activeRider = store.getActiveRider() ?: store.riders.first()
+    val activeRider = store.getActiveRider() ?: store.riders.firstOrNull()
+    if (activeRider == null) {
+        Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+            Text("No riders configured. Please contact admin.", fontWeight = FontWeight.Bold)
+        }
+        return
+    }
 
     // Filter orders: Rider sees ONLY orders assigned to them, reaching ORD_ASGN or beyond
-    val riderOrders = store.orders.filter {
+    val riderOrders = appState.orders.filter {
         it.assignedRiderId == activeRider.id && it.status.ordinal >= OrderStatus.ORD_ASGN.ordinal
     }
 
@@ -84,8 +85,9 @@ fun RiderAppScreen(store: BlueGasStore) {
         )
     }.sortedWith(compareByDescending { ord ->
         when (ord.status) {
+            OrderStatus.ORD_HOC -> 5
             OrderStatus.ORD_ATHO -> 4
-            OrderStatus.ORD_DISP -> 3
+            OrderStatus.ORD_DISP, OrderStatus.ORD_RDYPU -> 3
             OrderStatus.ORD_PREP -> 2
             OrderStatus.ORD_ACPT -> 1
             else -> 0
@@ -94,10 +96,7 @@ fun RiderAppScreen(store: BlueGasStore) {
     val completedOrders = riderOrders.filter { it.status == OrderStatus.ORD_COMP }
 
     // Today's stats calculation
-    val todayEarningsPaisa = completedOrders.sumOf { ord ->
-        // Standard rider commission of PKR 250 per completed delivery
-        25000L
-    }
+    val todayEarningsPaisa = completedOrders.size * 25000L
 
     // Phone frame centered container (390x844 format)
     Box(
@@ -119,7 +118,7 @@ fun RiderAppScreen(store: BlueGasStore) {
 
                 // 1. HEADER WITH OFFLINE TOGGLE & PROFILE SWITCHER
                 Surface(
-                    color = if (store.isRiderOffline) Color(0xFF7F1D1D) else BlueGasDark,
+                    color = if (appState.isRiderOffline) Color(0xFF7F1D1D) else BlueGasDark,
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     Column(modifier = Modifier.padding(12.dp)) {
@@ -184,7 +183,7 @@ fun RiderAppScreen(store: BlueGasStore) {
 
                             // Offline Toggle
                             Surface(
-                                color = if (store.isRiderOffline) Color(0xFFDC2626) else Color(0xFF334155),
+                                color = if (appState.isRiderOffline) Color(0xFFDC2626) else Color(0xFF334155),
                                 shape = RoundedCornerShape(8.dp)
                             ) {
                                 Row(
@@ -192,21 +191,21 @@ fun RiderAppScreen(store: BlueGasStore) {
                                     modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
                                 ) {
                                     Icon(
-                                        imageVector = if (store.isRiderOffline) Icons.Default.CloudOff else Icons.Default.CloudQueue,
+                                        imageVector = if (appState.isRiderOffline) Icons.Default.CloudOff else Icons.Default.CloudQueue,
                                         contentDescription = null,
                                         tint = Color.White,
                                         modifier = Modifier.size(16.dp)
                                     )
                                     Spacer(modifier = Modifier.width(4.dp))
                                     Text(
-                                        if (store.isRiderOffline) "OFFLINE" else "ONLINE",
+                                        if (appState.isRiderOffline) "OFFLINE" else "ONLINE",
                                         fontSize = 11.sp,
                                         fontWeight = FontWeight.Bold,
                                         color = Color.White
                                     )
                                     Spacer(modifier = Modifier.width(6.dp))
                                     Switch(
-                                        checked = store.isRiderOffline,
+                                        checked = appState.isRiderOffline,
                                         onCheckedChange = {
                                             store.isRiderOffline = it
                                             store.notifyChanged()
@@ -222,7 +221,7 @@ fun RiderAppScreen(store: BlueGasStore) {
                         }
 
                         // Offline status warning banner
-                        if (store.isRiderOffline) {
+                        if (appState.isRiderOffline) {
                             Spacer(modifier = Modifier.height(6.dp))
                             Surface(
                                 color = Color(0xFF991B1B),
@@ -323,11 +322,11 @@ fun RiderAppScreen(store: BlueGasStore) {
                             modifier = Modifier
                                 .weight(1f)
                                 .height(32.dp),
-                            enabled = store.riderOutbox.isNotEmpty() && !store.isRiderOffline
+                            enabled = appState.riderOutbox.isNotEmpty() && !appState.isRiderOffline
                         ) {
                             Icon(Icons.Default.Sync, contentDescription = null, modifier = Modifier.size(13.dp))
                             Spacer(modifier = Modifier.width(3.dp))
-                            Text("Sync (${store.riderOutbox.size})", fontSize = 10.sp)
+                            Text("Sync (${appState.riderOutbox.size})", fontSize = 10.sp)
                         }
 
                         OutlinedButton(
@@ -339,7 +338,7 @@ fun RiderAppScreen(store: BlueGasStore) {
                         ) {
                             Icon(Icons.Default.Inbox, contentDescription = null, modifier = Modifier.size(13.dp))
                             Spacer(modifier = Modifier.width(3.dp))
-                            Text("Outbox (${store.riderOutbox.size})", fontSize = 10.sp)
+                            Text("Outbox (${appState.riderOutbox.size})", fontSize = 10.sp)
                         }
                     }
                 }
@@ -384,7 +383,7 @@ fun RiderAppScreen(store: BlueGasStore) {
                         ) {
                             Column(modifier = Modifier.weight(1f)) {
                                 Text("Rider Off-Duty", fontWeight = FontWeight.Bold, color = Color(0xFFB91C1C), fontSize = 12.sp)
-                                Text("Usman Tariq is newly onboarded. Start shift to begin receiving deliveries.", fontSize = 10.sp, color = Color(0xFF7F1D1D))
+                                Text("${activeRider.name} is currently off-duty. Start shift to begin receiving deliveries.", fontSize = 10.sp, color = Color(0xFF7F1D1D))
                             }
                             Button(
                                 onClick = { store.toggleRiderShiftStatus(activeRider.id) },
@@ -556,7 +555,7 @@ fun RiderAppScreen(store: BlueGasStore) {
 
     // --- DIALOG 1: DECLINE ORDER DIALOG ---
     if (showDeclineDialog && orderToDeclineId != null) {
-        val ord = store.orders.find { it.id == orderToDeclineId }
+        val ord = appState.orders.find { it.id == orderToDeclineId }
         AlertDialog(
             onDismissRequest = { showDeclineDialog = false },
             title = { Text("Decline Order Assignment", fontWeight = FontWeight.Bold, fontSize = 15.sp) },
@@ -605,7 +604,7 @@ fun RiderAppScreen(store: BlueGasStore) {
 
     // --- DIALOG 2: SERIAL NUMBER SCANNER / ALLOCATION ---
     if (showSerialPicker && orderForSerialId != null) {
-        val ord = store.orders.find { it.id == orderForSerialId }
+        val ord = appState.orders.find { it.id == orderForSerialId }
         val availableCylinders = store.cylinders.filter {
             (it.status == InventoryState.INV_AVAIL || it.allocatedOrderId == ord?.id) &&
             it.sku == (ord?.items?.firstOrNull()?.sku ?: "SKU-LPG-11-8")
@@ -678,7 +677,7 @@ fun RiderAppScreen(store: BlueGasStore) {
 
     // --- DIALOG 3: REPORT ISSUE / EXCEPTION ---
     if (showIssueDialog && orderForIssueId != null) {
-        val ord = store.orders.find { it.id == orderForIssueId }
+        val ord = appState.orders.find { it.id == orderForIssueId }
         AlertDialog(
             onDismissRequest = { showIssueDialog = false },
             title = { Text("Report Fulfilment Issue", fontWeight = FontWeight.Bold, fontSize = 15.sp) },
@@ -742,7 +741,7 @@ fun RiderAppScreen(store: BlueGasStore) {
 
     // --- DIALOG 4: MULTI-STEP PROOF OF DELIVERY (POD) FLOW ---
     if (showPodDialog && orderForPodId != null) {
-        val ord = store.orders.find { it.id == orderForPodId }
+        val ord = appState.orders.find { it.id == orderForPodId }
         if (ord != null) {
             PodCaptureDialog(
                 order = ord,
@@ -765,7 +764,7 @@ fun RiderAppScreen(store: BlueGasStore) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Icon(Icons.Default.CloudQueue, contentDescription = null, tint = BlueGasPrimary)
                     Spacer(modifier = Modifier.width(6.dp))
-                    Text("Rider Offline Outbox (${store.riderOutbox.size} events)", fontWeight = FontWeight.Bold, fontSize = 15.sp)
+                    Text("Rider Offline Outbox (${appState.riderOutbox.size} events)", fontWeight = FontWeight.Bold, fontSize = 15.sp)
                 }
             },
             text = {
@@ -773,11 +772,11 @@ fun RiderAppScreen(store: BlueGasStore) {
                     Text("Events queue in local storage and replay in sequential order on reconnect:", fontSize = 11.sp, color = Color.Gray)
                     Spacer(modifier = Modifier.height(8.dp))
 
-                    if (store.riderOutbox.isEmpty()) {
+                    if (appState.riderOutbox.isEmpty()) {
                         Text("Outbox is empty.", fontSize = 11.sp, color = Color.Gray)
                     } else {
                         LazyColumn(modifier = Modifier.heightIn(max = 280.dp)) {
-                            items(store.riderOutbox) { evt ->
+                            items(appState.riderOutbox) { evt ->
                                 Card(
                                     colors = CardDefaults.cardColors(containerColor = Color(0xFFFFFBEB)),
                                     border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFFFDE68A)),
@@ -812,7 +811,7 @@ fun RiderAppScreen(store: BlueGasStore) {
                 }
             },
             confirmButton = {
-                if (store.riderOutbox.isNotEmpty() && !store.isRiderOffline) {
+                if (appState.riderOutbox.isNotEmpty() && !appState.isRiderOffline) {
                     Button(
                         onClick = {
                             val report = store.replayRiderOutbox()
@@ -833,7 +832,7 @@ fun RiderAppScreen(store: BlueGasStore) {
 
     // --- DIALOG 6: OFFICIAL RECEIPT MODAL ---
     if (showReceiptOrderId != null) {
-        val ord = store.orders.find { it.id == showReceiptOrderId }
+        val ord = appState.orders.find { it.id == showReceiptOrderId }
         val cust = store.customers.find { it.id == ord?.customerId }
         val addr = store.addresses.find { it.id == ord?.addressId }
 
@@ -1064,8 +1063,9 @@ private fun ActiveOrderCard(
         border = androidx.compose.foundation.BorderStroke(
             1.dp,
             when (order.status) {
+                OrderStatus.ORD_HOC -> Color(0xFF16A34A)
                 OrderStatus.ORD_ATHO -> Color(0xFF16A34A)
-                OrderStatus.ORD_DISP -> Color(0xFF0284C7)
+                OrderStatus.ORD_DISP, OrderStatus.ORD_RDYPU -> Color(0xFF0284C7)
                 OrderStatus.ORD_PREP -> Color(0xFFD97706)
                 else -> Color(0xFFCBD5E1)
             }
@@ -1204,6 +1204,31 @@ private fun ActiveOrderCard(
                     }
                 }
 
+                OrderStatus.ORD_RDYPU -> {
+                    // Pickup mode: customer has arrived at counter
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        Button(
+                            onClick = onArrive,
+                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF0284C7)),
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Icon(Icons.Default.Storefront, contentDescription = null, modifier = Modifier.size(15.dp))
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text("Customer at Counter", fontSize = 11.sp)
+                        }
+                        OutlinedButton(
+                            onClick = onReportIssue,
+                            colors = ButtonDefaults.outlinedButtonColors(contentColor = Color(0xFFDC2626)),
+                            modifier = Modifier.height(38.dp)
+                        ) {
+                            Text("Issue", fontSize = 10.sp)
+                        }
+                    }
+                }
+
                 OrderStatus.ORD_ATHO -> {
                     Row(
                         modifier = Modifier.fillMaxWidth(),
@@ -1225,6 +1250,27 @@ private fun ActiveOrderCard(
                             modifier = Modifier.height(38.dp)
                         ) {
                             Text("Refused at Door", fontSize = 10.sp)
+                        }
+                    }
+                }
+
+                OrderStatus.ORD_HOC -> {
+                    // Handover complete — finalizing, no more rider actions needed
+                    Surface(
+                        color = Color(0xFFDCFCE7),
+                        shape = RoundedCornerShape(6.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(Icons.Default.CheckCircle, contentDescription = null, tint = Color(0xFF16A34A), modifier = Modifier.size(18.dp))
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Column {
+                                Text("Handover Complete", fontWeight = FontWeight.Bold, fontSize = 12.sp, color = Color(0xFF166534))
+                                Text("Awaiting system finalization to ORD_COMP.", fontSize = 10.sp, color = Color(0xFF15803D))
+                            }
                         }
                     }
                 }

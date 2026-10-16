@@ -49,6 +49,8 @@ fun BlueGasAppRoot(viewModel: BlueGasViewModel = viewModel()) {
         topBar = {
             PersistentTopBar(
                 store = viewModel.store,
+                activeSurface = appState.activeSurface,
+                isRiderOffline = appState.isRiderOffline,
                 onOpenDevDrawer = { showDevDrawer = true },
                 onOpenNotifications = { showNotifications = true },
                 onOpenAiAdvisor = { showAiAdvisor = true }

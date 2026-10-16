@@ -339,7 +339,8 @@ class BlueGasStore {
                         trigger = "Online Payment Captured"
                     )
                     recordHistory(tConf)
-                    onOrderConfirmed(order)
+                    val confRes = onOrderConfirmed(order)
+                    if (!confRes.first) return confRes
                 }
             }
         } else {
@@ -357,14 +358,15 @@ class BlueGasStore {
                 trigger = "COD Choice Confirmed"
             )
             recordHistory(tConf)
-            onOrderConfirmed(order)
+            val confRes = onOrderConfirmed(order)
+            if (!confRes.first) return confRes
         }
 
         notifyChanged()
         return Pair(true, "Payment processed. Order is now ${order.status.canonicalLabel}")
     }
 
-    private fun onOrderConfirmed(order: Order) {
+    private fun onOrderConfirmed(order: Order): Pair<Boolean, String> {
         // Firm quantity reservation on order Confirmed: ORD_CONF -> ORD_RSVD
         val tRsvd = OrderStateMachine.transition(
             order = order,
@@ -389,7 +391,8 @@ class BlueGasStore {
 
         // Auto-assign distributor
         val address = addresses.find { it.id == order.addressId }
-        val targetDist = distributors.firstOrNull { it.city == address?.city } ?: distributors.first()
+        val targetDist = distributors.firstOrNull { it.city == address?.city } ?: distributors.firstOrNull()
+            ?: run { return Pair(false, "No distributor available for ${address?.city}") }
         order.assignedDistributorId = targetDist.id
 
         // Reserved -> Assigned
@@ -418,6 +421,7 @@ class BlueGasStore {
             canonicalStatus = order.status.canonicalLabel,
             orderId = order.id
         )
+        return Pair(true, "Order assigned to distributor ${targetDist.name}")
     }
 
     // --- Distributor Flow ---
@@ -1415,7 +1419,8 @@ class BlueGasStore {
     fun simulateSerialConflict(): String {
         val targetSerial = "BG-LHR-001"
         val activeOrder = orders.firstOrNull { it.status == OrderStatus.ORD_PREP || it.status == OrderStatus.ORD_DISP }
-            ?: orders.first()
+            ?: orders.firstOrNull()
+            ?: run { return "No orders available to simulate conflict." }
 
         val event = OfflineOutboxEvent(
             sequenceNumber = outboxSequenceCounter++,
