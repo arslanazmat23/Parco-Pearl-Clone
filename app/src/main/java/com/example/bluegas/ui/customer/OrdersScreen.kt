@@ -1,6 +1,7 @@
 package com.example.bluegas.ui.customer
 
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
@@ -44,6 +45,8 @@ fun OrdersScreen(
     store: BlueGasStore,
     onTrackOrder: (String) -> Unit,
     onActionMessage: (String) -> Unit,
+    onReorder: (Order) -> Unit = {},
+    onNavigateToHome: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     var selectedFilter by remember { mutableStateOf(OrdersFilterTab.ALL) }
@@ -209,7 +212,9 @@ fun OrdersScreen(
                         onCancelOrder = {
                             showCancelOrderId = order.id
                             cancelReason = "Changed my mind"
-                        }
+                        },
+                        onReorder = { onReorder(order) },
+                        onNavigateToHome = onNavigateToHome
                     )
                 }
                 item {
@@ -538,17 +543,26 @@ private fun CustomerOrderCard(
     onPayOnline: () -> Unit,
     onViewReceipt: () -> Unit,
     onReportComplaint: () -> Unit,
-    onCancelOrder: () -> Unit
+    onCancelOrder: () -> Unit,
+    onReorder: () -> Unit,
+    onNavigateToHome: () -> Unit
 ) {
     val payment = snapshot.payments.find { it.orderId == order.id }
 
     Card(
         colors = CardDefaults.cardColors(containerColor = Color.White),
-        border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFFE2E8F0)),
+        border = BorderStroke(1.dp, Color(0xFFE2E8F0)),
         shape = RoundedCornerShape(12.dp),
         modifier = Modifier
             .fillMaxWidth()
             .testTag("order_card_${order.id}")
+            .then(
+                if (!order.status.isTerminal) {
+                    Modifier.clickable {
+                        onTrackOrder()
+                    }
+                } else Modifier
+            )
     ) {
         Column(modifier = Modifier.padding(12.dp)) {
             // Row 1: ID + Status Chip
@@ -786,6 +800,46 @@ private fun CustomerOrderCard(
                         Spacer(modifier = Modifier.width(4.dp))
                         Text("Cancel", fontSize = 11.sp, color = Color(0xFFDC2626))
                     }
+                }
+            }
+
+            // Quick Reorder from Completed Orders
+            if (order.status == OrderStatus.ORD_COMP) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(top = 6.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Button(
+                        onClick = onReorder,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(36.dp),
+                        colors = ButtonDefaults.buttonColors(containerColor = BlueGasPrimary),
+                        shape = RoundedCornerShape(8.dp)
+                    ) {
+                        Icon(Icons.Default.Replay, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text("Reorder", fontSize = 12.sp)
+                    }
+                }
+            }
+
+            // Place New Order CTA on Terminal-State Cards
+            if (order.status == OrderStatus.ORD_CANC || order.status == OrderStatus.ORD_SUPS || order.status == OrderStatus.ORD_FCLO) {
+                OutlinedButton(
+                    onClick = onNavigateToHome,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(top = 6.dp)
+                        .height(36.dp),
+                    shape = RoundedCornerShape(8.dp),
+                    border = BorderStroke(1.dp, BlueGasPrimary)
+                ) {
+                    Icon(Icons.Default.AddShoppingCart, contentDescription = null, tint = BlueGasPrimary, modifier = Modifier.size(16.dp))
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text("Place New Order", fontSize = 12.sp, color = BlueGasPrimary)
                 }
             }
         }
