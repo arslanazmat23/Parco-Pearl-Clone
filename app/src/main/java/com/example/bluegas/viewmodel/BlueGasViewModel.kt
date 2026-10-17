@@ -119,4 +119,16 @@ class BlueGasViewModel(
     fun cancelOrder(orderId: String, reason: String = "Cancelled by Customer"): Pair<Boolean, String> {
         return store.cancelOrder(orderId, reason)
     }
+
+    fun approvePartnerApplication(appId: String, actor: String = "Operations Lead"): Pair<Boolean, String> {
+        return store.approvePartnerApplication(appId, actor)
+    }
+
+    fun rejectPartnerApplication(appId: String, reason: String, actor: String = "Operations Lead"): Pair<Boolean, String> {
+        return store.rejectPartnerApplication(appId, reason, actor)
+    }
+
+    fun resolveSupportCase(caseId: String, notes: String, actor: String = "Support Lead"): Pair<Boolean, String> {
+        return store.resolveSupportCase(caseId, notes, actor)
+    }
 }

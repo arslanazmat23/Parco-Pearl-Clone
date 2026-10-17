@@ -2055,4 +2055,57 @@ class BlueGasStore {
         selectedOrderIdForDrawer = ord3Id
         notifyChanged()
     }
+
+    // --- Partner Onboarding (UC-PRT-02, Accountable: Operations) ---
+    fun approvePartnerApplication(appId: String, actor: String = "Operations Lead"): Pair<Boolean, String> {
+        val app = partnerApplications.find { it.id == appId } ?: return Pair(false, "Application not found")
+        if (app.status != "PENDING_APPROVAL") return Pair(false, "Application already ${app.status}")
+        app.status = "APPROVED"
+        addNotification(
+            surface = AppSurface.STAFF,
+            title = "Partner Approved",
+            message = "${app.type} application for ${app.applicantName} (${app.city}) approved. Now assignable.",
+            canonicalStatus = "APPROVED",
+            orderId = null
+        )
+        logAudit("PartnerApplication", appId, "APPROVE_PARTNER", actor, AccountableRole.OPERATIONS,
+            "${app.type} ${app.applicantName} approved and made assignable")
+        notifyChanged()
+        return Pair(true, "${app.applicantName} approved as ${app.type}.")
+    }
+
+    fun rejectPartnerApplication(appId: String, reason: String, actor: String = "Operations Lead"): Pair<Boolean, String> {
+        val app = partnerApplications.find { it.id == appId } ?: return Pair(false, "Application not found")
+        if (app.status != "PENDING_APPROVAL") return Pair(false, "Application already ${app.status}")
+        app.status = "REJECTED"
+        addNotification(
+            surface = AppSurface.STAFF,
+            title = "Partner Rejected",
+            message = "${app.type} application for ${app.applicantName} rejected: $reason",
+            canonicalStatus = "REJECTED",
+            orderId = null
+        )
+        logAudit("PartnerApplication", appId, "REJECT_PARTNER", actor, AccountableRole.OPERATIONS,
+            "${app.type} ${app.applicantName} rejected. Reason: $reason")
+        notifyChanged()
+        return Pair(true, "${app.applicantName} application rejected.")
+    }
+
+    // --- Support case resolution (UC-SUP-02, Accountable: Support). Order stays in its terminal status. ---
+    fun resolveSupportCase(caseId: String, notes: String, actor: String = "Support Lead"): Pair<Boolean, String> {
+        val c = supportCases.find { it.id == caseId } ?: return Pair(false, "Case not found")
+        if (c.status == "RESOLVED") return Pair(false, "Case already resolved")
+        c.status = "RESOLVED"
+        c.resolutionNotes = notes
+        addNotification(
+            surface = AppSurface.CUSTOMER,
+            title = "Support Case Resolved",
+            message = "Case ${c.id} (${c.issueType}) has been resolved.",
+            canonicalStatus = "RESOLVED",
+            orderId = c.orderId
+        )
+        logAudit("SupportCase", caseId, "RESOLVE_CASE", actor, AccountableRole.SUPPORT, "Dispute resolved: $notes")
+        notifyChanged()
+        return Pair(true, "Case $caseId resolved.")
+    }
 }

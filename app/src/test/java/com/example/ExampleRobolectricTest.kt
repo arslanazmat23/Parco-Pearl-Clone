@@ -298,4 +298,93 @@ class ExampleRobolectricTest {
         assertEquals("Bilal Customer", delivery?.signerName)
         assertEquals(11500L, delivery?.changeReturnedPaisa)
     }
+
+    @Test
+    fun `staff operations lead approves and rejects partner applications with notifications and audit trail`() {
+        val viewModel = BlueGasViewModel()
+        val store = viewModel.store
+
+        // Find a pending application
+        val pendingApp = store.partnerApplications.find { it.status == "PENDING_APPROVAL" }
+        assertNotNull(pendingApp)
+        val appId = pendingApp!!.id
+
+        // Approve partner application
+        val (apprOk, apprMsg) = store.approvePartnerApplication(appId, "Operations Lead")
+        assertTrue(apprOk)
+        assertEquals("APPROVED", pendingApp.status)
+        assertTrue(store.auditLogs.any { it.action == "APPROVE_PARTNER" && it.entityId == appId })
+
+        // Add a second application and reject it
+        val rejectApp = PartnerApplication(
+            id = "PART-TEST-99",
+            type = "RIDER",
+            applicantName = "Test Rider Applicant",
+            city = "Lahore",
+            cnic = "35201-9999999-1",
+            vehicleOrShopDetails = "Honda 125, Plate ABC-999",
+            status = "PENDING_APPROVAL"
+        )
+        store.partnerApplications.add(rejectApp)
+
+        val (rejOk, rejMsg) = store.rejectPartnerApplication(rejectApp.id, "Invalid driving license", "Operations Lead")
+        assertTrue(rejOk)
+        assertEquals("REJECTED", rejectApp.status)
+        assertTrue(store.auditLogs.any { it.action == "REJECT_PARTNER" && it.entityId == rejectApp.id })
+    }
+
+    @Test
+    fun `staff support lead resolves dispute case without modifying order terminal status`() {
+        val viewModel = BlueGasViewModel()
+        val store = viewModel.store
+
+        // Seed a complaint for completed order ORD-SEED-101
+        val (raiseOk, raiseMsg) = store.raiseComplaint(
+            orderId = "ORD-SEED-101",
+            issueType = "LEAKAGE_SAFETY",
+            description = "Smell of gas detected near regulator nozzle."
+        )
+        assertTrue(raiseOk)
+
+        val case = store.supportCases.find { it.orderId == "ORD-SEED-101" }
+        assertNotNull(case)
+        assertEquals("OPEN", case?.status)
+
+        // Resolve case using Part C method
+        val (resOk, resMsg) = store.resolveSupportCase(
+            caseId = case!!.id,
+            notes = "Technician dispatched. Replacement washer installed. Safety inspection passed.",
+            actor = "Support Lead"
+        )
+        assertTrue(resOk)
+        assertEquals("RESOLVED", case.status)
+        assertNotNull(case.resolutionNotes)
+
+        // Verify order remained ORD_COMP
+        val order = store.orders.find { it.id == "ORD-SEED-101" }
+        assertEquals(OrderStatus.ORD_COMP, order?.status)
+    }
+
+    @Test
+    fun `staff finance lead executes full refund and updates ledger liabilities`() {
+        val viewModel = BlueGasViewModel()
+        val store = viewModel.store
+
+        val order = store.orders.find { it.id == "ORD-SEED-101" }
+        assertNotNull(order)
+        val initialRefunds = store.refunds.size
+
+        val (refundOk, refundMsg) = store.executeRefund(
+            orderId = "ORD-SEED-101",
+            amountPaisa = order!!.subtotalPaisa,
+            reason = "Customer refund approval by Finance Lead",
+            actor = "Finance Lead"
+        )
+        assertTrue(refundOk)
+        assertEquals(initialRefunds + 1, store.refunds.size)
+
+        val payment = store.payments.find { it.orderId == "ORD-SEED-101" }
+        assertEquals(PaymentState.FULLY_REFUNDED, payment?.state)
+        assertTrue(store.ledgerEntries.any { it.entryType == "REFUND" && it.orderId == "ORD-SEED-101" })
+    }
 }
