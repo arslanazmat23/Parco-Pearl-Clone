@@ -162,15 +162,7 @@ object OrderStateMachine {
         // Fulfilment Exception recovery target constraints
         if (order.status == OrderStatus.ORD_EXC) {
             val reason = order.exceptionReason ?: ExceptionReason.UNRECOVERABLE_AFTER_RETRIES
-            val allowedRecoveryTargets = when (reason) {
-                ExceptionReason.VALIDATION_OUT_OF_AREA -> listOf(OrderStatus.ORD_PAYPEND, OrderStatus.ORD_CANC)
-                ExceptionReason.PAYMENT_ISSUE -> listOf(OrderStatus.ORD_PAYPEND)
-                ExceptionReason.NO_ACCEPTANCE -> listOf(OrderStatus.ORD_ASGN)
-                ExceptionReason.SERIAL_UNAVAILABLE_OR_PREP_FAILURE -> listOf(OrderStatus.ORD_PREP)
-                ExceptionReason.DELIVERY_FAILURE_OR_CUSTOMER_UNAVAILABLE -> listOf(OrderStatus.ORD_ASGN, OrderStatus.ORD_CANC)
-                ExceptionReason.ADJUSTED_AMOUNT_REJECTION -> listOf(OrderStatus.ORD_ADJ, OrderStatus.ORD_CANC)
-                ExceptionReason.UNRECOVERABLE_AFTER_RETRIES -> listOf(OrderStatus.ORD_FCLO)
-            }
+            val allowedRecoveryTargets = reason.allowedRecoveryTargets
             if (!allowedRecoveryTargets.contains(target)) {
                 return "Recovery constraint violated: Exception reason '${reason.description}' allows recovery only to: ${allowedRecoveryTargets.joinToString { it.canonicalLabel }}, but attempted ${target.canonicalLabel}."
             }

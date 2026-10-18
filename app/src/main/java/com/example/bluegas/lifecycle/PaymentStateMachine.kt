@@ -1,168 +1,87 @@
 package com.example.bluegas.lifecycle
 
-import com.example.bluegas.model.AccountableRole
 import com.example.bluegas.model.Payment
-import com.example.bluegas.model.PaymentAttempt
-import com.example.bluegas.model.PaymentMethod
 import com.example.bluegas.model.PaymentState
+import com.example.bluegas.model.PaymentStatusHistory
 import java.util.UUID
-
-sealed class PaymentResult {
-    data class Success(val payment: Payment, val attempt: PaymentAttempt?, val message: String) : PaymentResult()
-    data class Failure(val payment: Payment, val errorMessage: String) : PaymentResult()
-}
 
 object PaymentStateMachine {
 
-    /**
-     * Guarded transition for Cash on Delivery lifecycle.
-     */
-    fun advanceCod(
-        payment: Payment,
-        targetState: PaymentState,
-        collectedPaisa: Long? = null,
-        actor: String
-    ): PaymentResult {
-        if (payment.method != PaymentMethod.CASH_ON_DELIVERY) {
-            return PaymentResult.Failure(payment, "Payment is not Cash on Delivery.")
-        }
-        if (payment.state == PaymentState.SETTLED || payment.state == PaymentState.PAYMENT_CANCELLED) {
-            return PaymentResult.Failure(payment, "Payment is already in terminal state: ${payment.state.displayName}.")
-        }
+    // Allowed transition map per branch
+    private val branchATransitions: Map<PaymentState, Set<PaymentState>> = mapOf(
+        PaymentState.PAYMENT_PENDING to setOf(PaymentState.PREAUTHORIZED, PaymentState.AUTHORIZATION_FAILED, PaymentState.PAYMENT_TIMEOUT, PaymentState.PAYMENT_CANCELLED),
+        PaymentState.PREAUTHORIZED to setOf(PaymentState.FINAL_AMOUNT_DETERMINED, PaymentState.VOIDED),
+        PaymentState.FINAL_AMOUNT_DETERMINED to setOf(PaymentState.FINAL_CAPTURE_PENDING, PaymentState.VOIDED),
+        PaymentState.FINAL_CAPTURE_PENDING to setOf(PaymentState.CAPTURED, PaymentState.ADJUSTMENT_FAILED),
+        PaymentState.ADJUSTMENT_FAILED to setOf(PaymentState.FINAL_CAPTURE_PENDING, PaymentState.VOIDED),
+        PaymentState.CAPTURED to setOf(PaymentState.SETTLED),
+        PaymentState.AUTHORIZATION_FAILED to setOf(PaymentState.PAYMENT_FAILED_CLOSED),
+        PaymentState.PAYMENT_TIMEOUT to setOf(PaymentState.PAYMENT_FAILED_CLOSED)
+    )
 
-        when (payment.state) {
-            PaymentState.COD_PENDING -> {
-                if (targetState == PaymentState.FINAL_AMOUNT_DETERMINED || targetState == PaymentState.PAYMENT_CANCELLED) {
-                    payment.state = targetState
-                    return PaymentResult.Success(payment, null, "COD advanced to ${targetState.displayName}")
-                }
-            }
-            PaymentState.FINAL_AMOUNT_DETERMINED -> {
-                if (targetState == PaymentState.CASH_COLLECTION_PENDING || targetState == PaymentState.PAYMENT_CANCELLED) {
-                    payment.state = targetState
-                    return PaymentResult.Success(payment, null, "COD advanced to ${targetState.displayName}")
-                }
-            }
-            PaymentState.CASH_COLLECTION_PENDING -> {
-                if (targetState == PaymentState.CASH_COLLECTED) {
-                    val collected = collectedPaisa ?: payment.finalAmountPaisa
-                    payment.capturedAmountPaisa = collected
-                    payment.state = PaymentState.CASH_COLLECTED
-                    return PaymentResult.Success(payment, null, "Cash of PKR ${collected / 100.0} collected by rider")
-                }
-            }
-            PaymentState.CASH_COLLECTED -> {
-                if (targetState == PaymentState.SETTLED) {
-                    payment.settledAmountPaisa = payment.capturedAmountPaisa
-                    payment.state = PaymentState.SETTLED
-                    return PaymentResult.Success(payment, null, "COD settled in reconciliation")
-                }
-                if (targetState == PaymentState.FULL_REFUND_PENDING) {
-                    payment.state = PaymentState.FULL_REFUND_PENDING
-                    return PaymentResult.Success(payment, null, "Refund initiated post-cash collection")
-                }
-            }
-            PaymentState.FULL_REFUND_PENDING -> {
-                if (targetState == PaymentState.FULLY_REFUNDED) {
-                    payment.state = PaymentState.FULLY_REFUNDED
-                    payment.settledAmountPaisa = 0L
-                    return PaymentResult.Success(payment, null, "COD cash refunded to customer")
-                }
-            }
-            else -> {}
-        }
+    private val branchBTransitions: Map<PaymentState, Set<PaymentState>> = mapOf(
+        PaymentState.PAYMENT_PENDING to setOf(PaymentState.INITIAL_AMOUNT_CAPTURED, PaymentState.AUTHORIZATION_FAILED, PaymentState.PAYMENT_TIMEOUT, PaymentState.PAYMENT_CANCELLED),
+        PaymentState.INITIAL_AMOUNT_CAPTURED to setOf(PaymentState.FINAL_AMOUNT_DETERMINED, PaymentState.FULL_REFUND_PENDING),
+        PaymentState.FINAL_AMOUNT_DETERMINED to setOf(PaymentState.NO_ADJUSTMENT, PaymentState.ADDITIONAL_COLLECTION_PENDING, PaymentState.PARTIAL_REFUND_PENDING),
+        PaymentState.NO_ADJUSTMENT to setOf(PaymentState.SETTLED),
+        PaymentState.ADDITIONAL_COLLECTION_PENDING to setOf(PaymentState.ADDITIONAL_COLLECTION_COMPLETED, PaymentState.ADDITIONAL_COLLECTION_FAILED),
+        PaymentState.ADDITIONAL_COLLECTION_COMPLETED to setOf(PaymentState.SETTLED),
+        PaymentState.ADDITIONAL_COLLECTION_FAILED to setOf(PaymentState.ADDITIONAL_COLLECTION_PENDING, PaymentState.SETTLED),
+        PaymentState.PARTIAL_REFUND_PENDING to setOf(PaymentState.PARTIAL_REFUND_COMPLETED, PaymentState.PARTIAL_REFUND_FAILED),
+        PaymentState.PARTIAL_REFUND_COMPLETED to setOf(PaymentState.SETTLED),
+        PaymentState.PARTIAL_REFUND_FAILED to setOf(PaymentState.PARTIAL_REFUND_PENDING, PaymentState.SETTLED),
+        PaymentState.FULL_REFUND_PENDING to setOf(PaymentState.FULLY_REFUNDED, PaymentState.FULL_REFUND_FAILED),
+        PaymentState.FULL_REFUND_FAILED to setOf(PaymentState.FULL_REFUND_PENDING),
+        PaymentState.AUTHORIZATION_FAILED to setOf(PaymentState.PAYMENT_FAILED_CLOSED),
+        PaymentState.PAYMENT_TIMEOUT to setOf(PaymentState.PAYMENT_FAILED_CLOSED)
+    )
 
-        return PaymentResult.Failure(
-            payment,
-            "Illegal COD payment transition from ${payment.state.displayName} to ${targetState.displayName}"
-        )
+    private val branchCTransitions: Map<PaymentState, Set<PaymentState>> = mapOf(
+        PaymentState.COD_PENDING to setOf(PaymentState.FINAL_AMOUNT_DETERMINED, PaymentState.PAYMENT_CANCELLED),
+        PaymentState.FINAL_AMOUNT_DETERMINED to setOf(PaymentState.CASH_COLLECTION_PENDING, PaymentState.PAYMENT_CANCELLED),
+        PaymentState.CASH_COLLECTION_PENDING to setOf(PaymentState.CASH_COLLECTED, PaymentState.PAYMENT_CANCELLED),
+        PaymentState.CASH_COLLECTED to setOf(PaymentState.SETTLED)
+    )
+
+    fun canTransition(payment: Payment, target: PaymentState): Boolean {
+        if (payment.state.isTerminal) return false
+        val map = when (payment.branch) {
+            "A" -> branchATransitions
+            "C" -> branchCTransitions
+            else -> branchBTransitions
+        }
+        val allowed = map[payment.state] ?: emptySet()
+        return allowed.contains(target)
     }
 
-    /**
-     * Process Mocked Online Payment with forced outcome (Success, Decline, Timeout) and idempotency check.
-     */
-    fun processOnlinePayment(
+    fun transition(
         payment: Payment,
-        forcedOutcome: String, // "SUCCESS", "DECLINED", "TIMEOUT"
-        processedKeys: MutableSet<String>,
-        actor: String
-    ): PaymentResult {
-        if (payment.method != PaymentMethod.ONLINE_HOSTED) {
-            return PaymentResult.Failure(payment, "Payment is not Online Hosted method.")
+        target: PaymentState,
+        actor: String,
+        reason: String,
+        historyList: MutableList<PaymentStatusHistory>? = null
+    ): Pair<Boolean, String> {
+        val current = payment.state
+        if (current.isTerminal) {
+            return Pair(false, "Payment ${payment.id} is in terminal state ${current.displayName} and cannot transition.")
         }
 
-        // Idempotency check: replaying same confirmation never double-settles
-        if (processedKeys.contains(payment.idempotencyKey)) {
-            if (payment.state == PaymentState.INITIAL_AMOUNT_CAPTURED || payment.state == PaymentState.SETTLED) {
-                return PaymentResult.Success(payment, null, "Idempotent replay: Payment ${payment.id} already captured safely.")
-            }
+        if (!canTransition(payment, target)) {
+            return Pair(false, "Illegal payment transition from ${current.displayName} to ${target.displayName} on branch ${payment.branch}.")
         }
 
-        val attempt = PaymentAttempt(
-            id = "ATT-" + UUID.randomUUID().toString().take(8),
-            paymentId = payment.id,
-            amountPaisa = payment.baseAmountPaisa,
-            gatewayStatus = forcedOutcome
+        payment.state = target
+        historyList?.add(
+            PaymentStatusHistory(
+                id = "PAYHIST-" + UUID.randomUUID().toString().take(6),
+                paymentId = payment.id,
+                fromState = current,
+                toState = target,
+                actor = actor,
+                reason = reason,
+                timestamp = System.currentTimeMillis()
+            )
         )
-
-        when (forcedOutcome) {
-            "SUCCESS" -> {
-                payment.state = PaymentState.INITIAL_AMOUNT_CAPTURED
-                payment.capturedAmountPaisa = payment.baseAmountPaisa
-                processedKeys.add(payment.idempotencyKey)
-                return PaymentResult.Success(payment, attempt, "Gateway authorization and initial capture successful.")
-            }
-            "DECLINED" -> {
-                payment.state = PaymentState.AUTHORIZATION_FAILED
-                return PaymentResult.Failure(payment, "Gateway declined authorization (Insufficient funds or card decline).")
-            }
-            "TIMEOUT" -> {
-                payment.state = PaymentState.PAYMENT_TIMEOUT
-                return PaymentResult.Failure(payment, "Gateway request timed out. New payment attempt required.")
-            }
-            else -> {
-                payment.state = PaymentState.AUTHORIZATION_FAILED
-                return PaymentResult.Failure(payment, "Unknown gateway status: $forcedOutcome")
-            }
-        }
-    }
-
-    /**
-     * Online settlement resolution after final amount determination.
-     */
-    fun resolveOnlineAdjustmentAndSettle(
-        payment: Payment,
-        adjustmentOption: String // "NO_ADJUSTMENT", "ADDITIONAL_COLLECT", "PARTIAL_REFUND"
-    ): PaymentResult {
-        if (payment.state != PaymentState.INITIAL_AMOUNT_CAPTURED && payment.state != PaymentState.FINAL_AMOUNT_DETERMINED) {
-            return PaymentResult.Failure(payment, "Cannot settle: Initial capture has not taken place.")
-        }
-
-        payment.state = PaymentState.FINAL_AMOUNT_DETERMINED
-        when (adjustmentOption) {
-            "NO_ADJUSTMENT" -> {
-                payment.state = PaymentState.SETTLED
-                payment.settledAmountPaisa = payment.capturedAmountPaisa
-                return PaymentResult.Success(payment, null, "Settled without price adjustment.")
-            }
-            "ADDITIONAL_COLLECT" -> {
-                payment.state = PaymentState.ADDITIONAL_COLLECTION_PENDING
-                // Simulating secondary capture
-                payment.capturedAmountPaisa = payment.finalAmountPaisa
-                payment.settledAmountPaisa = payment.finalAmountPaisa
-                payment.state = PaymentState.SETTLED
-                return PaymentResult.Success(payment, null, "Additional amount collected and settled.")
-            }
-            "PARTIAL_REFUND" -> {
-                payment.state = PaymentState.PARTIAL_REFUND_PENDING
-                payment.settledAmountPaisa = payment.finalAmountPaisa
-                payment.state = PaymentState.SETTLED
-                return PaymentResult.Success(payment, null, "Partial refund credited and remaining amount settled.")
-            }
-            else -> {
-                payment.state = PaymentState.PAYMENT_FAILED_CLOSED
-                return PaymentResult.Failure(payment, "Adjustment failed closed.")
-            }
-        }
+        return Pair(true, "Payment advanced to ${target.displayName}")
     }
 }
