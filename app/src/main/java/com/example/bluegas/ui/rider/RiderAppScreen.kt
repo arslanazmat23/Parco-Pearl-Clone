@@ -19,7 +19,7 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.example.bluegas.data.BlueGasStore
+import com.example.bluegas.data.*
 import com.example.bluegas.model.*
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.bluegas.ui.components.CanonicalStatusChip

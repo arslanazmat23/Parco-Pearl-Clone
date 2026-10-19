@@ -2,6 +2,7 @@ package com.example
 
 import android.content.Context
 import androidx.test.core.app.ApplicationProvider
+import com.example.bluegas.data.*
 import com.example.bluegas.lifecycle.OrderStateMachine
 import com.example.bluegas.lifecycle.TransitionResult
 import com.example.bluegas.model.*

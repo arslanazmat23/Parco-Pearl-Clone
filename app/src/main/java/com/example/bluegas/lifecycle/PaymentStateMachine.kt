@@ -45,7 +45,8 @@ object PaymentStateMachine {
 
     fun canTransition(payment: Payment, target: PaymentState): Boolean {
         if (payment.state.isTerminal) return false
-        val map = when (payment.branch) {
+        val branch = if (payment.method == com.example.bluegas.model.PaymentMethod.CASH_ON_DELIVERY) "C" else payment.branch
+        val map = when (branch) {
             "A" -> branchATransitions
             "C" -> branchCTransitions
             else -> branchBTransitions

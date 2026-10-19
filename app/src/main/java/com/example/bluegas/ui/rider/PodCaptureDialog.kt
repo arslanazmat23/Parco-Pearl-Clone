@@ -36,7 +36,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
-import com.example.bluegas.data.BlueGasStore
+import com.example.bluegas.data.*
 import com.example.bluegas.model.Order
 import com.example.bluegas.model.PaymentMethod
 import com.example.bluegas.model.formatPaisaToPkr

@@ -165,7 +165,7 @@ fun BlueGasStore.confirmCod(orderId: String): Pair<Boolean, String> {
     return Pair(true, "Order ${order.id} confirmed for Cash on Delivery.")
 }
 
-fun BlueGasStore.confirmPaymentAndAdvance(orderId: String, forcedOutcome: String = "SUCCESS"): Pair<Boolean, String> {
+fun BlueGasStore.confirmPaymentAndAdvance(orderId: String, forcedOutcome: String = "SUCCESS", actor: String = "Customer"): Pair<Boolean, String> {
     val order = orders.find { it.id == orderId } ?: return Pair(false, "Order not found")
     if (order.paymentMethod == PaymentMethod.CASH_ON_DELIVERY) {
         return confirmCod(orderId)

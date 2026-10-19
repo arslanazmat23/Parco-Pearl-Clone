@@ -24,9 +24,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import com.example.bluegas.data.BlueGasStore
-import com.example.bluegas.data.SerialConflictItem
-import com.example.bluegas.data.SharedAppState
+import com.example.bluegas.data.*
 import com.example.bluegas.lifecycle.OrderStateMachine
 import com.example.bluegas.lifecycle.TransitionResult
 import com.example.bluegas.model.*
@@ -185,6 +183,12 @@ fun StaffPortalScreen(store: BlueGasStore) {
                     store = store,
                     snapshot = snapshot,
                     onBanner = { bannerMessage = it }
+                )
+                else -> OperationsScreen(
+                    store = store,
+                    snapshot = snapshot,
+                    onBanner = { bannerMessage = it },
+                    onSelectOrder = { selectedOrderForDetail = it }
                 )
             }
         }

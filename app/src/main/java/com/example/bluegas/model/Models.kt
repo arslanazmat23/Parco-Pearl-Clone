@@ -595,7 +595,7 @@ data class Payment(
     val idempotencyKey: String,
     val createdAt: Long = System.currentTimeMillis(),
     val attemptNo: Int = 1,
-    var branch: String = "B",
+    var branch: String = if (method == PaymentMethod.CASH_ON_DELIVERY) "C" else "B",
     var authorizedAmountPaisa: Long = 0L,
     var closedReason: String? = null
 )

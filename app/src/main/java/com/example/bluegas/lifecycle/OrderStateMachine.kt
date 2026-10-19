@@ -101,7 +101,7 @@ object OrderStateMachine {
             return TransitionResult.Failure(
                 fromStatus = currentStatus,
                 attemptedStatus = targetStatus,
-                errorMessage = "Invalid transition: ${currentStatus.canonicalLabel} -> ${targetStatus.canonicalLabel} is strictly forbidden by the 42-rule lifecycle table. Legal next transitions from ${currentStatus.code}: $legalStr.",
+                errorMessage = "Invalid transition: ${currentStatus.canonicalLabel} -> ${targetStatus.canonicalLabel} is strictly forbidden by the 42-rule lifecycle table. Legal transitions from ${currentStatus.code}: $legalStr.",
                 violatorRole = role
             )
         }

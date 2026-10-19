@@ -298,6 +298,18 @@ fun BlueGasStore.completeCounterHandover(
 fun BlueGasStore.riderAcceptTask(orderId: String): Pair<Boolean, String> {
     val order = orders.find { it.id == orderId } ?: return Pair(false, "Order not found.")
     order.riderTaskStatus = RiderTaskStatus.ACCEPTED
+    if (order.status == OrderStatus.ORD_ASGN) {
+        order.acceptedAt = System.currentTimeMillis()
+        val tAcpt = OrderStateMachine.transition(
+            order = order,
+            targetStatus = OrderStatus.ORD_ACPT,
+            actor = getActiveRider()?.name ?: "Rider",
+            role = AccountableRole.OPERATIONS,
+            trigger = "Rider accepted delivery task"
+        )
+        if (tAcpt is TransitionResult.Failure) return Pair(false, tAcpt.errorMessage)
+        recordHistory(tAcpt, "RIDER_ACCEPTED")
+    }
     notifyChanged()
     return Pair(true, "Delivery task accepted.")
 }
@@ -511,7 +523,15 @@ fun BlueGasStore.completeHandover(
     emptyBrand: String? = null,
     emptySize: String? = null,
     emptySerial: String? = null,
-    isReplay: Boolean = false
+    isReplay: Boolean = false,
+    nonTechInstallationPassed: Boolean = true,
+    proofOfDeliveryNote: String? = null,
+    collectedCashPaisa: Long? = null,
+    actor: String? = null,
+    customerSignature: String? = null,
+    photoEvidenceCaptured: Boolean = false,
+    emptyCylinderCollected: Boolean = false,
+    emptyCylinderSerial: String? = null
 ): Pair<Boolean, String> {
     val order = orders.find { it.id == orderId } ?: return Pair(false, "Order not found.")
 
@@ -530,14 +550,19 @@ fun BlueGasStore.completeHandover(
         return Pair(true, "Handover completion queued in Offline Outbox.")
     }
 
-    val actor = getActiveRider()?.name ?: "Rider"
+    val actualActor = actor ?: getActiveRider()?.name ?: "Rider"
+    val actualPhotoCaptured = photoCaptured || photoEvidenceCaptured
+    val actualSignatureCaptured = signatureCaptured || (customerSignature != null)
+    val actualEmptyCollected = emptyCollected || emptyCylinderCollected
+    val actualEmptySerial = emptySerial ?: emptyCylinderSerial
+    val actualAmountReceived = amountReceivedPaisa ?: collectedCashPaisa
 
     // Handover Complete -> Completed
-    val tHoc = OrderStateMachine.transition(order, OrderStatus.ORD_HOC, actor, AccountableRole.OPERATIONS, "POD checklist and checks verified")
+    val tHoc = OrderStateMachine.transition(order, OrderStatus.ORD_HOC, actualActor, AccountableRole.OPERATIONS, "POD checklist and checks verified")
     if (tHoc is TransitionResult.Failure) return Pair(false, tHoc.errorMessage)
     recordHistory(tHoc, "HANDOVER_COMPLETE")
 
-    val tComp = OrderStateMachine.transition(order, OrderStatus.ORD_COMP, actor, AccountableRole.OPERATIONS, "Handover completed with POD")
+    val tComp = OrderStateMachine.transition(order, OrderStatus.ORD_COMP, actualActor, AccountableRole.OPERATIONS, "Handover completed with POD")
     if (tComp is TransitionResult.Failure) return Pair(false, tComp.errorMessage)
     recordHistory(tComp, "COMPLETED")
 
@@ -555,12 +580,12 @@ fun BlueGasStore.completeHandover(
     val delIdx = deliveries.indexOf(delivery)
     val updatedDelivery = delivery.copy(
         completedAt = System.currentTimeMillis(),
-        nonTechnicalInstallationPassed = (installationResult == InstallationResult.INSTALLED),
-        proofOfDeliveryNote = "Handover complete. Installation: $installationResult",
+        nonTechnicalInstallationPassed = nonTechInstallationPassed && (installationResult == InstallationResult.INSTALLED),
+        proofOfDeliveryNote = proofOfDeliveryNote ?: "Handover complete. Installation: $installationResult",
         podReference = order.podReference,
-        customerSignatureCaptured = signatureCaptured,
+        customerSignatureCaptured = actualSignatureCaptured,
         signatureUnavailableReason = signatureUnavailableReason,
-        photoEvidenceCaptured = photoCaptured,
+        photoEvidenceCaptured = actualPhotoCaptured,
         signerName = signerName,
         changeReturnedPaisa = changeReturnedPaisa,
         installationChecklist = checklistAnswers,
@@ -572,7 +597,7 @@ fun BlueGasStore.completeHandover(
     if (delIdx != -1) deliveries[delIdx] = updatedDelivery else deliveries.add(updatedDelivery)
 
     // Handle Empty exchange (BR-STK-07, UAT-32)
-    if (order.orderType == OrderType.REFILL_EXCHANGE && emptyCollected) {
+    if (order.orderType == OrderType.REFILL_EXCHANGE && actualEmptyCollected) {
         val brand = emptyBrand ?: "BLUE GAS"
         if (settings.approvedEmptyBrands.contains(brand)) {
             order.emptyCollectedBrand = brand
@@ -589,14 +614,18 @@ fun BlueGasStore.completeHandover(
     val payment = activePaymentFor(orderId)
     if (payment != null) {
         if (payment.method == PaymentMethod.CASH_ON_DELIVERY) {
-            val rec = amountReceivedPaisa ?: order.totalAmountPaisa
+            val rec = actualAmountReceived ?: order.totalAmountPaisa
             order.amountReceivedPaisa = rec
             order.cashDifferencePaisa = rec - order.totalAmountPaisa
             order.cashDifferenceReason = cashDifferenceReason
 
-            PaymentStateMachine.transition(payment, PaymentState.FINAL_AMOUNT_DETERMINED, actor, "Final COD amount determined", paymentHistory)
-            PaymentStateMachine.transition(payment, PaymentState.CASH_COLLECTION_PENDING, actor, "Cash collection pending", paymentHistory)
-            PaymentStateMachine.transition(payment, PaymentState.CASH_COLLECTED, actor, "Cash collected by rider", paymentHistory)
+            PaymentStateMachine.transition(payment, PaymentState.FINAL_AMOUNT_DETERMINED, actualActor, "Final COD amount determined", paymentHistory)
+            PaymentStateMachine.transition(payment, PaymentState.CASH_COLLECTION_PENDING, actualActor, "Cash collection pending", paymentHistory)
+            PaymentStateMachine.transition(payment, PaymentState.CASH_COLLECTED, actualActor, "Cash collected by rider", paymentHistory)
+            PaymentStateMachine.transition(payment, PaymentState.SETTLED, actualActor, "COD cash settled at handover", paymentHistory)
+            payment.settledAmountPaisa = rec
+            payment.capturedAmountPaisa = rec
+            postLedger(orderId, "COD_COLLECTION", debitPaisa = rec, description = "COD collection settled at handover")
 
             codCollections.add(
                 CodCollection(
@@ -621,8 +650,8 @@ fun BlueGasStore.completeHandover(
             }
         } else {
             // Online: Settled
-            PaymentStateMachine.transition(payment, PaymentState.FINAL_AMOUNT_DETERMINED, actor, "Final amount confirmed", paymentHistory)
-            PaymentStateMachine.transition(payment, PaymentState.NO_ADJUSTMENT, actor, "No adjustment", paymentHistory)
+            PaymentStateMachine.transition(payment, PaymentState.FINAL_AMOUNT_DETERMINED, actualActor, "Final amount confirmed", paymentHistory)
+            PaymentStateMachine.transition(payment, PaymentState.NO_ADJUSTMENT, actualActor, "No adjustment", paymentHistory)
             PaymentStateMachine.transition(payment, PaymentState.SETTLED, "Payment Gateway", "Settled at doorstep handover", paymentHistory)
             postLedger(orderId, "SETTLEMENT", debitPaisa = payment.baseAmountPaisa, description = "Online gateway settlement")
         }
@@ -754,6 +783,11 @@ fun BlueGasStore.replayRiderOutbox(): String {
         }
 
         when (event.action) {
+            "START_PREPARING" -> {
+                val (ok, _) = startPreparing(event.orderId)
+                event.syncStatus = if (ok) "APPLIED" else "REJECTED"
+                if (ok) applied++ else rejected++
+            }
             "START_TRIP" -> {
                 val (ok, _) = riderStartTrip(event.orderId, isReplay = true)
                 event.syncStatus = if (ok) "APPLIED" else "REJECTED"
@@ -820,3 +854,50 @@ fun BlueGasStore.simulateSerialConflict(): String {
     notifyChanged()
     return "Duplicate offline completion queued for serial $serial."
 }
+
+fun BlueGasStore.riderAcceptOrder(orderId: String): Pair<Boolean, String> = riderAcceptTask(orderId)
+
+fun BlueGasStore.riderDeclineOrder(orderId: String, reason: String = "Declined by Rider"): Pair<Boolean, String> = riderDeclineTask(orderId, reason)
+
+fun BlueGasStore.riderStartPreparing(orderId: String): Pair<Boolean, String> {
+    if (isRiderOffline) {
+        val event = OfflineOutboxEvent(
+            sequenceNumber = outboxSequenceCounter++,
+            idempotencyKey = "IDEMP-OFF-" + UUID.randomUUID().toString().take(8),
+            orderId = orderId,
+            action = "START_PREPARING",
+            fromStatus = orders.find { it.id == orderId }?.status ?: OrderStatus.ORD_ACPT,
+            toStatus = OrderStatus.ORD_PREP
+        )
+        riderOutbox.add(event)
+        notifyChanged()
+        return Pair(true, "Action queued in Offline Outbox (START_PREPARING)")
+    }
+    return startPreparing(orderId)
+}
+
+fun BlueGasStore.riderSelectAndBindSerial(orderId: String, serialNumber: String): Pair<Boolean, String> {
+    return allocateCylinderSerial(orderId, serialNumber, getActiveRider()?.name ?: "Rider")
+}
+
+fun BlueGasStore.riderStartDeliveryOrStagePickup(orderId: String): Pair<Boolean, String> {
+    val order = orders.find { it.id == orderId } ?: return Pair(false, "Order not found.")
+    return if (order.fulfilmentMode == FulfilmentMode.PICKUP) {
+        markReadyForPickup(orderId)
+    } else {
+        riderStartTrip(orderId)
+    }
+}
+
+fun BlueGasStore.arriveAtHandover(orderId: String, actor: String = "Rider"): Pair<Boolean, String> = riderArrive(orderId)
+
+fun BlueGasStore.dispatchOrReadyForPickup(orderId: String, riderIdOrActor: String? = null): Pair<Boolean, String> = riderStartDeliveryOrStagePickup(orderId)
+
+fun BlueGasStore.toggleRiderShiftStatus(riderId: String) {
+    val r = riders.find { it.id == riderId } ?: return
+    val idx = riders.indexOf(r)
+    val nextStatus = if (r.status == "ACTIVE") "INACTIVE" else "ACTIVE"
+    riders[idx] = r.copy(status = nextStatus)
+    notifyChanged()
+}
+
