@@ -24,8 +24,7 @@ class BlueGasViewModel(
     }
 
     fun switchStaffSubRole(role: StaffSubRole) {
-        store.activeStaffSubRole = role
-        store.notifyChanged()
+        store.setStaffRole(role)
     }
 
     fun switchCustomer(customerId: String) {
@@ -43,9 +42,8 @@ class BlueGasViewModel(
         store.notifyChanged()
     }
 
-    fun markAllNotificationsRead() {
-        store.notifications.forEach { it.isRead = true }
-        store.notifyChanged()
+    fun markAllNotificationsRead(surface: AppSurface = store.activeSurface, role: StaffSubRole? = null) {
+        store.markNotificationsRead(surface, role)
     }
 
     fun resetDemoData() {

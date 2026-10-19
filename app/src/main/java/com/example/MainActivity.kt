@@ -12,6 +12,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.example.bluegas.data.*
 import com.example.bluegas.model.AppSurface
 import com.example.bluegas.ui.components.AiAdvisorDialog
 import com.example.bluegas.ui.components.DevInspectorDialog
@@ -44,6 +45,13 @@ fun BlueGasAppRoot(viewModel: BlueGasViewModel = viewModel()) {
     var showNotifications by remember { mutableStateOf(false) }
     var showAiAdvisor by remember { mutableStateOf(false) }
 
+    LaunchedEffect(Unit) {
+        while (true) {
+            kotlinx.coroutines.delay(5_000)
+            viewModel.store.processTimers()
+        }
+    }
+
     Scaffold(
         modifier = Modifier.fillMaxSize(),
         topBar = {
@@ -57,18 +65,15 @@ fun BlueGasAppRoot(viewModel: BlueGasViewModel = viewModel()) {
             )
         }
     ) { innerPadding ->
-        // Direct key on appState guarantees cross-surface re-emission
-        key(appState) {
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(innerPadding)
-            ) {
-                when (appState.activeSurface) {
-                    AppSurface.CUSTOMER -> CustomerAppScreen(store = viewModel.store)
-                    AppSurface.RIDER -> RiderAppScreen(store = viewModel.store)
-                    AppSurface.STAFF -> StaffPortalScreen(store = viewModel.store)
-                }
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(innerPadding)
+        ) {
+            when (appState.activeSurface) {
+                AppSurface.CUSTOMER -> CustomerAppScreen(store = viewModel.store)
+                AppSurface.RIDER -> RiderAppScreen(store = viewModel.store)
+                AppSurface.STAFF -> StaffPortalScreen(store = viewModel.store)
             }
         }
     }

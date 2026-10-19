@@ -471,34 +471,16 @@ fun BlueGasStore.riderReportIssue(
     }
 
     // Safety incident escalation (v0.4 §16.1 & EXC-10)
-    if (details.contains("unsafe", ignoreCase = true) || details.contains("leak", ignoreCase = true) || details.contains("smell", ignoreCase = true)) {
-        order.allocatedSerial?.let { s ->
-            val cyl = cylinders.find { it.serialNumber == s }
-            cyl?.let {
-                val idx = cylinders.indexOf(it)
-                cylinders[idx] = it.copy(hseHold = true)
-            }
-        }
-        val incId = "INC-" + UUID.randomUUID().toString().take(6)
-        safetyIncidents.add(
-            SafetyIncident(
-                id = incId,
-                source = "DELIVERY",
-                orderId = orderId,
-                cylinderId = order.allocatedSerial,
-                description = "Doorstep safety alert: $details",
-                location = "Customer doorstep",
-                status = L7Status.INCIDENT_RAISED
-            )
-        )
-        addNotification(
-            surface = AppSurface.STAFF,
-            title = "Safety Incident Raised",
-            message = "Safety alert on order $orderId. Cylinder ${order.allocatedSerial} placed on HSE hold.",
-            canonicalStatus = "INCIDENT_RAISED",
+    if (details.contains("unsafe", ignoreCase = true) || details.contains("leak", ignoreCase = true) || details.contains("smell", ignoreCase = true) || reason == ExceptionReason.DELIVERY_FAILURE_OR_CUSTOMER_UNAVAILABLE && (details.contains("gas", ignoreCase = true) || details.contains("hazard", ignoreCase = true))) {
+        raiseIncident(
+            source = "DELIVERY",
+            description = "Doorstep safety alert: $details",
             orderId = orderId,
-            code = "NTF-09",
-            staffRole = StaffSubRole.SAFETY_HSE
+            cylinderId = order.allocatedSerial,
+            location = "Customer doorstep",
+            peopleInvolved = "Customer & Rider (${getActiveRider()?.name ?: "Rider"})",
+            evidenceCaptured = true,
+            actor = getActiveRider()?.name ?: "Rider"
         )
     }
 
@@ -622,10 +604,8 @@ fun BlueGasStore.completeHandover(
             PaymentStateMachine.transition(payment, PaymentState.FINAL_AMOUNT_DETERMINED, actualActor, "Final COD amount determined", paymentHistory)
             PaymentStateMachine.transition(payment, PaymentState.CASH_COLLECTION_PENDING, actualActor, "Cash collection pending", paymentHistory)
             PaymentStateMachine.transition(payment, PaymentState.CASH_COLLECTED, actualActor, "Cash collected by rider", paymentHistory)
-            PaymentStateMachine.transition(payment, PaymentState.SETTLED, actualActor, "COD cash settled at handover", paymentHistory)
-            payment.settledAmountPaisa = rec
             payment.capturedAmountPaisa = rec
-            postLedger(orderId, "COD_COLLECTION", debitPaisa = rec, description = "COD collection settled at handover")
+            postLedger(orderId, "COD_COLLECTION", debitPaisa = rec, description = "Cash collected by rider — awaiting reconciliation")
 
             codCollections.add(
                 CodCollection(
@@ -723,7 +703,11 @@ fun BlueGasStore.riderSubmitCashHandover(riderId: String, recipient: String, dec
     val unhandedOrders = orders.filter {
         it.assignedRiderId == riderId && it.paymentMethod == PaymentMethod.CASH_ON_DELIVERY &&
                 it.status == OrderStatus.ORD_COMP &&
+                activePaymentFor(it.id)?.state == PaymentState.CASH_COLLECTED &&
                 cashHandovers.none { ch -> ch.orderIds.contains(it.id) }
+    }
+    if (unhandedOrders.isEmpty()) {
+        return Pair(false, "No rider cash waiting for hand-over.")
     }
     val expected = unhandedOrders.sumOf { it.amountReceivedPaisa ?: it.totalAmountPaisa }
     val id = "CSH-HO-" + UUID.randomUUID().toString().take(6)
@@ -738,15 +722,31 @@ fun BlueGasStore.riderSubmitCashHandover(riderId: String, recipient: String, dec
             declaredPaisa = declaredPaisa
         )
     )
+    addNotification(
+        surface = AppSurface.STAFF,
+        title = "Cash hand-over submitted",
+        message = "Cash hand-over $id (${formatPaisaToPkr(declaredPaisa)}) submitted by rider $riderId.",
+        canonicalStatus = "SUBMITTED",
+        orderId = unhandedOrders.firstOrNull()?.id,
+        code = "NTF-15",
+        staffRole = StaffSubRole.FINANCE
+    )
+    logAudit("CashHandover", id, "SUBMIT_CASH_HANDOVER", riderId, AccountableRole.DISTRIBUTOR, "Submitted cash handover of ${formatPaisaToPkr(declaredPaisa)} for ${unhandedOrders.size} orders")
     notifyChanged()
     return Pair(true, "Cash handover $id submitted for reconciliation.")
 }
 
 fun BlueGasStore.depotSubmitCashHandover(distributorId: String, declaredPaisa: Long): Pair<Boolean, String> {
+    val dist = distributors.find { it.id == distributorId }
     val unhandedOrders = orders.filter {
         it.fulfilmentMode == FulfilmentMode.PICKUP && it.paymentMethod == PaymentMethod.CASH_ON_DELIVERY &&
                 it.status == OrderStatus.ORD_COMP &&
+                (dist == null || (it.pickupPointId ?: it.fulfilmentPointId) == dist.pointId) &&
+                activePaymentFor(it.id)?.state == PaymentState.CASH_COLLECTED &&
                 cashHandovers.none { ch -> ch.orderIds.contains(it.id) }
+    }
+    if (unhandedOrders.isEmpty()) {
+        return Pair(false, "No counter cash waiting for hand-over.")
     }
     val expected = unhandedOrders.sumOf { it.amountReceivedPaisa ?: it.totalAmountPaisa }
     val id = "CSH-DEP-" + UUID.randomUUID().toString().take(6)
@@ -761,6 +761,16 @@ fun BlueGasStore.depotSubmitCashHandover(distributorId: String, declaredPaisa: L
             declaredPaisa = declaredPaisa
         )
     )
+    addNotification(
+        surface = AppSurface.STAFF,
+        title = "Cash hand-over submitted",
+        message = "Depot counter cash hand-over $id (${formatPaisaToPkr(declaredPaisa)}) submitted for $distributorId.",
+        canonicalStatus = "SUBMITTED",
+        orderId = unhandedOrders.firstOrNull()?.id,
+        code = "NTF-15",
+        staffRole = StaffSubRole.FINANCE
+    )
+    logAudit("CashHandover", id, "SUBMIT_CASH_HANDOVER", distributorId, AccountableRole.DISTRIBUTOR, "Submitted depot cash handover of ${formatPaisaToPkr(declaredPaisa)} for ${unhandedOrders.size} orders")
     notifyChanged()
     return Pair(true, "Depot cash handover $id submitted to Finance.")
 }

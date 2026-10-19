@@ -59,6 +59,7 @@ data class SharedAppState(
     val reconciliations: List<DailyReconciliation> = emptyList(),
     val reconExceptions: List<ReconciliationException> = emptyList(),
     val priceLists: List<PriceList> = listOf(PriceList(version = 1)),
+    val draftPriceList: PriceList? = null,
     val tradePriceLists: List<TradePriceList> = listOf(TradePriceList(version = 1)),
     val ograNotices: List<OgraNotice> = emptyList(),
     val taxConfig: TaxConfig = TaxConfig(),
@@ -69,6 +70,10 @@ data class SharedAppState(
     val safetyIncidents: List<SafetyIncident> = emptyList(),
     val openDecisions: List<OpenDecision> = emptyList(),
     val settings: PlatformSettings = PlatformSettings(),
+
+    // Hoisted Staff UI State
+    val staffSectionByRole: Map<StaffSubRole, String> = emptyMap(),
+    val staffDetailOrderId: String? = null,
 
     // Phase 2 Preview Records
     val replacementClaims: List<ReplacementClaim> = emptyList(),
@@ -90,5 +95,10 @@ data class SharedAppState(
         return notifications.count { item ->
             !item.isRead && item.surface == surface && (surface != AppSurface.STAFF || role == null || item.staffRole == null || item.staffRole == role)
         }
+    }
+
+    fun distributorBalance(distributorId: String): Long {
+        return distributorAccountEntries.filter { it.distributorId == distributorId }
+            .sumOf { it.debitPaisa - it.creditPaisa }
     }
 }

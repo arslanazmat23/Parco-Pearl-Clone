@@ -319,18 +319,7 @@ fun BlueGasStore.processTimers() {
         }
     }
 
-    // 3. FBR Retry Queue
-    if (!taxConfig.simulateFbrOutage && taxConfig.fbrPostingEnabled) {
-        val queuedFbr = fbrPostings.filter { it.status == "QUEUED" || it.status == "FAILED" }
-        for (fp in queuedFbr) {
-            fp.status = "POSTED"
-            fp.invoiceNo = "FBR-26-" + (100000..999999).random()
-            val order = orders.find { it.id == fp.orderId }
-            order?.fbrStatus = "POSTED"
-            order?.fbrInvoiceNo = fp.invoiceNo
-            changed = true
-        }
-    }
+    // 3. FBR auto-posting removed (S0.2). Re-posting happens only from Finance (retryFbr).
 
     if (changed) {
         notifyChanged()
@@ -386,10 +375,10 @@ fun BlueGasStore.cancelOrder(
     val payment = activePaymentFor(orderId)
     var paymentOutcome = "No payment taken"
 
-    if (payment != null) {
+    if (payment != null && !payment.state.isTerminal) {
         if (payment.method == PaymentMethod.CASH_ON_DELIVERY) {
-            PaymentStateMachine.transition(payment, PaymentState.PAYMENT_CANCELLED, actor, reason, paymentHistory)
-            paymentOutcome = "COD cancelled - no payment due"
+            val (ok, _) = PaymentStateMachine.transition(payment, PaymentState.PAYMENT_CANCELLED, actor, reason, paymentHistory)
+            paymentOutcome = if (ok) "COD cancelled - no payment due" else "Payment already terminal"
         } else {
             // Online Hosted
             when (payment.state) {
@@ -411,10 +400,19 @@ fun BlueGasStore.cancelOrder(
                             state = PaymentState.FULL_REFUND_PENDING
                         )
                     )
+                    addNotification(
+                        surface = AppSurface.STAFF,
+                        title = "Refund waiting — $orderId",
+                        message = "Order $orderId cancelled post-capture. Refund of ${formatPaisaToPkr(payment.capturedAmountPaisa)} waiting in Finance queue.",
+                        canonicalStatus = "PENDING",
+                        orderId = orderId,
+                        code = "NTF-11",
+                        staffRole = StaffSubRole.FINANCE
+                    )
                     paymentOutcome = "Refund of ${formatRupees(payment.capturedAmountPaisa)} pending Finance processing"
                 }
                 PaymentState.PAYMENT_PENDING -> {
-                    PaymentStateMachine.transition(payment, PaymentState.PAYMENT_FAILED_CLOSED, actor, "Order cancelled while payment pending", paymentHistory)
+                    PaymentStateMachine.transition(payment, PaymentState.PAYMENT_CANCELLED, actor, "Order cancelled while payment pending", paymentHistory)
                     paymentOutcome = "Payment request cancelled"
                 }
                 else -> {}

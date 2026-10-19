@@ -292,7 +292,7 @@ fun HomeScreen(
             }
         }
 
-        items(snapshot.productVariants) { pv ->
+        items(snapshot.productVariants.filter { it.isHouseholdApproved || !it.isCylinder }) { pv ->
             val pvPrice = snapshot.priceBookConfig.productPricesPaisa[pv.sku] ?: 0L
             val isSelected = pv.sku == selectedSku
 
