@@ -179,7 +179,7 @@ fun StaffPlantInventoryScreen(
                                         Button(
                                             onClick = {
                                                 val receivedMap = trf.lines.associate { it.skuId to it.qtySent }
-                                                val (ok, msg) = store.receiveStockAtPoint(trf.id, receivedMap, emptyMap(), null, "Inventory Controller")
+                                                val (ok, msg) = store.confirmTransferReceipt(trf.id, receivedMap, "Inventory Controller")
                                                 onBanner(msg)
                                             },
                                             contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
@@ -216,10 +216,11 @@ fun StaffPlantInventoryScreen(
                     Spacer(modifier = Modifier.height(8.dp))
                 }
 
-                if (snapshot.plantReports.none { it.notes?.contains("BULK_RECEIPT") == true }) {
+                val bowzerReports = snapshot.plantReports.filter { it.purchasesTonnes > 0 || it.source == "BOWZER_RECEIPT" }
+                if (bowzerReports.isEmpty()) {
                     item { Text("No recent bowzer bulk receipts logged.", fontSize = 11.sp, color = Color.Gray) }
                 } else {
-                    items(snapshot.plantReports.filter { it.notes?.contains("BULK_RECEIPT") == true }) { rpt ->
+                    items(bowzerReports) { rpt ->
                         Card(
                             colors = CardDefaults.cardColors(containerColor = Color.White),
                             border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFFCBD5E1)),
@@ -228,9 +229,9 @@ fun StaffPlantInventoryScreen(
                                 .padding(vertical = 4.dp)
                         ) {
                             Column(modifier = Modifier.padding(10.dp)) {
-                                Text("Receipt ID: ${rpt.id} • ${rpt.reportDate}", fontWeight = FontWeight.Bold, fontSize = 12.sp)
-                                Text("Bulk LPG Received: ${rpt.bulkLpgReceivedTonnes} Tonnes", fontSize = 11.sp, color = Color(0xFF166534), fontWeight = FontWeight.SemiBold)
-                                Text("Notes: ${rpt.notes}", fontSize = 10.sp, color = Color(0xFF475569))
+                                Text("Receipt Date: ${rpt.date} • Source: ${rpt.source}", fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                                Text("Bulk LPG Received: ${rpt.purchasesTonnes} Tonnes", fontSize = 11.sp, color = Color(0xFF166534), fontWeight = FontWeight.SemiBold)
+                                Text("Opening: ${rpt.openingTonnes} T • Closing: ${rpt.closingTonnes} T", fontSize = 10.sp, color = Color(0xFF475569))
                             }
                         }
                     }
@@ -258,10 +259,11 @@ fun StaffPlantInventoryScreen(
                     Spacer(modifier = Modifier.height(8.dp))
                 }
 
-                if (snapshot.plantReports.none { it.notes?.contains("DAILY_DIP") == true }) {
+                val dipReports = snapshot.plantReports.filter { it.source == "DAILY_DIP" || it.closingTonnes > 0 }
+                if (dipReports.isEmpty()) {
                     item { Text("No tank dip readings recorded today.", fontSize = 11.sp, color = Color.Gray) }
                 } else {
-                    items(snapshot.plantReports.filter { it.notes?.contains("DAILY_DIP") == true }) { dip ->
+                    items(dipReports) { dip ->
                         Card(
                             colors = CardDefaults.cardColors(containerColor = Color.White),
                             border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFFCBD5E1)),
@@ -270,9 +272,9 @@ fun StaffPlantInventoryScreen(
                                 .padding(vertical = 4.dp)
                         ) {
                             Column(modifier = Modifier.padding(10.dp)) {
-                                Text("Dip Record: ${dip.id} • ${dip.reportDate}", fontWeight = FontWeight.Bold, fontSize = 12.sp)
-                                Text("Calculated Tonnes: ${dip.bulkLpgClosingStockTonnes} T (Plant Opening: ${dip.bulkLpgOpeningStockTonnes} T)", fontSize = 11.sp)
-                                Text(dip.notes ?: "", fontSize = 10.sp, color = Color(0xFF475569))
+                                Text("Dip Record: ${dip.date} • Source: ${dip.source}", fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                                Text("Closing Calculated: ${dip.closingTonnes} T (Plant Opening: ${dip.openingTonnes} T)", fontSize = 11.sp)
+                                Text("Issued Tonnes: ${dip.issuedTonnes} T", fontSize = 10.sp, color = Color(0xFF475569))
                             }
                         }
                     }
@@ -380,23 +382,24 @@ fun StaffPlantInventoryScreen(
                                     modifier = Modifier.fillMaxWidth(),
                                     horizontalArrangement = Arrangement.SpaceBetween
                                 ) {
-                                    Text("Audit: ${recon.id} • Node: ${recon.pointId}", fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                                    Text("Audit: ${recon.id} • ${recon.date}", fontWeight = FontWeight.Bold, fontSize = 12.sp)
                                     Surface(
-                                        color = if (recon.status == "PENDING_APPROVAL") Color(0xFFFEF3C7) else Color(0xFFDCFCE7),
+                                        color = if (recon.status == "MATCHED") Color(0xFFDCFCE7) else Color(0xFFFEF3C7),
                                         shape = RoundedCornerShape(4.dp)
                                     ) {
                                         Text(
                                             text = recon.status,
                                             fontSize = 9.sp,
                                             fontWeight = FontWeight.Bold,
-                                            color = if (recon.status == "PENDING_APPROVAL") Color(0xFF92400E) else Color(0xFF166534),
+                                            color = if (recon.status == "MATCHED") Color(0xFF166534) else Color(0xFF92400E),
                                             modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
                                         )
                                     }
                                 }
-                                Text("Variance Paisa: ${formatPaisaToPkr(recon.totalVariancePaisa)} • Notes: ${recon.notes}", fontSize = 10.sp, color = Color(0xFF475569))
+                                val diffSummary = recon.lines.joinToString("; ") { "${it.skuId ?: it.area}: diff ${it.difference}" }
+                                Text("Lines: ${recon.lines.size} • $diffSummary", fontSize = 10.sp, color = Color(0xFF475569))
 
-                                if (recon.status == "PENDING_APPROVAL") {
+                                if (recon.status == "DIFFERENCES_FOUND") {
                                     Spacer(modifier = Modifier.height(6.dp))
                                     Button(
                                         onClick = {
@@ -407,7 +410,7 @@ fun StaffPlantInventoryScreen(
                                         contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
                                         modifier = Modifier.height(30.dp)
                                     ) {
-                                        Text("Reconcile & Post to Ledger", fontSize = 10.sp)
+                                        Text("Reconcile & Acknowledge", fontSize = 10.sp)
                                     }
                                 }
                             }

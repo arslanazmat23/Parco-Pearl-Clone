@@ -298,3 +298,47 @@ fun BlueGasStore.troubleshootingToIncident(
     notifyChanged()
     return Pair(true, "Safety incident opened from troubleshooting request $id.")
 }
+
+fun BlueGasStore.completeInspection(
+    claimId: String,
+    passed: Boolean,
+    notes: String,
+    measuredWeightKg: Double = 15.2,
+    valveIntact: Boolean = true,
+    tareWeightReadable: Boolean = true
+): Pair<Boolean, String> = recordPhysicalResult(claimId, passed, notes)
+
+fun BlueGasStore.issueSettlementPayout(claimId: String): Pair<Boolean, String> {
+    val claim = replacementClaims.find { it.id == claimId } ?: return Pair(false, "Claim not found")
+    ClaimStateMachine.transition(claim, ClaimStatus.EXCHANGE_COMPLETED, "Finance Lead", AccountableRole.FINANCE, "Settlement benefit applied and completed")
+    ClaimStateMachine.transition(claim, ClaimStatus.CLOSED, "Finance Lead", AccountableRole.FINANCE, "Claim settled and closed")
+    logAudit("ReplacementClaim", claimId, "SETTLEMENT_PAYOUT", "Finance Lead", AccountableRole.FINANCE, "Settlement payout executed")
+    notifyChanged()
+    return Pair(true, "Settlement completed for claim $claimId.")
+}
+
+fun BlueGasStore.authorizeSurrenderDisposition(
+    surrenderId: String,
+    type: String,
+    authorizedBy: String
+): Pair<Boolean, String> = authorizeDisposition(surrenderId, type, authorizedBy)
+
+fun BlueGasStore.recordTroubleshooting(
+    customerId: String,
+    issueType: String,
+    outcome: String,
+    notes: String,
+    actor: String = "Self-Service"
+): Pair<Boolean, String> {
+    val req = TroubleshootingRequest(
+        id = "TRB-" + UUID.randomUUID().toString().take(6),
+        customerId = customerId,
+        channel = issueType,
+        description = notes,
+        status = outcome
+    )
+    troubleshootingRequests.add(req)
+    logAudit("TroubleshootingRequest", req.id, "RECORD_TROUBLESHOOTING", actor, AccountableRole.TECHNICIAN, "$issueType: $notes")
+    notifyChanged()
+    return Pair(true, "Troubleshooting diagnostic recorded for $customerId.")
+}

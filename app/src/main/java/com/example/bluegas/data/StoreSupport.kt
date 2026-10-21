@@ -183,3 +183,12 @@ fun BlueGasStore.moveCase(
     notifyChanged()
     return Pair(true, "Case $caseId transitioned to ${target.name}.")
 }
+
+fun BlueGasStore.moveReturnCase(
+    caseId: String,
+    target: L6Status,
+    reason: String,
+    actor: String = "Customer Support",
+    role: AccountableRole = AccountableRole.SUPPORT,
+    refundAmountPaisa: Long? = null
+): Pair<Boolean, String> = moveCase(caseId, target, reason, refundAmountPaisa, actor)

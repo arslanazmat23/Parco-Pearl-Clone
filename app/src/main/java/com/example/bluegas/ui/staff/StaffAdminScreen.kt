@@ -134,23 +134,38 @@ fun StaffAdminScreen(
                             )
                             Spacer(modifier = Modifier.height(10.dp))
 
-                            Text("Commercial Model & Feature Flags:", fontWeight = FontWeight.SemiBold, fontSize = 11.sp)
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Checkbox(
-                                    checked = newCylinderEnabled,
-                                    onCheckedChange = { newCylinderEnabled = it }
-                                )
-                                Spacer(modifier = Modifier.width(6.dp))
-                                Text("New Cylinder Package Sales Enabled", fontSize = 11.sp)
+                            Text("New Cylinder Model:", fontWeight = FontWeight.SemiBold, fontSize = 11.sp)
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                NewCylinderModel.entries.forEach { model ->
+                                    FilterChip(
+                                        selected = newCylinderEnabled == model,
+                                        onClick = { newCylinderEnabled = model },
+                                        label = { Text(model.name, fontSize = 10.sp) },
+                                        modifier = Modifier.height(28.dp)
+                                    )
+                                }
                             }
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Checkbox(
-                                    checked = refillModelEnabled,
-                                    onCheckedChange = { refillModelEnabled = it }
-                                )
-                                Spacer(modifier = Modifier.width(6.dp))
-                                Text("Refill Exchange Service Enabled", fontSize = 11.sp)
+                            Spacer(modifier = Modifier.height(8.dp))
+
+                            Text("Refill Model:", fontWeight = FontWeight.SemiBold, fontSize = 11.sp)
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                RefillModel.entries.forEach { model ->
+                                    FilterChip(
+                                        selected = refillModelEnabled == model,
+                                        onClick = { refillModelEnabled = model },
+                                        label = { Text(model.name, fontSize = 10.sp) },
+                                        modifier = Modifier.height(28.dp)
+                                    )
+                                }
                             }
+                            Spacer(modifier = Modifier.height(8.dp))
+
                             Row(verticalAlignment = Alignment.CenterVertically) {
                                 Checkbox(
                                     checked = phase2PreviewEnabled,
@@ -277,7 +292,7 @@ fun StaffAdminScreen(
                             Spacer(modifier = Modifier.height(8.dp))
                             OutlinedButton(
                                 onClick = {
-                                    store.resetToSeed()
+                                    store.seedInitialData()
                                     onBanner("Demo platform state reset to clean initial seed data.")
                                 },
                                 modifier = Modifier.fillMaxWidth()

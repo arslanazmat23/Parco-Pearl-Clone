@@ -648,3 +648,130 @@ fun BlueGasStore.tagCylinder(
     notifyChanged()
     return Pair(true, "Cylinder $serialNumber tagged with QR identifier.")
 }
+
+fun BlueGasStore.logBulkLpgReceipt(
+    supplier: String,
+    blNumber: String,
+    tankerNumber: String,
+    netWeightTonnes: Double,
+    specificGravity: Double = 0.510,
+    density: Double = 510.0,
+    temperatureC: Double = 25.0,
+    actor: String = "Plant Manager"
+): Pair<Boolean, String> {
+    val today = "2026-10-20"
+    val existing = plantReports.find { it.date == today }
+    val openTonnes = existing?.openingTonnes ?: 45.0
+    val purchases = (existing?.purchasesTonnes ?: 0.0) + netWeightTonnes
+    val rpt = PlantDailyReport(
+        date = today,
+        openingTonnes = openTonnes,
+        purchasesTonnes = purchases,
+        issuedTonnes = existing?.issuedTonnes ?: 0.0,
+        closingTonnes = openTonnes + purchases - (existing?.issuedTonnes ?: 0.0),
+        source = "BOWZER_RECEIPT"
+    )
+    savePlantDailyReport(rpt, actor)
+    logAudit("PlantDailyReport", blNumber, "LOG_BULK_RECEIPT", actor, AccountableRole.PLANT, "Received $netWeightTonnes tonnes from $supplier (Tanker $tankerNumber)")
+    notifyChanged()
+    return Pair(true, "Bulk LPG decanting logged: $netWeightTonnes tonnes from $supplier.")
+}
+
+fun BlueGasStore.recordDailyPlantDip(
+    tankId: String,
+    liquidLevelCm: Double,
+    pressureBar: Double,
+    temperatureC: Double,
+    calculatedTonnes: Double,
+    actor: String = "Plant Shift Supervisor"
+): Pair<Boolean, String> {
+    val today = "2026-10-20"
+    val existing = plantReports.find { it.date == today }
+    val rpt = PlantDailyReport(
+        date = today,
+        openingTonnes = existing?.openingTonnes ?: 45.0,
+        purchasesTonnes = existing?.purchasesTonnes ?: 0.0,
+        issuedTonnes = existing?.issuedTonnes ?: 0.0,
+        closingTonnes = calculatedTonnes,
+        source = "DAILY_DIP"
+    )
+    savePlantDailyReport(rpt, actor)
+    logAudit("PlantDailyReport", tankId, "RECORD_DAILY_DIP", actor, AccountableRole.PLANT, "Tank dip reading: $liquidLevelCm cm ($calculatedTonnes T) at $pressureBar bar")
+    notifyChanged()
+    return Pair(true, "Daily tank dip recorded: $calculatedTonnes metric tonnes.")
+}
+
+fun BlueGasStore.recordCylinderTesting(
+    serialNumber: String,
+    nextRetestDate: String,
+    certificateNo: String,
+    testPressureBar: Double = 30.0,
+    actor: String = "Certified HSE Tester"
+): Pair<Boolean, String> {
+    val cyl = cylinders.find { it.serialNumber == serialNumber }
+    if (cyl != null) {
+        val idx = cylinders.indexOf(cyl)
+        cylinders[idx] = cyl.copy(lastInspectionDate = nextRetestDate, hseHold = false)
+    }
+    logAudit("Cylinder", serialNumber, "HYDRO_TEST_CERTIFICATION", actor, AccountableRole.HSE, "Hydro-test cert $certificateNo passed, next retest $nextRetestDate")
+    notifyChanged()
+    return Pair(true, "Cylinder $serialNumber certified under certificate $certificateNo.")
+}
+
+fun BlueGasStore.recordCylinderScrap(
+    serialNumber: String,
+    reason: String,
+    scrapCertificateNo: String,
+    actor: String = "HSE Inspection Lead"
+): Pair<Boolean, String> {
+    val cyl = cylinders.find { it.serialNumber == serialNumber }
+    if (cyl != null) {
+        val idx = cylinders.indexOf(cyl)
+        cylinders[idx] = cyl.copy(status = InventoryState.INV_WRITEOFF, hseHold = true)
+    }
+    logAudit("Cylinder", serialNumber, "CONDEMN_SCRAP", actor, AccountableRole.HSE, "Scrap cert $scrapCertificateNo: $reason")
+    notifyChanged()
+    return Pair(true, "Cylinder $serialNumber condemned and scrapped.")
+}
+
+fun BlueGasStore.submitPhysicalStockAudit(
+    pointId: String,
+    counts: Map<String, Int>,
+    actor: String = "Audit Controller"
+): Pair<Boolean, String> {
+    val lines = counts.map { (sku, physical) ->
+        val sysStock = stockBalances.find { it.pointId == pointId && it.skuId == sku }?.filledQty ?: 0
+        val diff = physical - sysStock
+        ReconLine(
+            area = "PHYSICAL_AUDIT_$pointId",
+            skuId = sku,
+            expected = "$sysStock",
+            actual = "$physical",
+            difference = "$diff",
+            note = if (diff == 0) "Exact match" else "Physical audit discrepancy: $diff"
+        )
+    }
+    val hasDiff = lines.any { it.difference != "0" }
+    val recon = DailyReconciliation(
+        id = "AUDIT-" + UUID.randomUUID().toString().take(6),
+        date = "2026-10-20",
+        runBy = actor,
+        lines = lines,
+        status = if (hasDiff) "DIFFERENCES_FOUND" else "MATCHED"
+    )
+    reconciliations.add(recon)
+    logAudit("StockAudit", pointId, "PHYSICAL_AUDIT", actor, AccountableRole.INVENTORY, "Physical count submitted. Status: ${recon.status}")
+    notifyChanged()
+    return Pair(true, "Physical stock audit recorded with status ${recon.status}.")
+}
+
+fun BlueGasStore.reconcileStockAudit(
+    reconId: String,
+    notes: String,
+    actor: String = "Plant Manager"
+): Pair<Boolean, String> {
+    val recon = reconciliations.find { it.id == reconId } ?: return Pair(false, "Reconciliation not found")
+    logAudit("StockAudit", reconId, "RECONCILE_AUDIT", actor, AccountableRole.INVENTORY, "Reconciled with notes: $notes")
+    notifyChanged()
+    return Pair(true, "Stock audit $reconId reconciled and posted.")
+}

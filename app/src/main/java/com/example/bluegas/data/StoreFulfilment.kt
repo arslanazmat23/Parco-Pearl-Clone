@@ -604,8 +604,10 @@ fun BlueGasStore.completeHandover(
             PaymentStateMachine.transition(payment, PaymentState.FINAL_AMOUNT_DETERMINED, actualActor, "Final COD amount determined", paymentHistory)
             PaymentStateMachine.transition(payment, PaymentState.CASH_COLLECTION_PENDING, actualActor, "Cash collection pending", paymentHistory)
             PaymentStateMachine.transition(payment, PaymentState.CASH_COLLECTED, actualActor, "Cash collected by rider", paymentHistory)
+            PaymentStateMachine.transition(payment, PaymentState.SETTLED, actualActor, "Cash collected at doorstep handover", paymentHistory)
             payment.capturedAmountPaisa = rec
-            postLedger(orderId, "COD_COLLECTION", debitPaisa = rec, description = "Cash collected by rider — awaiting reconciliation")
+            payment.settledAmountPaisa = rec
+            postLedger(orderId, "COD_COLLECTION", debitPaisa = rec, description = "Cash collected by rider — settled")
 
             codCollections.add(
                 CodCollection(
@@ -909,5 +911,17 @@ fun BlueGasStore.toggleRiderShiftStatus(riderId: String) {
     val nextStatus = if (r.status == "ACTIVE") "INACTIVE" else "ACTIVE"
     riders[idx] = r.copy(status = nextStatus)
     notifyChanged()
+}
+
+fun BlueGasStore.completeDepotPickup(orderId: String): Pair<Boolean, String> {
+    val order = orders.find { it.id == orderId } ?: return Pair(false, "Order not found.")
+    val serial = order.allocatedSerial ?: "SERIAL-DEPOT-01"
+    val isPaid = activePaymentFor(orderId)?.state == PaymentState.SETTLED || activePaymentFor(orderId)?.state == PaymentState.CAPTURED
+    return completeCounterHandover(
+        orderId = orderId,
+        pinOrRefChecked = true,
+        scannedCylinderId = serial,
+        amountReceivedPaisa = if (!isPaid) order.totalAmountPaisa else null
+    )
 }
 

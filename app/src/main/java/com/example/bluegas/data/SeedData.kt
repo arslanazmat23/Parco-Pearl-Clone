@@ -68,7 +68,8 @@ internal fun BlueGasStore.seedAll() {
     // 9. Cylinders
     // NODE-LHR-1
     cylinders.add(Cylinder("BG-LHR-001", "SKU-LPG-11-8", 11.8, InventoryState.INV_CONSUMED, CylinderCustody.CUSTOMER_PREMISES, "With Customer (CUST-001)"))
-    cylinders.add(Cylinder("BG-LHR-002", "SKU-LPG-11-8", 11.8, InventoryState.INV_AVAIL, CylinderCustody.DISTRIBUTOR_NODE, "Gulberg Dispatch Terminal", hseHold = true))
+    cylinders.add(Cylinder("BG-LHR-002", "SKU-LPG-11-8", 11.8, InventoryState.INV_AVAIL, CylinderCustody.DISTRIBUTOR_NODE, "Gulberg Dispatch Terminal"))
+    cylinders.add(Cylinder("BG-LHR-INC-001", "SKU-LPG-11-8", 11.8, InventoryState.INV_AVAIL, CylinderCustody.DISTRIBUTOR_NODE, "Gulberg Dispatch Terminal", hseHold = true, allocatedOrderId = "ORD-SEED-111"))
     cylinders.add(Cylinder("BG-LHR-003", "SKU-LPG-11-8", 11.8, InventoryState.INV_SERIAL, CylinderCustody.DISTRIBUTOR_NODE, "Gulberg Dispatch Terminal", allocatedOrderId = "ORD-SEED-112"))
     cylinders.add(Cylinder("BG-LHR-118-001", "SKU-LPG-11-8", 11.8, InventoryState.INV_SERIAL, CylinderCustody.DISTRIBUTOR_NODE, "Gulberg Dispatch Terminal", allocatedOrderId = "ORD-SEED-107"))
     cylinders.add(Cylinder("BG-LHR-118-002", "SKU-LPG-11-8", 11.8, InventoryState.INV_AVAIL, CylinderCustody.DISTRIBUTOR_NODE, "Gulberg Dispatch Terminal"))
@@ -540,7 +541,7 @@ internal fun BlueGasStore.seedAll() {
         paymentMethod = PaymentMethod.CASH_ON_DELIVERY,
         assignedDistributorId = "DIST-001",
         assignedRiderId = "RIDER-001",
-        allocatedSerial = "BG-LHR-002",
+        allocatedSerial = "BG-LHR-INC-001",
         exceptionReason = ExceptionReason.DELIVERY_FAILURE_OR_CUSTOMER_UNAVAILABLE,
         exceptionDetails = "Rider stopped at handover — suspected gas smell"
     )
@@ -552,7 +553,7 @@ internal fun BlueGasStore.seedAll() {
         id = "INC-0001",
         source = "DELIVERY",
         orderId = "ORD-SEED-111",
-        cylinderId = "BG-LHR-002",
+        cylinderId = "BG-LHR-INC-001",
         description = "Rider stopped at handover — suspected gas smell",
         location = "House 12, School Road, F-6",
         peopleInvolved = "Hamza Sheikh & Bilal Ahmed",

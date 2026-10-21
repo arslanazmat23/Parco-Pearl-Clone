@@ -201,3 +201,27 @@ fun BlueGasStore.simulateApplicantResubmission(appId: String): Pair<Boolean, Str
     notifyChanged()
     return Pair(true, "Applicant ${app.applicantName} re-submitted application with full documents.")
 }
+
+fun BlueGasStore.returnPartnerApplication(
+    appId: String,
+    missingDetails: String,
+    actor: String = "Operations Lead"
+): Pair<Boolean, String> {
+    val list = if (missingDetails.isBlank()) listOf("Required documents missing") else listOf(missingDetails)
+    return returnIncomplete(appId, list, actor)
+}
+
+fun BlueGasStore.rejectPartner(
+    appId: String,
+    reason: String,
+    actor: String = "Operations Lead"
+): Pair<Boolean, String> {
+    val app = partnerApplications.find { it.id == appId } ?: return Pair(false, "Application not found")
+    app.status = "REJECTED"
+    app.decisionReason = reason
+    app.decidedBy = actor
+    app.decidedAt = System.currentTimeMillis()
+    logAudit("PartnerApplication", appId, "REJECT_PARTNER", actor, AccountableRole.OPERATIONS, reason)
+    notifyChanged()
+    return Pair(true, "Application for ${app.applicantName} rejected.")
+}

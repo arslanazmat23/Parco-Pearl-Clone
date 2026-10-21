@@ -343,3 +343,43 @@ fun BlueGasStore.retryCapture(paymentId: String): Pair<Boolean, String> {
     notifyChanged()
     return Pair(true, "Capture retried and payment settled.")
 }
+
+fun BlueGasStore.approveCashHandover(handoverId: String, note: String = "Approved by Finance", actor: String = "Finance Lead"): Pair<Boolean, String> {
+    val handover = cashHandovers.find { it.id == handoverId } ?: return Pair(false, "Handover not found")
+    return reconcileCashHandover(handoverId, handover.declaredPaisa, if (handover.declaredPaisa != handover.expectedPaisa) note else null, actor)
+}
+
+fun BlueGasStore.disputeCashHandover(handoverId: String, reason: String, actor: String = "Finance Lead"): Pair<Boolean, String> {
+    val handover = cashHandovers.find { it.id == handoverId } ?: return Pair(false, "Handover not found")
+    handover.status = "DISPUTED"
+    handover.reason = reason
+    handover.reconciledAt = System.currentTimeMillis()
+    handover.reconciledBy = actor
+    val diff = handover.declaredPaisa - handover.expectedPaisa
+    handover.differencePaisa = diff
+    reconExceptions.add(
+        ReconciliationException(
+            id = "EXC-CSH-" + java.util.UUID.randomUUID().toString().take(6),
+            code = "EXC-21",
+            description = "Disputed cash handover $handoverId: $reason",
+            ownerRole = AccountableRole.FINANCE
+        )
+    )
+    logAudit("CashHandover", handoverId, "DISPUTE_CASH", actor, AccountableRole.FINANCE, "Disputed: $reason")
+    notifyChanged()
+    return Pair(true, "Handover $handoverId marked as DISPUTED.")
+}
+
+fun BlueGasStore.reconcileGatewayPout(
+    gateway: String,
+    batchRef: String,
+    expectedPaisa: Long,
+    settledPaisa: Long,
+    feePaisa: Long,
+    actor: String = "Finance Lead"
+): Pair<Boolean, String> {
+    val diff = (expectedPaisa - feePaisa) - settledPaisa
+    logAudit("GatewayPayout", batchRef, "RECONCILE_PAYOUT", actor, AccountableRole.FINANCE, "Reconciled $gateway batch $batchRef: Expected=${formatPaisaToPkr(expectedPaisa)}, Settled=${formatPaisaToPkr(settledPaisa)}, Fee=${formatPaisaToPkr(feePaisa)}, Diff=${formatPaisaToPkr(diff)}")
+    notifyChanged()
+    return Pair(true, "Gateway payout batch $batchRef reconciled successfully.")
+}

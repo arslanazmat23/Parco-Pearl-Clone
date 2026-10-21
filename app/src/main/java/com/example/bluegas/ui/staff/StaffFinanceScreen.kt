@@ -243,10 +243,10 @@ fun StaffFinanceScreen(
                                     horizontalArrangement = Arrangement.SpaceBetween,
                                     verticalAlignment = Alignment.CenterVertically
                                 ) {
-                                    Text("Handover ${csh.id} • ${csh.pointId ?: csh.riderId ?: "N/A"}", fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                                    Text("Handover ${csh.id} • ${csh.collectorType} (${csh.collectorId})", fontWeight = FontWeight.Bold, fontSize = 12.sp)
                                     Surface(
                                         color = when (csh.status) {
-                                            "APPROVED" -> Color(0xFFDCFCE7)
+                                            "APPROVED", "RECONCILED" -> Color(0xFFDCFCE7)
                                             "DISPUTED" -> Color(0xFFFEE2E2)
                                             else -> Color(0xFFFEF3C7)
                                         },
@@ -257,7 +257,7 @@ fun StaffFinanceScreen(
                                             fontSize = 9.sp,
                                             fontWeight = FontWeight.Bold,
                                             color = when (csh.status) {
-                                                "APPROVED" -> Color(0xFF166534)
+                                                "APPROVED", "RECONCILED" -> Color(0xFF166534)
                                                 "DISPUTED" -> Color(0xFF991B1B)
                                                 else -> Color(0xFF92400E)
                                             },
@@ -265,10 +265,11 @@ fun StaffFinanceScreen(
                                         )
                                     }
                                 }
-                                Text("Declared: ${formatPaisaToPkr(csh.declaredPaisa)} • Variance: ${formatPaisaToPkr(csh.variancePaisa)}", fontSize = 11.sp)
-                                Text("Submitted by: ${csh.submittedBy} • Deposit Ref: ${csh.bankDepositSlipRef ?: "Direct"}", fontSize = 10.sp, color = Color(0xFF475569))
+                                val varPaisa = csh.differencePaisa ?: (csh.declaredPaisa - csh.expectedPaisa)
+                                Text("Declared: ${formatPaisaToPkr(csh.declaredPaisa)} • Variance: ${formatPaisaToPkr(varPaisa)}", fontSize = 11.sp)
+                                Text("Collector: ${csh.collectorId} • Recipient: ${csh.recipient}", fontSize = 10.sp, color = Color(0xFF475569))
 
-                                if (csh.status == "DECLARED") {
+                                if (csh.status == "SUBMITTED" || csh.status == "DECLARED") {
                                     Spacer(modifier = Modifier.height(6.dp))
                                     Row(
                                         modifier = Modifier.fillMaxWidth(),

@@ -121,7 +121,7 @@ fun StaffPhase2Screen(
                                     horizontalArrangement = Arrangement.SpaceBetween,
                                     verticalAlignment = Alignment.CenterVertically
                                 ) {
-                                    Text("Claim ${claim.id} • ${claim.brand}", fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                                    Text("Claim ${claim.id} • ${claim.declaredBrand}", fontWeight = FontWeight.Bold, fontSize = 12.sp)
                                     Surface(
                                         color = when (claim.status) {
                                             ClaimStatus.CLOSED, ClaimStatus.EXCHANGE_COMPLETED -> Color(0xFFDCFCE7)
@@ -143,8 +143,8 @@ fun StaffPhase2Screen(
                                         )
                                     }
                                 }
-                                Text("Customer: ${claim.customerId} • Serial: ${claim.serialNumber}", fontSize = 11.sp)
-                                Text("Condition: ${claim.conditionDescription} • Tare Weight: ${claim.tareWeightKg}kg", fontSize = 10.sp, color = Color(0xFF475569))
+                                Text("Customer: ${claim.customerId} • Serial: ${claim.declaredSerial ?: "N/A"}", fontSize = 11.sp)
+                                Text("Condition: ${claim.declaredCondition} • Declared Size: ${claim.declaredSize}", fontSize = 10.sp, color = Color(0xFF475569))
 
                                 if (claim.provisionalOfferPaisa > 0) {
                                     Text("Provisional Offer: ${formatPaisaToPkr(claim.provisionalOfferPaisa)}", fontSize = 11.sp, color = Color(0xFF166534), fontWeight = FontWeight.SemiBold)
@@ -242,7 +242,7 @@ fun StaffPhase2Screen(
                                             }
                                         }
                                     }
-                                    ClaimStatus.SETTLEMENT_BENEFIT_APPLIED -> {
+                                    ClaimStatus.FINAL_OFFER_CONFIRMED -> {
                                         Button(
                                             onClick = {
                                                 val (ok, msg) = store.issueSettlementPayout(claim.id)
@@ -287,7 +287,7 @@ fun StaffPhase2Screen(
                                     Text("Asset ${sur.id} (${sur.brand})", fontWeight = FontWeight.Bold, fontSize = 12.sp)
                                     Text(sur.status.name, fontSize = 9.sp, fontWeight = FontWeight.Bold, color = BlueGasPrimary)
                                 }
-                                Text("Serial: ${sur.serialNumber} • Location: ${sur.holdingLocationLabel}", fontSize = 10.sp)
+                                Text("Serial: ${sur.serialText} • Location: Depot Quarantine", fontSize = 10.sp)
 
                                 if (sur.status == SurrenderStatus.COLLECTED || sur.status == SurrenderStatus.RECEIVED_AT_DEPOT) {
                                     Spacer(modifier = Modifier.height(6.dp))
@@ -343,8 +343,8 @@ fun StaffPhase2Screen(
                         ) {
                             Column(modifier = Modifier.padding(8.dp)) {
                                 Text("Diagnostic ${tb.id} • Customer: ${tb.customerId}", fontWeight = FontWeight.Bold, fontSize = 11.sp)
-                                Text("Issue: ${tb.issueType} • Outcome: ${tb.outcome}", fontSize = 10.sp, color = Color(0xFF1E40AF))
-                                Text(tb.notes ?: "", fontSize = 10.sp, color = Color(0xFF475569))
+                                Text("Channel: ${tb.channel} • Status: ${tb.status}", fontSize = 10.sp, color = Color(0xFF1E40AF))
+                                Text(tb.description, fontSize = 10.sp, color = Color(0xFF475569))
                             }
                         }
                     }

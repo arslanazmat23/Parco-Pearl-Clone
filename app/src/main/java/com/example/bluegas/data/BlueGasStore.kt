@@ -413,7 +413,7 @@ class BlueGasStore {
             state = PaymentState.FULL_REFUND_PENDING
         )
         refunds.add(ref)
-        if (payment != null && payment.state == PaymentState.INITIAL_AMOUNT_CAPTURED) {
+        if (payment != null) {
             payment.state = PaymentState.FULL_REFUND_PENDING
         }
         return processRefund(refId, succeed = true, actor = actor)
