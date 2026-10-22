@@ -334,6 +334,11 @@ fun BlueGasStore.cancelOrder(
 ): Pair<Boolean, String> {
     val order = orders.find { it.id == orderId } ?: return Pair(false, "Order not found")
 
+    // F0.1: Validate state machine permission before releasing stock or serials
+    if (OrderStatus.ORD_CANC !in OrderStateMachine.allowedTransitionsMap[order.status].orEmpty()) {
+        return Pair(false, "This order can no longer be cancelled.")
+    }
+
     // Release stock holds
     stockHolds.filter { it.orderId == orderId && !it.isReleased }.forEach { h ->
         h.isReleased = true

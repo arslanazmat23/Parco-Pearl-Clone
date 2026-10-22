@@ -644,7 +644,7 @@ data class LedgerEntry(
 
 data class SupportCase(
     val id: String,
-    val orderId: String,
+    val orderId: String? = null,
     val customerId: String,
     val issueType: String, // "DELIVERY_DELAY", "OVERCHARGE", "CYLINDER_CONDITION", "RIDER_CONDUCT", "APP_PAYMENT", "OTHER"
     val description: String,

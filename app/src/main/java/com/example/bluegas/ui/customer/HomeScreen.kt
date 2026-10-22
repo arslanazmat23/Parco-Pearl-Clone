@@ -1,6 +1,6 @@
 package com.example.bluegas.ui.customer
 
-import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
@@ -12,6 +12,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -21,28 +22,15 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import com.example.bluegas.data.*
+import com.example.bluegas.data.BlueGasStore
+import com.example.bluegas.data.PricingEngine
+import com.example.bluegas.data.confirmPaymentAndAdvance
+import com.example.bluegas.data.createOrder
 import com.example.bluegas.model.*
 import com.example.ui.theme.BlueGasDark
 import com.example.ui.theme.BlueGasPrimary
 
-@Composable
-fun DemoValuePill(text: String, modifier: Modifier = Modifier) {
-    Surface(
-        color = Color(0xFFE2E8F0),
-        shape = RoundedCornerShape(4.dp),
-        modifier = modifier
-    ) {
-        Text(
-            text = text,
-            fontSize = 9.sp,
-            fontWeight = FontWeight.Medium,
-            color = Color(0xFF475569),
-            modifier = Modifier.padding(horizontal = 5.dp, vertical = 2.dp)
-        )
-    }
-}
-
+// F5 HomeScreen
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun HomeScreen(
@@ -50,56 +38,71 @@ fun HomeScreen(
     onOrderCreated: (Order) -> Unit,
     onNavigateToOrders: () -> Unit,
     onTrackOrder: (String) -> Unit,
-    modifier: Modifier = Modifier,
-    prefillSku: String? = null,
-    prefillQuantity: Int? = null,
-    prefillOrderType: OrderType? = null,
-    prefillAddressId: String? = null,
-    prefillMode: FulfilmentMode? = null,
-    prefillPaymentMethod: PaymentMethod? = null
+    onActionMessage: (String, Boolean) -> Unit,
+    prefill: ReorderPrefill? = null,
+    onPrefillConsumed: () -> Unit = {},
+    modifier: Modifier = Modifier
 ) {
     val snapshot by store.appState.collectAsStateWithLifecycle()
     val activeCustomer = snapshot.activeCustomer ?: return
     val customerAddresses = snapshot.addresses.filter { it.customerId == activeCustomer.id }
 
-    var selectedAddressId by remember(activeCustomer.id) {
+    // F5.6 Choices held in rememberSaveable across tabs
+    var orderType by rememberSaveable { mutableStateOf(OrderType.REFILL_EXCHANGE) }
+    var selectedSku by rememberSaveable { mutableStateOf("SKU-LPG-11-8") }
+    var selectedAddressId by rememberSaveable {
         mutableStateOf(
-            prefillAddressId
-                ?: customerAddresses.firstOrNull { it.isServiceable }?.id
+            customerAddresses.firstOrNull { it.isServiceable }?.id
                 ?: customerAddresses.firstOrNull()?.id
-                ?: snapshot.addresses.firstOrNull()?.id
                 ?: ""
         )
     }
-    var orderType by remember { mutableStateOf(prefillOrderType ?: OrderType.REFILL_EXCHANGE) }
-    var selectedSku by remember { mutableStateOf(prefillSku ?: "SKU-LPG-11-8") }
-    var selectedMode by remember { mutableStateOf(prefillMode ?: FulfilmentMode.DELIVERY) }
-    var hasEmptyCylinderToExchange by remember { mutableStateOf(true) }
-    var quantity by remember { mutableIntStateOf(prefillQuantity ?: 1) }
-    var paymentMethodChoice by remember { mutableStateOf(prefillPaymentMethod ?: PaymentMethod.ONLINE_HOSTED) }
+    var selectedMode by rememberSaveable { mutableStateOf(FulfilmentMode.DELIVERY) }
+    var hasEmptyCylinderToExchange by rememberSaveable { mutableStateOf(true) }
+    var quantity by rememberSaveable { mutableIntStateOf(1) }
+    var paymentMethodChoice by rememberSaveable { mutableStateOf(PaymentMethod.ONLINE_HOSTED) }
+    var addAccessory by rememberSaveable { mutableStateOf(false) }
+    var selectedPickupNodeId by rememberSaveable { mutableStateOf("") }
 
-    // Nearest pickup point for depot pickup
-    val availablePickupNodes = snapshot.nodes.filter { it.pickupEnabled && it.type != FulfilmentPointType.PLANT }
-        .ifEmpty { snapshot.nodes.filter { it.pickupEnabled } }
-    var selectedPickupNodeId by remember {
-        mutableStateOf(availablePickupNodes.firstOrNull()?.id ?: "NODE-LHR-1")
-    }
-
-    // Prefill updates when navigating from Reorder
-    LaunchedEffect(prefillSku, prefillQuantity, prefillOrderType, prefillAddressId, prefillMode, prefillPaymentMethod) {
-        if (prefillSku != null) selectedSku = prefillSku
-        if (prefillQuantity != null) quantity = prefillQuantity
-        if (prefillOrderType != null) orderType = prefillOrderType
-        if (prefillAddressId != null) selectedAddressId = prefillAddressId
-        if (prefillMode != null) selectedMode = prefillMode
-        if (prefillPaymentMethod != null) paymentMethodChoice = prefillPaymentMethod
-    }
-
-    // Dialog state for Mocked Hosted Gateway
-    var showPaymentGatewayDialog by remember { mutableStateOf(false) }
+    // F5.7 Double-tap guard
+    var placing by remember { mutableStateOf(false) }
     var createdOrderIdForPayment by remember { mutableStateOf<String?>(null) }
-    var orderCreationError by remember { mutableStateOf<String?>(null) }
-    var feedbackSnackbarMessage by remember { mutableStateOf<String?>(null) }
+    var showPaymentGatewayDialog by remember { mutableStateOf(false) }
+
+    // Reset when switching customer
+    LaunchedEffect(activeCustomer.id) {
+        val defaultAddr = customerAddresses.firstOrNull { it.isDefault }
+            ?: customerAddresses.firstOrNull { it.isServiceable }
+            ?: customerAddresses.firstOrNull()
+        selectedAddressId = defaultAddr?.id ?: ""
+        selectedSku = "SKU-LPG-11-8"
+        quantity = 1
+        orderType = OrderType.REFILL_EXCHANGE
+        selectedMode = FulfilmentMode.DELIVERY
+        paymentMethodChoice = PaymentMethod.ONLINE_HOSTED
+        addAccessory = false
+    }
+
+    // F5.5 Apply Reorder Prefill
+    LaunchedEffect(prefill?.nonce) {
+        val p = prefill ?: return@LaunchedEffect
+        if (customerAddresses.any { it.id == p.addressId }) {
+            selectedAddressId = p.addressId ?: ""
+        } else {
+            selectedAddressId = customerAddresses.firstOrNull { it.isDefault }?.id
+                ?: customerAddresses.firstOrNull { it.isServiceable }?.id
+                ?: customerAddresses.firstOrNull()?.id
+                ?: ""
+        }
+        val approvedSkus = snapshot.productVariants.filter { it.isCylinder && it.isHouseholdApproved }.map { it.sku }
+        selectedSku = if (p.sku in approvedSkus) p.sku else (approvedSkus.firstOrNull() ?: "SKU-LPG-11-8")
+        quantity = p.quantity.coerceIn(1, snapshot.settings.maxQuantityPerOrder)
+        orderType = if (p.orderType == OrderType.NEW_CYLINDER) OrderType.NEW_CYLINDER else OrderType.REFILL_EXCHANGE
+        selectedMode = p.mode
+        paymentMethodChoice = p.paymentMethod
+        addAccessory = p.addAccessory
+        onPrefillConsumed()
+    }
 
     val activeAddress = snapshot.addresses.find { it.id == selectedAddressId }
         ?: customerAddresses.firstOrNull()
@@ -114,23 +117,34 @@ fun HomeScreen(
             zoneId = "Z-01",
             isServiceable = false
         )
-    val selectedProduct = snapshot.productVariants.find { it.sku == selectedSku }
-    val selectedPickupNode = snapshot.nodes.find { it.id == selectedPickupNodeId } ?: availablePickupNodes.firstOrNull()
 
-    // Deposit inclusion logic
-    val includeDeposit = when (orderType) {
-        OrderType.NEW_CYLINDER -> snapshot.settings.newCylinderModel == NewCylinderModel.DEPOSIT
-        OrderType.REFILL_EXCHANGE -> !hasEmptyCylinderToExchange
-        else -> false
+    // F5.3 Pickup depots restricted to address city
+    val cityPickupNodes = snapshot.nodes.filter {
+        it.pickupEnabled && it.type != FulfilmentPointType.PLANT && it.city.equals(activeAddress.city, ignoreCase = true)
     }
 
+    // Force PICKUP when address is not serviceable, and set valid pickup depot
+    LaunchedEffect(activeAddress.id, activeAddress.isServiceable, cityPickupNodes.size) {
+        if (!activeAddress.isServiceable) {
+            selectedMode = FulfilmentMode.PICKUP
+        }
+        if (selectedPickupNodeId.isEmpty() || cityPickupNodes.none { it.id == selectedPickupNodeId }) {
+            selectedPickupNodeId = cityPickupNodes.firstOrNull()?.id ?: ""
+        }
+    }
+
+    // F5.1 Accessory price
+    val accessoryUnitPricePaisa = snapshot.currentPriceList.accessoryPaisa["SKU-REG-HOSE"] ?: 145000L
+    val accessoryPriceRupees = PricingEngine.roundToRupees(accessoryUnitPricePaisa)
+
     // Unified pricing quote with PricingEngine
+    val accessoriesList = if (addAccessory) listOf("SKU-REG-HOSE" to 1) else emptyList()
     val quote = remember(
         selectedSku,
         quantity,
         selectedMode,
         orderType,
-        includeDeposit,
+        addAccessory,
         snapshot.currentPriceList,
         snapshot.taxConfig,
         snapshot.settings
@@ -139,7 +153,7 @@ fun HomeScreen(
             orderType = orderType,
             sku = selectedSku,
             quantity = quantity,
-            accessories = emptyList(),
+            accessories = accessoriesList,
             mode = selectedMode,
             priceList = snapshot.currentPriceList,
             tax = snapshot.taxConfig,
@@ -155,34 +169,6 @@ fun HomeScreen(
             .testTag("customer_home_screen"),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
-        // Feedback Message Banner
-        if (feedbackSnackbarMessage != null) {
-            item {
-                Surface(
-                    color = Color(0xFFDCFCE7),
-                    shape = RoundedCornerShape(8.dp),
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)
-                    ) {
-                        Icon(Icons.Default.CheckCircle, contentDescription = null, tint = Color(0xFF166534), modifier = Modifier.size(16.dp))
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text(
-                            text = feedbackSnackbarMessage ?: "",
-                            fontSize = 11.sp,
-                            color = Color(0xFF166534),
-                            modifier = Modifier.weight(1f)
-                        )
-                        IconButton(onClick = { feedbackSnackbarMessage = null }, modifier = Modifier.size(24.dp)) {
-                            Icon(Icons.Default.Close, contentDescription = "Dismiss", tint = Color(0xFF166534), modifier = Modifier.size(14.dp))
-                        }
-                    }
-                }
-            }
-        }
-
         // Greeting Banner
         item {
             val hour = java.util.Calendar.getInstance().get(java.util.Calendar.HOUR_OF_DAY)
@@ -212,9 +198,7 @@ fun HomeScreen(
             Card(
                 colors = CardDefaults.cardColors(containerColor = BlueGasPrimary),
                 shape = RoundedCornerShape(14.dp),
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .testTag("home_hero_card")
+                modifier = Modifier.fillMaxWidth().testTag("home_hero_card")
             ) {
                 Row(
                     modifier = Modifier.padding(14.dp),
@@ -253,12 +237,12 @@ fun HomeScreen(
             }
         }
 
-        // Order Type Selector (Q03 / Q20)
+        // F5.1 Order Type Selector: 2 options only
         item {
             Card(
                 colors = CardDefaults.cardColors(containerColor = Color.White),
                 shape = RoundedCornerShape(12.dp),
-                border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFFE2E8F0)),
+                border = BorderStroke(1.dp, Color(0xFFE2E8F0)),
                 modifier = Modifier.fillMaxWidth().testTag("order_type_selector_card")
             ) {
                 Column(modifier = Modifier.padding(12.dp)) {
@@ -271,9 +255,8 @@ fun HomeScreen(
                     Spacer(modifier = Modifier.height(8.dp))
                     SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth()) {
                         val types = listOf(
-                            Triple("Refill (exchange)", OrderType.REFILL_EXCHANGE, "order_type_refill"),
-                            Triple("New cylinder", OrderType.NEW_CYLINDER, "order_type_new"),
-                            Triple("Accessory only", OrderType.ACCESSORY_ONLY, "order_type_accessory")
+                            Triple("Refill (empty exchange)", OrderType.REFILL_EXCHANGE, "order_type_refill"),
+                            Triple("New cylinder", OrderType.NEW_CYLINDER, "order_type_new")
                         )
                         types.forEachIndexed { index, (label, type, tag) ->
                             SegmentedButton(
@@ -287,8 +270,7 @@ fun HomeScreen(
                         }
                     }
 
-                    // Order Type Context Note
-                    Spacer(modifier = Modifier.height(6.dp))
+                    Spacer(modifier = Modifier.height(8.dp))
                     when (orderType) {
                         OrderType.NEW_CYLINDER -> {
                             val modelNote = when (snapshot.settings.newCylinderModel) {
@@ -310,18 +292,20 @@ fun HomeScreen(
                             }
                         }
                         OrderType.REFILL_EXCHANGE -> {
-                            Text(
-                                text = "Standard refill: Empty cylinder exchange at handover.",
-                                fontSize = 11.sp,
-                                color = Color(0xFF64748B)
-                            )
-                        }
-                        OrderType.ACCESSORY_ONLY -> {
-                            Text(
-                                text = "Order regulators, safety hoses and fittings without gas refill.",
-                                fontSize = 11.sp,
-                                color = Color(0xFF64748B)
-                            )
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                DemoValuePill("Demo value · Q20")
+                                Text(
+                                    text = if (hasEmptyCylinderToExchange)
+                                        "Standard refill: I'll hand back an empty BLUE GAS cylinder at delivery."
+                                    else
+                                        "No empty cylinder to exchange.",
+                                    fontSize = 11.sp,
+                                    color = Color(0xFF475569)
+                                )
+                            }
                         }
                         else -> {}
                     }
@@ -329,15 +313,13 @@ fun HomeScreen(
             }
         }
 
-        // Delivery Address Card & Serviceability (S3)
+        // Delivery Address Card & Serviceability
         item {
             Card(
                 colors = CardDefaults.cardColors(containerColor = Color.White),
                 shape = RoundedCornerShape(12.dp),
-                border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFFE2E8F0)),
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .testTag("address_serviceability_card")
+                border = BorderStroke(1.dp, Color(0xFFE2E8F0)),
+                modifier = Modifier.fillMaxWidth().testTag("address_serviceability_card")
             ) {
                 Column(modifier = Modifier.padding(12.dp)) {
                     Row(
@@ -422,7 +404,7 @@ fun HomeScreen(
                                 text = if (activeAddress.isServiceable)
                                     "This area is in the delivery zone."
                                 else
-                                    "This address is outside the current delivery area.",
+                                    "This address is outside the current delivery area. Depot pickup is available.",
                                 fontSize = 11.sp,
                                 fontWeight = FontWeight.SemiBold,
                                 color = if (activeAddress.isServiceable) Color(0xFF166534) else Color(0xFF991B1B),
@@ -430,136 +412,130 @@ fun HomeScreen(
                             )
                         }
                     }
+                }
+            }
+        }
 
-                    // Depot pickup fallback when out of delivery area
-                    if (!activeAddress.isServiceable) {
-                        Spacer(modifier = Modifier.height(6.dp))
-                        if (selectedMode == FulfilmentMode.PICKUP) {
-                            Surface(
-                                color = Color(0xFFEFF6FF),
-                                shape = RoundedCornerShape(6.dp),
-                                modifier = Modifier.fillMaxWidth()
-                            ) {
-                                Row(
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    modifier = Modifier.padding(8.dp)
-                                ) {
-                                    Icon(Icons.Default.Store, contentDescription = null, tint = BlueGasPrimary, modifier = Modifier.size(16.dp))
-                                    Spacer(modifier = Modifier.width(6.dp))
-                                    Column {
-                                        Text(
-                                            text = "Pickup Depot: ${selectedPickupNode?.name ?: "Main Depot"}",
-                                            fontWeight = FontWeight.Bold,
-                                            fontSize = 11.sp,
-                                            color = BlueGasDark
-                                        )
-                                        Text(
-                                            text = selectedPickupNode?.address ?: "${selectedPickupNode?.city ?: "Lahore"} Collection Counter",
-                                            fontSize = 10.sp,
-                                            color = Color(0xFF64748B)
-                                        )
-                                    }
-                                }
-                            }
-                        } else {
-                            OutlinedButton(
-                                onClick = {
-                                    selectedMode = FulfilmentMode.PICKUP
-                                    if (availablePickupNodes.isNotEmpty()) {
-                                        selectedPickupNodeId = availablePickupNodes.first().id
-                                    }
-                                },
-                                modifier = Modifier.fillMaxWidth().testTag("switch_to_depot_pickup_button"),
-                                colors = ButtonDefaults.outlinedButtonColors(contentColor = BlueGasPrimary)
-                            ) {
-                                Icon(Icons.Default.Store, contentDescription = null, modifier = Modifier.size(16.dp))
-                                Spacer(modifier = Modifier.width(6.dp))
-                                Text("Switch to depot pickup", fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
-                            }
+        // F5.1 Section 1: Choose Cylinder Size (Cylinders only)
+        item {
+            Column {
+                Text(
+                    text = "1. Select Cylinder Size",
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 14.sp,
+                    color = BlueGasDark
+                )
+                Text(
+                    text = "Approved household cylinders",
+                    fontSize = 11.sp,
+                    color = Color(0xFF64748B)
+                )
+            }
+        }
+
+        val approvedCylinders = snapshot.productVariants.filter { it.isCylinder && it.isHouseholdApproved }
+        items(approvedCylinders) { pv ->
+            val pubPrice = PricingEngine.unitPricePublished(pv.sku, snapshot.currentPriceList)
+            val isSelected = pv.sku == selectedSku
+
+            Card(
+                colors = CardDefaults.cardColors(
+                    containerColor = if (isSelected) Color(0xFFEFF6FF) else Color.White
+                ),
+                border = BorderStroke(
+                    if (isSelected) 2.dp else 1.dp,
+                    if (isSelected) BlueGasPrimary else Color(0xFFE2E8F0)
+                ),
+                shape = RoundedCornerShape(12.dp),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable { selectedSku = pv.sku }
+                    .testTag("product_item_${pv.sku}")
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.padding(12.dp)
+                ) {
+                    RadioButton(
+                        selected = isSelected,
+                        onClick = { selectedSku = pv.sku },
+                        colors = RadioButtonDefaults.colors(selectedColor = BlueGasPrimary)
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Column(modifier = Modifier.weight(1f)) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text(
+                                text = pv.name,
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 13.sp,
+                                color = Color(0xFF1E293B)
+                            )
+                            Text(
+                                text = formatRupees(pubPrice),
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 13.sp,
+                                color = BlueGasPrimary
+                            )
+                        }
+                        Text(
+                            text = pv.description,
+                            fontSize = 11.sp,
+                            color = Color(0xFF64748B)
+                        )
+                        if (pv.cylinderSizeKg != null) {
+                            Text(
+                                text = "Size: ${pv.cylinderSizeKg} kg",
+                                fontSize = 10.sp,
+                                fontWeight = FontWeight.Medium,
+                                color = Color(0xFF047857)
+                            )
                         }
                     }
                 }
             }
         }
 
-        // Section 1: Choose Product Variant
-        if (orderType != OrderType.ACCESSORY_ONLY) {
+        // F5.1 Optional Add-on Card: Regulator & Hose
+        if (accessoryUnitPricePaisa > 0L) {
             item {
-                Column {
-                    Text(
-                        text = "1. Select LPG Product",
-                        fontWeight = FontWeight.Bold,
-                        fontSize = 14.sp,
-                        color = BlueGasDark
-                    )
-                    Text(
-                        text = "Prices are shown before you confirm.",
-                        fontSize = 11.sp,
-                        color = Color(0xFF64748B)
-                    )
-                }
-            }
-
-            items(snapshot.productVariants.filter { it.isHouseholdApproved || !it.isCylinder }) { pv ->
-                val pubPrice = PricingEngine.unitPricePublished(pv.sku, snapshot.currentPriceList)
-                val isSelected = pv.sku == selectedSku
-
                 Card(
                     colors = CardDefaults.cardColors(
-                        containerColor = if (isSelected) Color(0xFFEFF6FF) else Color.White
-                    ),
-                    border = androidx.compose.foundation.BorderStroke(
-                        if (isSelected) 2.dp else 1.dp,
-                        if (isSelected) BlueGasPrimary else Color(0xFFE2E8F0)
+                        containerColor = if (addAccessory) Color(0xFFEFF6FF) else Color.White
                     ),
                     shape = RoundedCornerShape(12.dp),
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clickable { selectedSku = pv.sku }
-                        .testTag("product_item_${pv.sku}")
+                    border = BorderStroke(1.dp, if (addAccessory) BlueGasPrimary else Color(0xFFE2E8F0)),
+                    modifier = Modifier.fillMaxWidth().testTag("accessory_addon_card")
                 ) {
                     Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        modifier = Modifier.padding(12.dp)
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { addAccessory = !addAccessory }
+                            .padding(12.dp),
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
-                        RadioButton(
-                            selected = isSelected,
-                            onClick = { selectedSku = pv.sku },
-                            colors = RadioButtonDefaults.colors(selectedColor = BlueGasPrimary)
+                        Checkbox(
+                            checked = addAccessory,
+                            onCheckedChange = { addAccessory = it },
+                            colors = CheckboxDefaults.colors(checkedColor = BlueGasPrimary),
+                            modifier = Modifier.testTag("accessory_checkbox")
                         )
                         Spacer(modifier = Modifier.width(8.dp))
                         Column(modifier = Modifier.weight(1f)) {
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                                modifier = Modifier.fillMaxWidth()
-                            ) {
-                                Text(
-                                    text = pv.name,
-                                    fontWeight = FontWeight.Bold,
-                                    fontSize = 13.sp,
-                                    color = Color(0xFF1E293B)
-                                )
-                                Text(
-                                    text = formatRupees(pubPrice),
-                                    fontWeight = FontWeight.Bold,
-                                    fontSize = 13.sp,
-                                    color = BlueGasPrimary
-                                )
-                            }
                             Text(
-                                text = pv.description,
+                                text = "Add regulator & hose (+${formatRupees(accessoryPriceRupees * 100L)})",
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 13.sp,
+                                color = Color(0xFF1E293B)
+                            )
+                            Text(
+                                text = "Low pressure regulator and reinforced LPG hose.",
                                 fontSize = 11.sp,
                                 color = Color(0xFF64748B)
                             )
-                            if (pv.cylinderSizeKg != null) {
-                                Text(
-                                    text = "Cylinder size: ${pv.cylinderSizeKg} kg",
-                                    fontSize = 10.sp,
-                                    fontWeight = FontWeight.Medium,
-                                    color = Color(0xFF047857)
-                                )
-                            }
                         }
                     }
                 }
@@ -583,14 +559,17 @@ fun HomeScreen(
                     val deliveryFeeLabel = formatRupees(snapshot.currentPriceList.deliveryFeePaisa)
                     FilterChip(
                         selected = selectedMode == FulfilmentMode.DELIVERY,
-                        onClick = { selectedMode = FulfilmentMode.DELIVERY },
+                        onClick = {
+                            if (activeAddress.isServiceable) {
+                                selectedMode = FulfilmentMode.DELIVERY
+                            }
+                        },
+                        enabled = activeAddress.isServiceable,
                         label = { Text("Doorstep delivery (+$deliveryFeeLabel)", fontSize = 11.sp) },
                         leadingIcon = {
                             Icon(Icons.Default.DeliveryDining, contentDescription = null, modifier = Modifier.size(16.dp))
                         },
-                        modifier = Modifier
-                            .weight(1f)
-                            .testTag("mode_delivery_chip")
+                        modifier = Modifier.weight(1f).testTag("mode_delivery_chip")
                     )
                     FilterChip(
                         selected = selectedMode == FulfilmentMode.PICKUP,
@@ -599,67 +578,71 @@ fun HomeScreen(
                         leadingIcon = {
                             Icon(Icons.Default.Store, contentDescription = null, modifier = Modifier.size(16.dp))
                         },
-                        modifier = Modifier
-                            .weight(1f)
-                            .testTag("mode_pickup_chip")
+                        modifier = Modifier.weight(1f).testTag("mode_pickup_chip")
                     )
                 }
             }
         }
 
-        // Section 3: Cylinder Exchange vs New Security Deposit
-        if (orderType == OrderType.REFILL_EXCHANGE && selectedProduct?.isCylinder == true) {
+        // F5.3 Depot Picker (when PICKUP is selected)
+        if (selectedMode == FulfilmentMode.PICKUP) {
             item {
                 Card(
-                    colors = CardDefaults.cardColors(containerColor = Color(0xFFFFFBEB)),
+                    colors = CardDefaults.cardColors(containerColor = Color.White),
                     shape = RoundedCornerShape(12.dp),
-                    border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFFFDE68A)),
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .testTag("cylinder_deposit_card")
+                    border = BorderStroke(1.dp, Color(0xFFE2E8F0)),
+                    modifier = Modifier.fillMaxWidth().testTag("depot_picker_card")
                 ) {
                     Column(modifier = Modifier.padding(12.dp)) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text(
-                                    text = "Empty Cylinder Exchange",
-                                    fontWeight = FontWeight.Bold,
-                                    fontSize = 13.sp,
-                                    color = Color(0xFF78350F)
-                                )
-                                Text(
-                                    text = if (hasEmptyCylinderToExchange)
-                                        "I'll hand back an empty BLUE GAS cylinder at delivery."
-                                    else
-                                        "No empty cylinder to hand back.",
-                                    fontSize = 11.sp,
-                                    color = Color(0xFF92400E)
-                                )
-                            }
-                            Switch(
-                                checked = hasEmptyCylinderToExchange,
-                                onCheckedChange = { hasEmptyCylinderToExchange = it },
-                                modifier = Modifier.testTag("empty_cylinder_switch")
-                            )
-                        }
+                        Text(
+                            text = "Select Pickup Depot (${activeAddress.city})",
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 13.sp,
+                            color = BlueGasDark
+                        )
+                        Spacer(modifier = Modifier.height(8.dp))
 
-                        if (!hasEmptyCylinderToExchange) {
-                            Spacer(modifier = Modifier.height(4.dp))
-                            Surface(
-                                color = Color(0x33F59E0B),
-                                shape = RoundedCornerShape(4.dp)
-                            ) {
-                                Text(
-                                    text = "Refill requires an empty cylinder exchange. Please select 'New cylinder' above if you need an additional cylinder.",
-                                    fontSize = 10.sp,
-                                    fontWeight = FontWeight.SemiBold,
-                                    color = Color(0xFFB45309),
-                                    modifier = Modifier.padding(6.dp)
-                                )
+                        if (cityPickupNodes.isEmpty()) {
+                            Text(
+                                text = "No depot is available in your city yet.",
+                                fontSize = 12.sp,
+                                color = Color(0xFFDC2626),
+                                fontWeight = FontWeight.SemiBold
+                            )
+                        } else {
+                            cityPickupNodes.forEach { depot ->
+                                val isDepotSelected = depot.id == selectedPickupNodeId
+                                Surface(
+                                    color = if (isDepotSelected) Color(0xFFEFF6FF) else Color(0xFFF8FAFC),
+                                    shape = RoundedCornerShape(8.dp),
+                                    border = BorderStroke(1.dp, if (isDepotSelected) BlueGasPrimary else Color(0xFFE2E8F0)),
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(vertical = 3.dp)
+                                        .clickable { selectedPickupNodeId = depot.id }
+                                        .testTag("depot_option_${depot.id}")
+                                ) {
+                                    Row(
+                                        modifier = Modifier.padding(10.dp),
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        RadioButton(
+                                            selected = isDepotSelected,
+                                            onClick = { selectedPickupNodeId = depot.id },
+                                            colors = RadioButtonDefaults.colors(selectedColor = BlueGasPrimary)
+                                        )
+                                        Spacer(modifier = Modifier.width(6.dp))
+                                        Column(modifier = Modifier.weight(1f)) {
+                                            Text(depot.name, fontWeight = FontWeight.Bold, fontSize = 12.sp, color = Color(0xFF0F172A))
+                                            Text(depot.address, fontSize = 11.sp, color = Color(0xFF64748B))
+                                            Spacer(modifier = Modifier.height(2.dp))
+                                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                                Text("Opening hours: ", fontSize = 10.sp, color = Color.Gray)
+                                                DemoValuePill("Demo value · Q14")
+                                            }
+                                        }
+                                    }
+                                }
                             }
                         }
                     }
@@ -667,16 +650,15 @@ fun HomeScreen(
             }
         }
 
-        // Section 4: Quantity & Payment Method
+        // Section 3: Quantity & Payment Method
         item {
             Card(
                 colors = CardDefaults.cardColors(containerColor = Color.White),
                 shape = RoundedCornerShape(12.dp),
-                border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFFE2E8F0)),
+                border = BorderStroke(1.dp, Color(0xFFE2E8F0)),
                 modifier = Modifier.fillMaxWidth()
             ) {
                 Column(modifier = Modifier.padding(12.dp)) {
-                    // Quantity Stepper
                     val maxQty = snapshot.settings.maxQuantityPerOrder
                     Row(
                         modifier = Modifier.fillMaxWidth(),
@@ -716,7 +698,6 @@ fun HomeScreen(
 
                     HorizontalDivider(modifier = Modifier.padding(vertical = 10.dp))
 
-                    // Payment Method selector
                     Text("Payment Method", fontWeight = FontWeight.Bold, fontSize = 13.sp)
                     Spacer(modifier = Modifier.height(6.dp))
                     Row(
@@ -726,39 +707,33 @@ fun HomeScreen(
                         FilterChip(
                             selected = paymentMethodChoice == PaymentMethod.ONLINE_HOSTED,
                             onClick = { paymentMethodChoice = PaymentMethod.ONLINE_HOSTED },
-                            label = { Text("Online Hosted", fontSize = 11.sp) },
+                            label = { Text("Online payment", fontSize = 11.sp) },
                             leadingIcon = {
                                 Icon(Icons.Default.CreditCard, contentDescription = null, modifier = Modifier.size(14.dp))
                             },
-                            modifier = Modifier
-                                .weight(1f)
-                                .testTag("payment_online_chip")
+                            modifier = Modifier.weight(1f).testTag("payment_online_chip")
                         )
                         FilterChip(
                             selected = paymentMethodChoice == PaymentMethod.CASH_ON_DELIVERY,
                             onClick = { paymentMethodChoice = PaymentMethod.CASH_ON_DELIVERY },
-                            label = { Text("Cash on Delivery", fontSize = 11.sp) },
+                            label = { Text("Cash on delivery", fontSize = 11.sp) },
                             leadingIcon = {
                                 Icon(Icons.Default.Payments, contentDescription = null, modifier = Modifier.size(14.dp))
                             },
-                            modifier = Modifier
-                                .weight(1f)
-                                .testTag("payment_cod_chip")
+                            modifier = Modifier.weight(1f).testTag("payment_cod_chip")
                         )
                     }
                 }
             }
         }
 
-        // Section 5: Itemized Price Quotation Breakdown (S2)
+        // Section 4: Quotation Breakdown
         item {
             Card(
                 colors = CardDefaults.cardColors(containerColor = Color(0xFFF1F5F9)),
                 shape = RoundedCornerShape(12.dp),
-                border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFFCBD5E1)),
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .testTag("quotation_card")
+                border = BorderStroke(1.dp, Color(0xFFCBD5E1)),
+                modifier = Modifier.fillMaxWidth().testTag("quotation_card")
             ) {
                 Column(modifier = Modifier.padding(12.dp)) {
                     Text(
@@ -770,22 +745,18 @@ fun HomeScreen(
 
                     HorizontalDivider(modifier = Modifier.padding(vertical = 6.dp))
 
-                    // Quote line items
                     quote.lines.forEach { line ->
                         if (line.lineType != "DEPOSIT") {
                             QuoteLineRow("${line.quantity}x ${line.productName}", formatRupees(line.subtotalPaisa))
                         }
                     }
 
-                    // Fulfilment fee if delivery
                     if (selectedMode == FulfilmentMode.DELIVERY) {
                         QuoteLineRow("Fulfilment / Delivery Fee", formatRupees(quote.deliveryFeePaisa))
                     }
 
-                    // Convenience fee
                     QuoteLineRow("Digital Platform Convenience Fee", formatRupees(quote.platformFeePaisa))
 
-                    // Deposit line (if present)
                     if (quote.depositTotalPaisa > 0) {
                         QuoteLineRow(
                             label = "Cylinder Security Deposit",
@@ -808,7 +779,6 @@ fun HomeScreen(
                         }
                     }
 
-                    // Discount (if present)
                     if (quote.discountPaisa > 0) {
                         QuoteLineRow(
                             label = "Promotional Discount",
@@ -818,7 +788,6 @@ fun HomeScreen(
                         )
                     }
 
-                    // Taxes
                     val gstPct = snapshot.taxConfig.gstBps / 100.0
                     QuoteLineRow("Sales Tax ($gstPct%)", formatRupees(quote.gstPaisa))
                     if (quote.furtherTaxPaisa > 0) {
@@ -857,55 +826,44 @@ fun HomeScreen(
             }
         }
 
-        // Section 6: Place Order CTA
+        // Section 5: Place Order CTA
         item {
-            val isCheckoutAllowed = selectedMode == FulfilmentMode.PICKUP || activeAddress.isServiceable
-            Column(modifier = Modifier.fillMaxWidth()) {
-                if (orderCreationError != null) {
-                    Surface(
-                        color = Color(0xFFFEE2E2),
-                        shape = RoundedCornerShape(6.dp),
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(bottom = 6.dp)
-                    ) {
-                        Text(
-                            text = orderCreationError ?: "",
-                            color = Color(0xFFDC2626),
-                            fontSize = 11.sp,
-                            modifier = Modifier.padding(8.dp)
-                        )
-                    }
-                }
+            val isPickupValid = selectedMode == FulfilmentMode.PICKUP && cityPickupNodes.isNotEmpty() && selectedPickupNodeId.isNotEmpty()
+            val isCheckoutAllowed = (selectedMode == FulfilmentMode.DELIVERY && activeAddress.isServiceable) || isPickupValid
 
+            Column(modifier = Modifier.fillMaxWidth()) {
                 Button(
                     onClick = {
+                        if (placing) return@Button
+                        placing = true
+
                         val (newOrder, err) = store.createOrder(
                             customerId = activeCustomer.id,
                             addressId = activeAddress.id,
                             fulfilmentMode = selectedMode,
                             sku = selectedSku,
                             quantity = quantity,
-                            includeDeposit = includeDeposit,
+                            includeDeposit = false,
                             paymentMethod = paymentMethodChoice,
                             orderType = orderType,
-                            pickupPointId = if (selectedMode == FulfilmentMode.PICKUP) selectedPickupNodeId else null
+                            pickupPointId = if (selectedMode == FulfilmentMode.PICKUP) selectedPickupNodeId else null,
+                            accessories = accessoriesList
                         )
+                        placing = false
 
                         if (err != null) {
-                            orderCreationError = err
+                            onActionMessage(err, true)
                         } else if (newOrder != null) {
-                            orderCreationError = null
                             onOrderCreated(newOrder)
+                            onActionMessage("Order ${newOrder.id} placed.", false)
 
                             if (paymentMethodChoice == PaymentMethod.ONLINE_HOSTED) {
                                 createdOrderIdForPayment = newOrder.id
                                 showPaymentGatewayDialog = true
                             } else {
                                 // COD: confirm payment and advance order
-                                store.confirmPaymentAndAdvance(newOrder.id, actor = activeCustomer.id)
-                                feedbackSnackbarMessage = "Order placed — pay cash on delivery."
-                                store.setCustomerTab("ORDERS")
+                                val (codOk, codMsg) = store.confirmPaymentAndAdvance(newOrder.id, actor = activeCustomer.id)
+                                onActionMessage(codMsg, !codOk)
                                 onNavigateToOrders()
                             }
                         }
@@ -915,20 +873,29 @@ fun HomeScreen(
                         .height(48.dp)
                         .testTag("confirm_place_order_button"),
                     colors = ButtonDefaults.buttonColors(containerColor = BlueGasPrimary),
-                    enabled = isCheckoutAllowed
+                    enabled = isCheckoutAllowed && !placing
                 ) {
-                    Icon(Icons.Default.ShoppingCartCheckout, contentDescription = null)
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text(
-                        text = "Confirm & Place Order (${formatRupees(quote.totalAmountPaisa)})",
-                        fontWeight = FontWeight.Bold,
-                        fontSize = 14.sp
-                    )
+                    if (placing) {
+                        CircularProgressIndicator(modifier = Modifier.size(20.dp), color = Color.White)
+                    } else {
+                        Icon(Icons.Default.ShoppingCartCheckout, contentDescription = null)
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            text = "Confirm & Place Order (${formatRupees(quote.totalAmountPaisa)})",
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 14.sp
+                        )
+                    }
                 }
 
                 if (!isCheckoutAllowed) {
+                    val notAllowedText = if (selectedMode == FulfilmentMode.PICKUP && cityPickupNodes.isEmpty()) {
+                        "No depot is available in your city yet."
+                    } else {
+                        "Selected address is outside our delivery area. Switch to depot pickup above to proceed."
+                    }
                     Text(
-                        text = "Selected address is outside our delivery area. Switch to depot pickup above to proceed.",
+                        text = notAllowedText,
                         fontSize = 11.sp,
                         color = Color(0xFFDC2626),
                         modifier = Modifier.padding(top = 4.dp)
@@ -942,107 +909,19 @@ fun HomeScreen(
         }
     }
 
-    // Demo Payment Dialog (S4)
+    // F1.2 Shared Demo Payment Dialog
     if (showPaymentGatewayDialog && createdOrderIdForPayment != null) {
-        val ord = snapshot.orders.find { it.id == createdOrderIdForPayment }
-
-        AlertDialog(
-            onDismissRequest = {
+        DemoPaymentDialog(
+            orderId = createdOrderIdForPayment!!,
+            store = store,
+            onResult = { msg, ok ->
+                onActionMessage(msg, !ok)
                 showPaymentGatewayDialog = false
-                store.setCustomerTab("ORDERS")
                 onNavigateToOrders()
             },
-            title = {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(Icons.Default.CreditCard, contentDescription = null, tint = BlueGasPrimary)
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text("Pay now (demo)", fontWeight = FontWeight.Bold, fontSize = 15.sp)
-                }
-            },
-            text = {
-                Column {
-                    Text("Order: ${ord?.id}", fontWeight = FontWeight.Bold, fontSize = 13.sp)
-                    Text(
-                        "Payable: ${ord?.totalAmountPaisa?.let { formatRupees(it) }}",
-                        fontSize = 14.sp,
-                        color = BlueGasPrimary,
-                        fontWeight = FontWeight.Bold
-                    )
-                    Spacer(modifier = Modifier.height(8.dp))
-                    Text(
-                        text = "This is a demo gateway for the pilot. Choose an outcome:",
-                        fontSize = 11.sp,
-                        color = Color(0xFF475569)
-                    )
-
-                    Spacer(modifier = Modifier.height(12.dp))
-                    Button(
-                        onClick = {
-                            val (_, msg) = store.confirmPaymentAndAdvance(ord?.id ?: "", "SUCCESS")
-                            feedbackSnackbarMessage = "Payment received — order confirmed."
-                            showPaymentGatewayDialog = false
-                            store.setCustomerTab("ORDERS")
-                            onNavigateToOrders()
-                        },
-                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF16A34A)),
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .testTag("gateway_success_button")
-                    ) {
-                        Icon(Icons.Default.Check, contentDescription = null, modifier = Modifier.size(16.dp))
-                        Spacer(modifier = Modifier.width(6.dp))
-                        Text("Payment approved")
-                    }
-
-                    Spacer(modifier = Modifier.height(6.dp))
-                    Button(
-                        onClick = {
-                            val (_, msg) = store.confirmPaymentAndAdvance(ord?.id ?: "", "DECLINED")
-                            feedbackSnackbarMessage = msg
-                            showPaymentGatewayDialog = false
-                            store.setCustomerTab("ORDERS")
-                            onNavigateToOrders()
-                        },
-                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFDC2626)),
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .testTag("gateway_decline_button")
-                    ) {
-                        Icon(Icons.Default.Close, contentDescription = null, modifier = Modifier.size(16.dp))
-                        Spacer(modifier = Modifier.width(6.dp))
-                        Text("Payment declined")
-                    }
-
-                    Spacer(modifier = Modifier.height(6.dp))
-                    OutlinedButton(
-                        onClick = {
-                            val (_, msg) = store.confirmPaymentAndAdvance(ord?.id ?: "", "TIMEOUT")
-                            feedbackSnackbarMessage = msg
-                            showPaymentGatewayDialog = false
-                            store.setCustomerTab("ORDERS")
-                            onNavigateToOrders()
-                        },
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .testTag("gateway_timeout_button")
-                    ) {
-                        Icon(Icons.Default.Timer, contentDescription = null, modifier = Modifier.size(16.dp))
-                        Spacer(modifier = Modifier.width(6.dp))
-                        Text("Connection lost")
-                    }
-                }
-            },
-            confirmButton = {},
-            dismissButton = {
-                TextButton(
-                    onClick = {
-                        showPaymentGatewayDialog = false
-                        store.setCustomerTab("ORDERS")
-                        onNavigateToOrders()
-                    }
-                ) {
-                    Text("Skip for Now")
-                }
+            onDismiss = {
+                showPaymentGatewayDialog = false
+                onNavigateToOrders()
             }
         )
     }

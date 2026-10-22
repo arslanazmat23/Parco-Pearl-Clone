@@ -117,12 +117,23 @@ fun BlueGasStore.markNotificationRead(
 }
 
 fun BlueGasStore.notifyPickupArrival(orderId: String): Pair<Boolean, String> {
+    val order = orders.find { it.id == orderId } ?: return Pair(false, "Order not found.")
+    if (order.status != OrderStatus.ORD_RDYPU) {
+        return Pair(false, "Order is not ready for pickup.")
+    }
+    val alreadyNotified = notifications.any {
+        it.orderId == orderId && it.title == "Customer Arrived for Pickup"
+    }
+    if (alreadyNotified) {
+        return Pair(true, "Pickup counter already notified. Please present your handover PIN.")
+    }
     addNotification(
         surface = AppSurface.STAFF,
         title = "Customer Arrived for Pickup",
         message = "Customer has arrived at hub for order $orderId",
         canonicalStatus = "READY_FOR_PICKUP",
-        orderId = orderId
+        orderId = orderId,
+        staffRole = StaffSubRole.OPERATIONS
     )
     addNotification(
         surface = AppSurface.CUSTOMER,
@@ -131,7 +142,61 @@ fun BlueGasStore.notifyPickupArrival(orderId: String): Pair<Boolean, String> {
         canonicalStatus = "READY_FOR_PICKUP",
         orderId = orderId
     )
+    logAudit("Order", orderId, "NOTIFY_PICKUP_ARRIVAL", order.customerId, AccountableRole.SUPPORT, "Customer notified arrival at depot for pickup order $orderId")
     notifyChanged()
-    return Pair(true, "Arrival notified to hub counter!")
+    return Pair(true, "Arrival notified. Please show your PIN at the counter.")
+}
+
+fun BlueGasStore.raiseSafetyConcern(
+    customerId: String,
+    description: String,
+    orderId: String? = null
+): Pair<Boolean, String> {
+    if (description.isBlank()) {
+        return Pair(false, "Description cannot be empty.")
+    }
+    val caseId = "CASE-" + UUID.randomUUID().toString().take(6).uppercase()
+    val newCase = SupportCase(
+        id = caseId,
+        orderId = orderId,
+        customerId = customerId,
+        issueType = "SAFETY_CONCERN",
+        description = description,
+        status = "OPEN",
+        raisedAt = System.currentTimeMillis()
+    )
+    supportCases.add(newCase)
+    logAudit("SupportCase", caseId, "SAFETY_CONCERN", customerId, AccountableRole.SUPPORT, "Safety concern reported: $description")
+    addNotification(
+        surface = AppSurface.STAFF,
+        title = "Safety Concern",
+        message = "Customer safety concern reported ($caseId): $description",
+        canonicalStatus = "SAFETY_CONCERN",
+        orderId = orderId,
+        staffRole = StaffSubRole.SAFETY_HSE
+    )
+    addNotification(
+        surface = AppSurface.STAFF,
+        title = "Safety Concern",
+        message = "Customer safety concern reported ($caseId): $description",
+        canonicalStatus = "SAFETY_CONCERN",
+        orderId = orderId,
+        staffRole = StaffSubRole.OPERATIONS
+    )
+    raiseIncident(
+        source = "CUSTOMER_REPORT",
+        description = description,
+        orderId = orderId
+    )
+    notifyChanged()
+    return Pair(true, "Safety concern registered. Ticket: $caseId. Our safety team has been alerted.")
+}
+
+fun BlueGasStore.setActiveCustomer(customerId: String): Pair<Boolean, String> {
+    val cust = customers.find { it.id == customerId }
+        ?: return Pair(false, "Customer not found.")
+    activeCustomerId = customerId
+    notifyChanged()
+    return Pair(true, "Switched to ${cust.name}")
 }
 

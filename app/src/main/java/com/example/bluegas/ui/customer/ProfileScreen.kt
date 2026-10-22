@@ -2,7 +2,6 @@ package com.example.bluegas.ui.customer
 
 import android.content.Intent
 import android.net.Uri
-import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -27,7 +26,12 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import com.example.bluegas.data.*
+import com.example.bluegas.data.BlueGasStore
+import com.example.bluegas.data.addAddress
+import com.example.bluegas.data.markNotificationRead
+import com.example.bluegas.data.raiseSafetyConcern
+import com.example.bluegas.data.setActiveCustomer
+import com.example.bluegas.data.setDefaultAddress
 import com.example.bluegas.model.*
 import com.example.ui.theme.BlueGasDark
 import com.example.ui.theme.BlueGasPrimary
@@ -41,7 +45,7 @@ fun maskCnic(cnic: String): String {
 @Composable
 fun ProfileScreen(
     store: BlueGasStore,
-    onCustomerChanged: () -> Unit,
+    onActionMessage: (String, Boolean) -> Unit,
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
@@ -54,16 +58,13 @@ fun ProfileScreen(
     val customerOrdersCount = customerOrders.size
 
     var showCustomerSwitchMenu by remember { mutableStateOf(false) }
-    var showSafetyHelplineDialog by remember { mutableStateOf(false) }
+    var showSafetyConcernDialog by remember { mutableStateOf(false) }
     var showAddAddressDialog by remember { mutableStateOf(false) }
-    var feedbackMessage by remember { mutableStateOf<String?>(null) }
 
     val totalDepositPaidPaisa = customerHoldings.sumOf { it.depositPaisa }
 
-    // Dialog state for rating a completed order
+    // Dialog state for rating a completed order (using shared RateOrderDialog)
     var ratingOrderId by remember { mutableStateOf<String?>(null) }
-    var ratingStars by remember { mutableIntStateOf(5) }
-    var ratingComment by remember { mutableStateOf("") }
 
     LazyColumn(
         modifier = modifier
@@ -72,34 +73,6 @@ fun ProfileScreen(
             .testTag("customer_profile_screen"),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
-        // Feedback message banner
-        if (feedbackMessage != null) {
-            item {
-                Surface(
-                    color = Color(0xFFDCFCE7),
-                    shape = RoundedCornerShape(8.dp),
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)
-                    ) {
-                        Icon(Icons.Default.CheckCircle, contentDescription = null, tint = Color(0xFF166534), modifier = Modifier.size(16.dp))
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text(
-                            text = feedbackMessage ?: "",
-                            fontSize = 11.sp,
-                            color = Color(0xFF166534),
-                            modifier = Modifier.weight(1f)
-                        )
-                        IconButton(onClick = { feedbackMessage = null }, modifier = Modifier.size(24.dp)) {
-                            Icon(Icons.Default.Close, contentDescription = "Dismiss", tint = Color(0xFF166534), modifier = Modifier.size(14.dp))
-                        }
-                    }
-                }
-            }
-        }
-
         // Customer Header Card with Switcher
         item {
             Card(
@@ -149,11 +122,6 @@ fun ProfileScreen(
                                     fontSize = 11.sp,
                                     color = Color(0xFF475569)
                                 )
-                                Text(
-                                    text = "Member since ${formatTimestamp(System.currentTimeMillis() - 90L * 24 * 60 * 60 * 1000)}",
-                                    fontSize = 11.sp,
-                                    color = Color(0xFF64748B)
-                                )
                             }
                         }
 
@@ -182,10 +150,9 @@ fun ProfileScreen(
                                             }
                                         },
                                         onClick = {
-                                            store.activeCustomerId = cust.id
-                                            store.notifyChanged()
+                                            val (ok, msg) = store.setActiveCustomer(cust.id)
+                                            onActionMessage(msg, !ok)
                                             showCustomerSwitchMenu = false
-                                            onCustomerChanged()
                                         }
                                     )
                                 }
@@ -260,7 +227,7 @@ fun ProfileScreen(
 
                     Spacer(modifier = Modifier.height(6.dp))
                     Text(
-                        text = "Total Refundable Security Deposits Held: ${formatRupees(totalDepositPaidPaisa)}",
+                        text = "Security deposits held: ${formatRupees(totalDepositPaidPaisa)}",
                         fontWeight = FontWeight.Bold,
                         fontSize = 12.sp,
                         color = Color(0xFF92400E)
@@ -271,42 +238,83 @@ fun ProfileScreen(
                         color = Color(0x33F59E0B),
                         shape = RoundedCornerShape(6.dp)
                     ) {
-                        Text(
-                            text = "Security deposit represents a refundable liability held on your account. It does not transfer ownership of the cylinder asset to the consumer. Full refund is processed upon return of undamaged cylinder.",
-                            fontSize = 9.sp,
-                            fontWeight = FontWeight.Medium,
-                            color = Color(0xFFB45309),
-                            modifier = Modifier.padding(6.dp),
-                            lineHeight = 13.sp
-                        )
+                        Column(modifier = Modifier.padding(8.dp)) {
+                            Text(
+                                text = "A security deposit does not transfer ownership of the cylinder. Refund terms follow the BLUE GAS deposit policy.",
+                                fontSize = 10.sp,
+                                fontWeight = FontWeight.Medium,
+                                color = Color(0xFFB45309),
+                                lineHeight = 14.sp
+                            )
+                            Spacer(modifier = Modifier.height(4.dp))
+                            DemoValuePill(text = "Demo value · Q03")
+                        }
                     }
 
                     if (customerHoldings.isNotEmpty()) {
                         Spacer(modifier = Modifier.height(8.dp))
                         customerHoldings.forEach { holding ->
-                            Row(
+                            val cyl = snapshot.cylinders.find { it.serialNumber == holding.cylinderSerial }
+                            val sizeLabel = cyl?.let { "${it.weightKg} kg" } ?: "11.8 kg"
+                            val ownershipLabel = when (holding.ownership) {
+                                CylinderOwnership.OWNED_BY_CUSTOMER -> "Owned"
+                                CylinderOwnership.DEPOSIT_HELD -> "Deposit held"
+                                CylinderOwnership.LOANED -> "Loaned"
+                                else -> holding.ownership.label
+                            }
+
+                            Surface(
+                                color = Color.White,
+                                shape = RoundedCornerShape(6.dp),
+                                border = BorderStroke(0.5.dp, Color(0xFFFDE68A)),
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .padding(vertical = 3.dp),
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                                verticalAlignment = Alignment.CenterVertically
+                                    .padding(vertical = 2.dp)
                             ) {
-                                Row(verticalAlignment = Alignment.CenterVertically) {
-                                    Icon(Icons.Default.QrCode, contentDescription = null, tint = Color(0xFF78350F), modifier = Modifier.size(14.dp))
-                                    Spacer(modifier = Modifier.width(4.dp))
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(horizontal = 8.dp, vertical = 6.dp),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Column {
+                                        Row(verticalAlignment = Alignment.CenterVertically) {
+                                            Icon(Icons.Default.QrCode, contentDescription = null, tint = Color(0xFF78350F), modifier = Modifier.size(14.dp))
+                                            Spacer(modifier = Modifier.width(4.dp))
+                                            Text(
+                                                text = holding.cylinderSerial,
+                                                fontSize = 11.sp,
+                                                fontFamily = FontFamily.Monospace,
+                                                fontWeight = FontWeight.Bold
+                                            )
+                                            Spacer(modifier = Modifier.width(6.dp))
+                                            Surface(
+                                                color = Color(0xFFFEF3C7),
+                                                shape = RoundedCornerShape(4.dp)
+                                            ) {
+                                                Text(
+                                                    text = sizeLabel,
+                                                    fontSize = 9.sp,
+                                                    fontWeight = FontWeight.SemiBold,
+                                                    color = Color(0xFF92400E),
+                                                    modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp)
+                                                )
+                                            }
+                                        }
+                                        Text(
+                                            text = "Ownership: $ownershipLabel",
+                                            fontSize = 10.sp,
+                                            color = Color(0xFF64748B)
+                                        )
+                                    }
                                     Text(
-                                        text = holding.cylinderSerial,
+                                        text = "${formatRupees(holding.depositPaisa)} Deposit",
                                         fontSize = 11.sp,
-                                        fontFamily = FontFamily.Monospace,
-                                        fontWeight = FontWeight.Bold
+                                        fontWeight = FontWeight.SemiBold,
+                                        color = Color(0xFF78350F)
                                     )
                                 }
-                                Text(
-                                    text = "${formatRupees(holding.depositPaisa)} Deposit",
-                                    fontSize = 11.sp,
-                                    fontWeight = FontWeight.SemiBold,
-                                    color = Color(0xFF78350F)
-                                )
                             }
                         }
                     }
@@ -314,7 +322,7 @@ fun ProfileScreen(
             }
         }
 
-        // Delivery Addresses Card (S6: Add Address dialog)
+        // Delivery Addresses Card
         item {
             Card(
                 colors = CardDefaults.cardColors(containerColor = Color.White),
@@ -385,7 +393,7 @@ fun ProfileScreen(
                                     TextButton(
                                         onClick = {
                                             val (ok, msg) = store.setDefaultAddress(activeCustomer.id, addr.id)
-                                            if (ok) feedbackMessage = "Default address updated to ${addr.label}"
+                                            onActionMessage(msg, !ok)
                                         },
                                         contentPadding = PaddingValues(horizontal = 6.dp, vertical = 2.dp)
                                     ) {
@@ -414,7 +422,7 @@ fun ProfileScreen(
             }
         }
 
-        // Order Ratings Section (S6: Rate completed orders)
+        // Order Ratings Section (using shared RateOrderDialog)
         val completedOrders = customerOrders.filter { it.status == OrderStatus.ORD_COMP }
         if (completedOrders.isNotEmpty()) {
             item {
@@ -470,8 +478,6 @@ fun ProfileScreen(
                                         FilledTonalButton(
                                             onClick = {
                                                 ratingOrderId = ord.id
-                                                ratingStars = 5
-                                                ratingComment = ""
                                             },
                                             contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
                                             modifier = Modifier.height(30.dp)
@@ -487,7 +493,7 @@ fun ProfileScreen(
             }
         }
 
-        // Support Cases & Dispute History
+        // Support Cases History
         item {
             Card(
                 colors = CardDefaults.cardColors(containerColor = Color.White),
@@ -539,7 +545,8 @@ fun ProfileScreen(
                                         horizontalArrangement = Arrangement.SpaceBetween,
                                         verticalAlignment = Alignment.CenterVertically
                                     ) {
-                                        Text("Case: ${c.id} • Order: ${c.orderId}", fontWeight = FontWeight.Bold, fontSize = 11.sp, fontFamily = FontFamily.Monospace)
+                                        val orderLabel = if (c.orderId != null) " • Order: ${c.orderId}" else ""
+                                        Text("Case: ${c.id}$orderLabel", fontWeight = FontWeight.Bold, fontSize = 11.sp, fontFamily = FontFamily.Monospace)
                                         Surface(
                                             color = when (c.status) {
                                                 "OPEN" -> Color(0xFFFEE2E2)
@@ -576,7 +583,7 @@ fun ProfileScreen(
             }
         }
 
-        // Notifications section (S6: mark notification read via store)
+        // Notifications section
         val customerNotifications = snapshot.notifications
             .filter { it.surface == AppSurface.CUSTOMER }
             .sortedByDescending { it.timestamp }
@@ -630,7 +637,7 @@ fun ProfileScreen(
             }
         }
 
-        // Contact Support Card (S6: Call opens dialer with supportPhone, WhatsApp is disabled chip)
+        // Contact Support Card (F6.8)
         item {
             Card(
                 colors = CardDefaults.cardColors(containerColor = Color(0xFFF0F9FF)),
@@ -647,7 +654,12 @@ fun ProfileScreen(
                         Text("Contact Support", fontWeight = FontWeight.Bold, fontSize = 13.sp, color = BlueGasDark)
                     }
                     Spacer(modifier = Modifier.height(6.dp))
-                    Text("Need help with an order or have a question?", fontSize = 11.sp, color = Color(0xFF475569))
+                    Text(
+                        text = "BLUE GAS support: ${snapshot.settings.supportPhone}",
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        color = Color(0xFF0F172A)
+                    )
                     Spacer(modifier = Modifier.height(8.dp))
                     Row(
                         horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -658,13 +670,13 @@ fun ProfileScreen(
                                 val intent = Intent(Intent.ACTION_DIAL, Uri.parse("tel:${snapshot.settings.supportPhone}"))
                                 context.startActivity(intent)
                             },
-                            label = { Text("Call: ${snapshot.settings.supportPhone}", fontSize = 10.sp) },
+                            label = { Text("Call", fontSize = 11.sp) },
                             leadingIcon = { Icon(Icons.Default.Phone, contentDescription = null, modifier = Modifier.size(14.dp)) }
                         )
                         AssistChip(
                             onClick = {},
                             enabled = false,
-                            label = { Text("WhatsApp (coming soon)", fontSize = 10.sp) },
+                            label = { Text("WhatsApp (Phase 3)", fontSize = 11.sp) },
                             leadingIcon = { Icon(Icons.AutoMirrored.Filled.Chat, contentDescription = null, modifier = Modifier.size(14.dp)) }
                         )
                     }
@@ -672,40 +684,62 @@ fun ProfileScreen(
             }
         }
 
-        // Safety Command Center & Emergency Helpline Card
+        // Safety & Emergencies Card (F6.4)
         item {
             Card(
-                colors = CardDefaults.cardColors(containerColor = Color(0xFFF1F5F9)),
+                colors = CardDefaults.cardColors(containerColor = Color(0xFFFEF2F2)),
                 shape = RoundedCornerShape(12.dp),
+                border = BorderStroke(1.dp, Color(0xFFFECACA)),
                 modifier = Modifier
                     .fillMaxWidth()
                     .testTag("safety_helpline_card")
             ) {
-                Row(
-                    modifier = Modifier.padding(12.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Box(
-                        modifier = Modifier
-                            .size(36.dp)
-                            .clip(CircleShape)
-                            .background(Color(0xFFDC2626)),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Icon(Icons.Default.Emergency, contentDescription = null, tint = Color.White, modifier = Modifier.size(20.dp))
+                Column(modifier = Modifier.padding(12.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(Icons.Default.Shield, contentDescription = null, tint = Color(0xFFDC2626), modifier = Modifier.size(18.dp))
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            text = "Safety & emergencies",
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 13.sp,
+                            color = Color(0xFF991B1B)
+                        )
                     }
-                    Spacer(modifier = Modifier.width(10.dp))
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text("24/7 Gas Leak Emergency Helpline", fontWeight = FontWeight.Bold, fontSize = 12.sp, color = Color(0xFF991B1B))
-                        Text("In case of suspected leak, turn off regulator and call immediately.", fontSize = 10.sp, color = Color(0xFF475569))
-                    }
-                    Button(
-                        onClick = { showSafetyHelplineDialog = true },
-                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFDC2626)),
-                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
-                        modifier = Modifier.height(30.dp)
+                    Spacer(modifier = Modifier.height(6.dp))
+                    Text(
+                        text = "Follow the approved BLUE GAS safety procedure (to be supplied by the client, Q07). For emergencies call Rescue 1122.",
+                        fontSize = 11.sp,
+                        color = Color(0xFF7F1D1D),
+                        lineHeight = 15.sp
+                    )
+                    Spacer(modifier = Modifier.height(10.dp))
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Text("1122", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                        Button(
+                            onClick = {
+                                val intent = Intent(Intent.ACTION_DIAL, Uri.parse("tel:1122"))
+                                context.startActivity(intent)
+                            },
+                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFDC2626)),
+                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
+                            modifier = Modifier.height(34.dp)
+                        ) {
+                            Icon(Icons.Default.Phone, contentDescription = null, modifier = Modifier.size(14.dp))
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text("Call 1122", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                        }
+                        OutlinedButton(
+                            onClick = { showSafetyConcernDialog = true },
+                            border = BorderStroke(1.dp, Color(0xFFDC2626)),
+                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
+                            modifier = Modifier.height(34.dp)
+                        ) {
+                            Icon(Icons.Default.ReportProblem, contentDescription = null, tint = Color(0xFFDC2626), modifier = Modifier.size(14.dp))
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text("Report a safety concern", fontSize = 11.sp, color = Color(0xFFDC2626))
+                        }
                     }
                 }
             }
@@ -716,7 +750,7 @@ fun ProfileScreen(
         }
     }
 
-    // Add New Address Dialog (S6)
+    // Add New Address Dialog (F6.6)
     if (showAddAddressDialog) {
         var labelInput by remember { mutableStateOf("Home") }
         var streetInput by remember { mutableStateOf("") }
@@ -835,9 +869,7 @@ fun ProfileScreen(
                         }
                     }
 
-                    // Serviceability preview of selected zone
-                    val chosenZone = cityZones.find { it.id == selectedZoneId }
-                    val isServiceableZone = chosenZone?.isServiceable ?: false
+                    // Serviceability preview of selected zone (no duplicate val declaration)
                     Surface(
                         color = if (isServiceableZone) Color(0xFFDCFCE7) else Color(0xFFFEE2E2),
                         shape = RoundedCornerShape(4.dp),
@@ -883,7 +915,12 @@ fun ProfileScreen(
                         )
                         if (ok) {
                             showAddAddressDialog = false
-                            feedbackMessage = "Address added! " + if (isServiceableZone) "This area is in the delivery zone." else "This address is outside current delivery area."
+                            val msg = if (isServiceableZone) {
+                                "Address added. This area is in the delivery zone."
+                            } else {
+                                "Address added. This address is outside the current delivery area — depot pickup is available."
+                            }
+                            onActionMessage(msg, false)
                         } else {
                             formError = res
                         }
@@ -901,87 +938,131 @@ fun ProfileScreen(
         )
     }
 
-    // Rate Order Dialog (S6)
-    if (ratingOrderId != null) {
-        val targetOrd = snapshot.orders.find { it.id == ratingOrderId }
+    // Report a Safety Concern Dialog (F6.4)
+    if (showSafetyConcernDialog) {
+        var selectedConcernOrderId by remember { mutableStateOf<String?>(null) }
+        var concernDescription by remember { mutableStateOf("") }
+        var concernError by remember { mutableStateOf<String?>(null) }
+        var orderDropdownExpanded by remember { mutableStateOf(false) }
+
         AlertDialog(
-            onDismissRequest = { ratingOrderId = null },
+            onDismissRequest = { showSafetyConcernDialog = false },
             title = {
-                Text("Rate Your Order ${targetOrd?.id}", fontWeight = FontWeight.Bold, fontSize = 15.sp)
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Default.ReportProblem, contentDescription = null, tint = Color(0xFFDC2626))
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text("Report a Safety Concern", fontWeight = FontWeight.Bold, fontSize = 15.sp)
+                }
             },
             text = {
                 Column(
                     modifier = Modifier.fillMaxWidth().imePadding(),
-                    horizontalAlignment = Alignment.CenterHorizontally
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    Text("How was your delivery experience?", fontSize = 12.sp, color = Color(0xFF475569))
-                    Spacer(modifier = Modifier.height(10.dp))
-                    Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                        (1..5).forEach { star ->
-                            IconButton(onClick = { ratingStars = star }) {
-                                Icon(
-                                    imageVector = if (star <= ratingStars) Icons.Default.Star else Icons.Default.StarBorder,
-                                    contentDescription = "$star stars",
-                                    tint = Color(0xFFEAB308),
-                                    modifier = Modifier.size(32.dp)
+                    Text(
+                        text = "Follow the approved BLUE GAS safety procedure (to be supplied by the client, Q07). For emergencies call Rescue 1122.",
+                        fontSize = 11.sp,
+                        color = Color(0xFF991B1B)
+                    )
+
+                    if (concernError != null) {
+                        Text(concernError ?: "", color = Color(0xFFDC2626), fontSize = 11.sp)
+                    }
+
+                    Text("Related order (optional):", fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
+                    Box(modifier = Modifier.fillMaxWidth()) {
+                        OutlinedButton(
+                            onClick = { orderDropdownExpanded = true },
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            val label = if (selectedConcernOrderId == null) {
+                                "Not about a specific order"
+                            } else {
+                                val ord = customerOrders.find { it.id == selectedConcernOrderId }
+                                "Order ${selectedConcernOrderId} (${ord?.status?.displayName ?: ""})"
+                            }
+                            Text(label, fontSize = 11.sp, maxLines = 1)
+                            Spacer(modifier = Modifier.weight(1f))
+                            Icon(Icons.Default.ArrowDropDown, contentDescription = null)
+                        }
+                        DropdownMenu(
+                            expanded = orderDropdownExpanded,
+                            onDismissRequest = { orderDropdownExpanded = false }
+                        ) {
+                            DropdownMenuItem(
+                                text = { Text("Not about a specific order", fontSize = 12.sp) },
+                                onClick = {
+                                    selectedConcernOrderId = null
+                                    orderDropdownExpanded = false
+                                }
+                            )
+                            customerOrders.forEach { ord ->
+                                DropdownMenuItem(
+                                    text = { Text("Order ${ord.id} (${ord.status.displayName})", fontSize = 12.sp) },
+                                    onClick = {
+                                        selectedConcernOrderId = ord.id
+                                        orderDropdownExpanded = false
+                                    }
                                 )
                             }
                         }
                     }
-                    Spacer(modifier = Modifier.height(10.dp))
+
                     OutlinedTextField(
-                        value = ratingComment,
-                        onValueChange = { ratingComment = it },
-                        label = { Text("Comment (optional)") },
+                        value = concernDescription,
+                        onValueChange = {
+                            concernDescription = it
+                            concernError = null
+                        },
+                        label = { Text("Description of concern *") },
                         modifier = Modifier.fillMaxWidth(),
-                        maxLines = 3
+                        minLines = 3,
+                        maxLines = 5
                     )
                 }
             },
             confirmButton = {
                 Button(
                     onClick = {
-                        val (ok, msg) = store.rateOrder(ratingOrderId ?: "", ratingStars, ratingComment)
-                        if (ok) feedbackMessage = msg
-                        ratingOrderId = null
+                        if (concernDescription.isBlank()) {
+                            concernError = "Please describe the safety concern."
+                            return@Button
+                        }
+                        val (ok, msg) = store.raiseSafetyConcern(
+                            customerId = activeCustomer.id,
+                            description = concernDescription.trim(),
+                            orderId = selectedConcernOrderId
+                        )
+                        onActionMessage(msg, !ok)
+                        if (ok) {
+                            showSafetyConcernDialog = false
+                            concernDescription = ""
+                            selectedConcernOrderId = null
+                        }
                     },
-                    colors = ButtonDefaults.buttonColors(containerColor = BlueGasPrimary)
+                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFDC2626))
                 ) {
-                    Text("Submit Rating")
+                    Text("Submit")
                 }
             },
             dismissButton = {
-                TextButton(onClick = { ratingOrderId = null }) {
+                TextButton(onClick = { showSafetyConcernDialog = false }) {
                     Text("Cancel")
                 }
             }
         )
     }
 
-    // Safety Helpline Dialog
-    if (showSafetyHelplineDialog) {
-        AlertDialog(
-            onDismissRequest = { showSafetyHelplineDialog = false },
-            title = {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(Icons.Default.Emergency, contentDescription = null, tint = Color(0xFFDC2626))
-                    Spacer(modifier = Modifier.width(6.dp))
-                    Text("Emergency LPG Safety Response", fontWeight = FontWeight.Bold, fontSize = 15.sp)
-                }
+    // Shared RateOrderDialog (F6.7 / F1.4)
+    if (ratingOrderId != null) {
+        RateOrderDialog(
+            orderId = ratingOrderId ?: "",
+            store = store,
+            onResult = { msg, isError ->
+                onActionMessage(msg, isError)
             },
-            text = {
-                Column {
-                    Text("1. Immediate Actions:", fontWeight = FontWeight.Bold, fontSize = 12.sp)
-                    Text("• Turn off cylinder valve or regulator knob immediately.\n• Do not ignite matches, lighters, or operate electric switches.\n• Open all windows and doors for rapid ventilation.\n• Evacuate premises if smell persists.", fontSize = 11.sp, color = Color(0xFF334155))
-                    Spacer(modifier = Modifier.height(8.dp))
-                    Text("2. Emergency Helplines:", fontWeight = FontWeight.Bold, fontSize = 12.sp)
-                    Text("• Blue Gas Support: ${snapshot.settings.supportPhone}\n• Rescue 1122 Pakistan", fontSize = 11.sp, color = Color(0xFF0F172A), fontWeight = FontWeight.SemiBold)
-                }
-            },
-            confirmButton = {
-                Button(onClick = { showSafetyHelplineDialog = false }, colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFDC2626))) {
-                    Text("Understood")
-                }
+            onDismiss = {
+                ratingOrderId = null
             }
         )
     }

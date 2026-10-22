@@ -1,23 +1,20 @@
 package com.example.bluegas.ui.customer
 
 import android.content.Intent
-import androidx.compose.animation.AnimatedVisibility
+import android.net.Uri
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ReceiptLong
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
@@ -26,8 +23,9 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import kotlinx.coroutines.delay
-import com.example.bluegas.data.*
+import com.example.bluegas.data.BlueGasStore
+import com.example.bluegas.data.SharedAppState
+import com.example.bluegas.data.cancelOrder
 import com.example.bluegas.model.*
 import com.example.bluegas.ui.components.CanonicalStatusChip
 import com.example.ui.theme.BlueGasDark
@@ -37,15 +35,16 @@ enum class OrdersFilterTab(val label: String) {
     ALL("All"),
     ACTIVE("Active"),
     COMPLETED("Completed"),
-    EXCEPTIONS("Exceptions")
+    CANCELLED("Cancelled")
 }
 
+// F4 OrdersScreen
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun OrdersScreen(
     store: BlueGasStore,
     onTrackOrder: (String) -> Unit,
-    onActionMessage: (String) -> Unit,
+    onActionMessage: (String, Boolean) -> Unit,
     onReorder: (Order) -> Unit = {},
     onNavigateToHome: () -> Unit = {},
     modifier: Modifier = Modifier
@@ -54,10 +53,10 @@ fun OrdersScreen(
     var selectedFilter by remember { mutableStateOf(OrdersFilterTab.ALL) }
     var searchQuery by remember { mutableStateOf("") }
 
-    // Dialog state
-    var showPaymentGatewayDialog by remember { mutableStateOf(false) }
+    // Dialog states
     var selectedOrderIdForPayment by remember { mutableStateOf<String?>(null) }
     var showReceiptOrderId by remember { mutableStateOf<String?>(null) }
+    var showRateOrderId by remember { mutableStateOf<String?>(null) }
     var showComplaintOrderId by remember { mutableStateOf<String?>(null) }
     var complaintType by remember { mutableStateOf("LEAKAGE_SAFETY") }
     var complaintDetails by remember { mutableStateOf("") }
@@ -68,6 +67,7 @@ fun OrdersScreen(
     val activeCustomer = snapshot.activeCustomer ?: return
     val allCustomerOrders = snapshot.orders.filter { it.customerId == activeCustomer.id }.sortedByDescending { it.createdAt }
 
+    // F4.3 Tabs logic
     val filteredOrders = allCustomerOrders.filter { order ->
         val matchesSearch = searchQuery.isBlank() ||
                 order.id.contains(searchQuery, ignoreCase = true) ||
@@ -75,9 +75,9 @@ fun OrdersScreen(
 
         val matchesTab = when (selectedFilter) {
             OrdersFilterTab.ALL -> true
-            OrdersFilterTab.ACTIVE -> !order.status.isTerminal && order.status != OrderStatus.ORD_EXC
+            OrdersFilterTab.ACTIVE -> !order.status.isTerminal
             OrdersFilterTab.COMPLETED -> order.status == OrderStatus.ORD_COMP
-            OrdersFilterTab.EXCEPTIONS -> order.status == OrderStatus.ORD_EXC || order.status == OrderStatus.ORD_CANC || order.status == OrderStatus.ORD_FCLO
+            OrdersFilterTab.CANCELLED -> order.status in setOf(OrderStatus.ORD_CANC, OrderStatus.ORD_FCLO, OrderStatus.ORD_SUPS)
         }
         matchesSearch && matchesTab
     }
@@ -124,12 +124,12 @@ fun OrdersScreen(
 
         Spacer(modifier = Modifier.height(10.dp))
 
-        // Search Bar
+        // Search bar
         OutlinedTextField(
             value = searchQuery,
             onValueChange = { searchQuery = it },
-            placeholder = { Text("Search by Order ID or Cylinder Serial...", fontSize = 12.sp) },
-            leadingIcon = { Icon(Icons.Default.Search, contentDescription = null, modifier = Modifier.size(18.dp)) },
+            placeholder = { Text("Search by Order ID or Cylinder ID", fontSize = 11.sp) },
+            leadingIcon = { Icon(Icons.Default.Search, contentDescription = null, modifier = Modifier.size(16.dp)) },
             trailingIcon = {
                 if (searchQuery.isNotEmpty()) {
                     IconButton(onClick = { searchQuery = "" }) {
@@ -139,55 +139,79 @@ fun OrdersScreen(
             },
             singleLine = true,
             shape = RoundedCornerShape(10.dp),
-            modifier = Modifier
-                .fillMaxWidth()
-                .testTag("orders_search_input")
+            modifier = Modifier.fillMaxWidth().height(48.dp).testTag("orders_search_input")
         )
 
-        Spacer(modifier = Modifier.height(8.dp))
+        Spacer(modifier = Modifier.height(10.dp))
 
         // Filter Tabs
-        SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth()) {
-            OrdersFilterTab.entries.forEachIndexed { index, tab ->
-                SegmentedButton(
+        ScrollableTabRow(
+            selectedTabIndex = selectedFilter.ordinal,
+            edgePadding = 0.dp,
+            divider = {},
+            containerColor = Color.Transparent,
+            modifier = Modifier.fillMaxWidth().testTag("orders_filter_tabs")
+        ) {
+            OrdersFilterTab.entries.forEach { tab ->
+                val count = when (tab) {
+                    OrdersFilterTab.ALL -> allCustomerOrders.size
+                    OrdersFilterTab.ACTIVE -> allCustomerOrders.count { !it.status.isTerminal }
+                    OrdersFilterTab.COMPLETED -> allCustomerOrders.count { it.status == OrderStatus.ORD_COMP }
+                    OrdersFilterTab.CANCELLED -> allCustomerOrders.count { it.status in setOf(OrderStatus.ORD_CANC, OrderStatus.ORD_FCLO, OrderStatus.ORD_SUPS) }
+                }
+                Tab(
                     selected = selectedFilter == tab,
                     onClick = { selectedFilter = tab },
-                    shape = SegmentedButtonDefaults.itemShape(index = index, count = OrdersFilterTab.entries.size)
-                ) {
-                    Text(tab.label, fontSize = 11.sp, maxLines = 1)
-                }
+                    text = {
+                        Text(
+                            text = "${tab.label} ($count)",
+                            fontSize = 11.sp,
+                            fontWeight = if (selectedFilter == tab) FontWeight.Bold else FontWeight.Normal
+                        )
+                    }
+                )
             }
         }
 
         Spacer(modifier = Modifier.height(10.dp))
 
-        // Orders List
+        // F4.4 Empty state
         if (filteredOrders.isEmpty()) {
             Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(vertical = 40.dp),
+                modifier = Modifier.fillMaxSize().padding(vertical = 40.dp),
                 contentAlignment = Alignment.Center
             ) {
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
                     Icon(
-                        imageVector = Icons.AutoMirrored.Filled.ReceiptLong,
+                        imageVector = Icons.Default.Inbox,
                         contentDescription = null,
                         tint = Color(0xFF94A3B8),
                         modifier = Modifier.size(48.dp)
                     )
                     Spacer(modifier = Modifier.height(8.dp))
-                    Text(
-                        text = "No orders found for '${selectedFilter.label}'",
-                        fontWeight = FontWeight.SemiBold,
-                        color = Color(0xFF64748B),
-                        fontSize = 13.sp
-                    )
-                    Text(
-                        text = "Your booking history and active deliveries appear here.",
-                        color = Color(0xFF94A3B8),
-                        fontSize = 11.sp
-                    )
+                    if (allCustomerOrders.isEmpty()) {
+                        Text(
+                            text = "No orders yet",
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 14.sp,
+                            color = Color(0xFF64748B)
+                        )
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Button(
+                            onClick = onNavigateToHome,
+                            colors = ButtonDefaults.buttonColors(containerColor = BlueGasPrimary),
+                            modifier = Modifier.testTag("orders_empty_order_now_button")
+                        ) {
+                            Text("Order now", fontSize = 12.sp)
+                        }
+                    } else {
+                        Text(
+                            text = "No ${selectedFilter.label.lowercase()} orders",
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 14.sp,
+                            color = Color(0xFF64748B)
+                        )
+                    }
                 }
             }
         } else {
@@ -201,275 +225,139 @@ fun OrdersScreen(
                         store = store,
                         snapshot = snapshot,
                         onTrackOrder = { onTrackOrder(order.id) },
-                        onPayOnline = {
-                            selectedOrderIdForPayment = order.id
-                            showPaymentGatewayDialog = true
-                        },
-                        onViewReceipt = {
-                            showReceiptOrderId = order.id
-                        },
+                        onOpenPaymentGateway = { selectedOrderIdForPayment = order.id },
+                        onViewReceipt = { showReceiptOrderId = order.id },
+                        onRateOrder = { showRateOrderId = order.id },
                         onReportComplaint = {
+                            complaintDetails = ""
+                            complaintType = "LEAKAGE_SAFETY"
                             showComplaintOrderId = order.id
                         },
                         onCancelOrder = {
-                            showCancelOrderId = order.id
                             cancelReason = "Changed my mind"
+                            showCancelOrderId = order.id
                         },
                         onReorder = { onReorder(order) },
-                        onNavigateToHome = onNavigateToHome
+                        onNavigateToHome = onNavigateToHome,
+                        onActionMessage = onActionMessage
                     )
-                }
-                item {
-                    Spacer(modifier = Modifier.height(16.dp))
                 }
             }
         }
     }
 
-    // Dialog 1: Demo Payment Dialog
-    if (showPaymentGatewayDialog && selectedOrderIdForPayment != null) {
-        val ord = snapshot.orders.find { it.id == selectedOrderIdForPayment }
-
-        AlertDialog(
-            onDismissRequest = { showPaymentGatewayDialog = false },
-            title = {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(Icons.Default.CreditCard, contentDescription = null, tint = BlueGasPrimary)
-                    Spacer(modifier = Modifier.width(6.dp))
-                    Text("Pay now (demo)", fontWeight = FontWeight.Bold, fontSize = 15.sp)
-                }
+    // F1.2 Payment Dialog
+    if (selectedOrderIdForPayment != null) {
+        DemoPaymentDialog(
+            orderId = selectedOrderIdForPayment!!,
+            store = store,
+            onResult = { msg, ok ->
+                onActionMessage(msg, !ok)
+                selectedOrderIdForPayment = null
             },
-            text = {
-                Column {
-                    Text("Order: ${ord?.id}", fontWeight = FontWeight.Bold, fontSize = 13.sp)
-                    Text(
-                        "Payable: ${ord?.totalAmountPaisa?.let { formatRupees(it) }}",
-                        fontSize = 14.sp,
-                        color = BlueGasPrimary,
-                        fontWeight = FontWeight.Bold
-                    )
-                    Spacer(modifier = Modifier.height(8.dp))
-                    Text("This is a demo gateway for the pilot. Choose an outcome:", fontSize = 11.sp, color = Color(0xFF475569))
-                    Spacer(modifier = Modifier.height(10.dp))
-
-                    Button(
-                        onClick = {
-                            val (_, msg) = store.confirmPaymentAndAdvance(ord?.id ?: "", "SUCCESS")
-                            onActionMessage(msg)
-                            showPaymentGatewayDialog = false
-                        },
-                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF16A34A)),
-                        modifier = Modifier.fillMaxWidth().testTag("orders_gateway_success_button")
-                    ) {
-                        Icon(Icons.Default.Check, contentDescription = null, modifier = Modifier.size(16.dp))
-                        Spacer(modifier = Modifier.width(6.dp))
-                        Text("Payment approved")
-                    }
-                    Spacer(modifier = Modifier.height(6.dp))
-                    Button(
-                        onClick = {
-                            val (_, msg) = store.confirmPaymentAndAdvance(ord?.id ?: "", "DECLINED")
-                            onActionMessage(msg)
-                            showPaymentGatewayDialog = false
-                        },
-                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFDC2626)),
-                        modifier = Modifier.fillMaxWidth().testTag("orders_gateway_decline_button")
-                    ) {
-                        Icon(Icons.Default.Close, contentDescription = null, modifier = Modifier.size(16.dp))
-                        Spacer(modifier = Modifier.width(6.dp))
-                        Text("Payment declined")
-                    }
-                    Spacer(modifier = Modifier.height(6.dp))
-                    OutlinedButton(
-                        onClick = {
-                            val (_, msg) = store.confirmPaymentAndAdvance(ord?.id ?: "", "TIMEOUT")
-                            onActionMessage(msg)
-                            showPaymentGatewayDialog = false
-                        },
-                        modifier = Modifier.fillMaxWidth().testTag("orders_gateway_timeout_button")
-                    ) {
-                        Icon(Icons.Default.Timer, contentDescription = null, modifier = Modifier.size(16.dp))
-                        Spacer(modifier = Modifier.width(6.dp))
-                        Text("Connection lost")
-                    }
-                }
-            },
-            confirmButton = {},
-            dismissButton = {
-                TextButton(onClick = { showPaymentGatewayDialog = false }) { Text("Cancel") }
-            }
+            onDismiss = { selectedOrderIdForPayment = null }
         )
     }
 
-    // Dialog 2: Official Delivery Receipt Dialog (S6: Share sheet)
+    // F1.3 Receipt Dialog
     if (showReceiptOrderId != null) {
         val ord = snapshot.orders.find { it.id == showReceiptOrderId }
-        val shareReceiptText = remember(ord) {
-            buildString {
-                appendLine("BLUE GAS — Delivery Receipt")
-                appendLine("Order ID: ${ord?.id}")
-                appendLine("Date: ${formatTimestamp(ord?.createdAt ?: System.currentTimeMillis())}")
-                appendLine("Status: ${ord?.status?.canonicalLabel}")
-                appendLine("POD Reference: ${ord?.podReference ?: "POD-${ord?.id?.takeLast(4)}-DONE"}")
-                if (ord?.allocatedSerial != null) {
-                    appendLine("Cylinder Serial: ${ord.allocatedSerial}")
-                }
-                appendLine("--------------------------------")
-                ord?.items?.forEach { itm ->
-                    appendLine("${itm.quantity}x ${itm.productName}: ${formatRupees(itm.subtotalPaisa)}")
-                }
-                if ((ord?.depositTotalPaisa ?: 0L) > 0) {
-                    appendLine("Cylinder Security Deposit: ${formatRupees(ord?.depositTotalPaisa ?: 0L)}")
-                }
-                appendLine("Fulfilment / Delivery Fee: ${formatRupees(ord?.deliveryFeePaisa ?: 0L)}")
-                appendLine("Platform Convenience Fee: ${formatRupees(ord?.platformFeePaisa ?: 0L)}")
-                appendLine("Sales Tax: ${formatRupees(ord?.taxPaisa ?: 0L)}")
-                if ((ord?.discountPaisa ?: 0L) > 0) {
-                    appendLine("Discount: -${formatRupees(ord?.discountPaisa ?: 0L)}")
-                }
-                appendLine("--------------------------------")
-                appendLine("Total Paid: ${formatRupees(ord?.totalAmountPaisa ?: 0L)}")
-                appendLine("Payment Method: ${ord?.paymentMethod?.name?.replace("_", " ")}")
-                appendLine("--------------------------------")
-                appendLine("Prices, fees and tax are demo settings pending client decisions (Q03, Q04, Q22, Q24).")
-            }
+        if (ord != null) {
+            ReceiptDialog(
+                order = ord,
+                snapshot = snapshot,
+                onDismiss = { showReceiptOrderId = null }
+            )
         }
+    }
 
-        AlertDialog(
-            onDismissRequest = { showReceiptOrderId = null },
-            title = {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(Icons.Default.Receipt, contentDescription = null, tint = BlueGasPrimary)
-                    Spacer(modifier = Modifier.width(6.dp))
-                    Text("Official Delivery Receipt", fontWeight = FontWeight.Bold, fontSize = 15.sp)
-                }
+    // F1.4 Rate Order Dialog
+    if (showRateOrderId != null) {
+        RateOrderDialog(
+            orderId = showRateOrderId!!,
+            store = store,
+            onResult = { msg, ok ->
+                onActionMessage(msg, !ok)
+                showRateOrderId = null
             },
-            text = {
-                Column {
-                    Text("Order ID: ${ord?.id}", fontWeight = FontWeight.Bold, fontSize = 13.sp)
-                    Text(
-                        "POD Reference: ${ord?.podReference ?: "POD-${ord?.id?.takeLast(4)}-DONE"}",
-                        fontSize = 11.sp,
-                        fontFamily = FontFamily.Monospace,
-                        color = BlueGasPrimary
-                    )
-                    Spacer(modifier = Modifier.height(4.dp))
-                    Text(
-                        "Cylinder Serial: ${ord?.allocatedSerial ?: "CYL-SERIAL-VERIFIED"}",
-                        fontSize = 11.sp,
-                        fontWeight = FontWeight.Bold,
-                        color = Color(0xFF047857)
-                    )
-                    Text(
-                        "Status: Handover Complete & Safety Inspected",
-                        fontSize = 10.sp,
-                        color = Color(0xFF166534),
-                        fontWeight = FontWeight.SemiBold
-                    )
-
-                    Spacer(modifier = Modifier.height(8.dp))
-                    HorizontalDivider()
-                    Spacer(modifier = Modifier.height(6.dp))
-
-                    ord?.items?.forEach { itm ->
-                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                            Text("${itm.quantity}x ${itm.productName}", fontSize = 11.sp)
-                            Text(formatRupees(itm.subtotalPaisa), fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
-                        }
-                    }
-
-                    if ((ord?.depositTotalPaisa ?: 0L) > 0) {
-                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                            Text("Cylinder Security Deposit", fontSize = 11.sp, color = Color(0xFFB45309))
-                            Text(formatRupees(ord?.depositTotalPaisa ?: 0L), fontSize = 11.sp, color = Color(0xFFB45309), fontWeight = FontWeight.SemiBold)
-                        }
-                    }
-
-                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                        Text("Fulfilment / Delivery Fee", fontSize = 11.sp)
-                        Text(formatRupees(ord?.deliveryFeePaisa ?: 0L), fontSize = 11.sp)
-                    }
-
-                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                        Text("Sales Tax", fontSize = 11.sp)
-                        Text(formatRupees(ord?.taxPaisa ?: 0L), fontSize = 11.sp)
-                    }
-
-                    HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
-
-                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                        Text("Total Amount Paid:", fontWeight = FontWeight.Bold, fontSize = 12.sp)
-                        Text(formatRupees(ord?.totalAmountPaisa ?: 0L), fontWeight = FontWeight.Bold, fontSize = 14.sp, color = BlueGasPrimary)
-                    }
-
-                    Spacer(modifier = Modifier.height(6.dp))
-                    Text(
-                        text = "Prices, fees and tax are demo settings pending client decisions (Q03, Q04, Q22, Q24).",
-                        fontSize = 9.sp,
-                        color = Color.Gray,
-                        lineHeight = 12.sp
-                    )
-                }
-            },
-            confirmButton = {
-                Button(
-                    onClick = {
-                        val shareIntent = Intent(Intent.ACTION_SEND).apply {
-                            type = "text/plain"
-                            putExtra(Intent.EXTRA_SUBJECT, "Receipt for Order ${ord?.id}")
-                            putExtra(Intent.EXTRA_TEXT, shareReceiptText)
-                        }
-                        context.startActivity(Intent.createChooser(shareIntent, "Share receipt"))
-                    },
-                    modifier = Modifier.testTag("share_receipt_button")
-                ) {
-                    Icon(Icons.Default.Share, contentDescription = null, modifier = Modifier.size(14.dp))
-                    Spacer(modifier = Modifier.width(4.dp))
-                    Text("Share receipt", fontSize = 11.sp)
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { showReceiptOrderId = null }) { Text("Close") }
-            }
+            onDismiss = { showRateOrderId = null }
         )
     }
 
-    // Dialog 3: Report Dispute / Safety Issue Dialog
+    // F4.6 Report a Problem Dialog
     if (showComplaintOrderId != null) {
+        val complaintTypes = listOf(
+            "LEAKAGE_SAFETY" to "Cylinder Leakage / Safety Concern",
+            "DAMAGED_SEAL" to "Damaged or Tampered Valve Seal",
+            "DELAYED_DELIVERY" to "Unacceptable Delivery Delay",
+            "WRONG_CYLINDER_SIZE" to "Incorrect Cylinder Size Delivered",
+            "PAYMENT_DISPUTE" to "Payment Discrepancy",
+            "OTHER" to "General Support Inquiry"
+        )
+
         AlertDialog(
             onDismissRequest = { showComplaintOrderId = null },
             title = {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Icon(Icons.Default.ReportProblem, contentDescription = null, tint = Color(0xFFDC2626))
                     Spacer(modifier = Modifier.width(6.dp))
-                    Text("Report Safety Issue / Dispute", fontWeight = FontWeight.Bold, fontSize = 15.sp)
+                    Text("Report a problem", fontWeight = FontWeight.Bold, fontSize = 15.sp)
                 }
             },
             text = {
                 Column {
-                    Text("Order: $showComplaintOrderId", fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                    Text("Order: $showComplaintOrderId", fontWeight = FontWeight.Bold, fontSize = 12.sp, color = Color(0xFF0F172A))
+                    Spacer(modifier = Modifier.height(4.dp))
                     Text(
-                        "Note: Raising a complaint creates an accountable SupportCase without mutating completed order status.",
-                        fontSize = 10.sp,
-                        color = Color(0xFFB45309)
+                        "We'll open a support case. Your order stays as it is.",
+                        fontSize = 11.sp,
+                        color = Color(0xFF64748B)
                     )
                     Spacer(modifier = Modifier.height(8.dp))
 
-                    Text("Issue Type:", fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
-                    listOf(
-                        "LEAKAGE_SAFETY" to "Cylinder Leakage / Safety Concern",
-                        "CYLINDER_DENT" to "Dented / Damaged Cylinder Body",
-                        "OVERCHARGING" to "Overcharging or Change Dispute",
-                        "DELAYED_DELIVERY" to "Severe Delivery Delay"
-                    ).forEach { (code, label) ->
+                    // F4.6 Exact safety block for leakage/safety
+                    if (complaintType == "LEAKAGE_SAFETY") {
+                        Surface(
+                            color = Color(0xFFFEF2F2),
+                            shape = RoundedCornerShape(8.dp),
+                            border = BorderStroke(1.dp, Color(0xFFFECACA)),
+                            modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp)
+                        ) {
+                            Column(modifier = Modifier.padding(10.dp)) {
+                                Text(
+                                    text = "Follow the approved BLUE GAS safety procedure (to be supplied by the client, Q07). For emergencies call Rescue 1122.",
+                                    fontSize = 11.sp,
+                                    color = Color(0xFF991B1B),
+                                    lineHeight = 15.sp
+                                )
+                                Spacer(modifier = Modifier.height(6.dp))
+                                Button(
+                                    onClick = {
+                                        val dialIntent = Intent(Intent.ACTION_DIAL, Uri.parse("tel:1122"))
+                                        context.startActivity(dialIntent)
+                                    },
+                                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFDC2626)),
+                                    modifier = Modifier.fillMaxWidth().height(36.dp).testTag("call_1122_button")
+                                ) {
+                                    Icon(Icons.Default.Phone, contentDescription = null, modifier = Modifier.size(14.dp))
+                                    Spacer(modifier = Modifier.width(4.dp))
+                                    Text("Call 1122", fontSize = 12.sp)
+                                }
+                            }
+                        }
+                    }
+
+                    Text("Issue Type:", fontWeight = FontWeight.SemiBold, fontSize = 11.sp)
+                    Spacer(modifier = Modifier.height(4.dp))
+                    complaintTypes.forEach { (typeKey, typeLabel) ->
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .clickable { complaintType = code }
+                                .clickable { complaintType = typeKey }
                         ) {
-                            RadioButton(selected = complaintType == code, onClick = { complaintType = code })
-                            Text(label, fontSize = 11.sp)
+                            RadioButton(selected = complaintType == typeKey, onClick = { complaintType = typeKey })
+                            Text(typeLabel, fontSize = 11.sp)
                         }
                     }
 
@@ -477,7 +365,7 @@ fun OrdersScreen(
                     OutlinedTextField(
                         value = complaintDetails,
                         onValueChange = { complaintDetails = it },
-                        placeholder = { Text("Provide details or description of safety issue...", fontSize = 11.sp) },
+                        label = { Text("Describe the issue (optional)", fontSize = 11.sp) },
                         modifier = Modifier.fillMaxWidth(),
                         maxLines = 3
                     )
@@ -486,17 +374,14 @@ fun OrdersScreen(
             confirmButton = {
                 Button(
                     onClick = {
-                        val (_, msg) = store.raiseComplaint(
-                            orderId = showComplaintOrderId ?: "",
-                            issueType = complaintType,
-                            description = complaintDetails.ifBlank { "Customer filed $complaintType" }
-                        )
-                        onActionMessage(msg)
+                        val (ok, msg) = store.raiseComplaint(showComplaintOrderId ?: "", complaintType, complaintDetails)
+                        onActionMessage(msg, !ok)
                         showComplaintOrderId = null
                     },
-                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFDC2626))
+                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFDC2626)),
+                    modifier = Modifier.testTag("submit_complaint_button")
                 ) {
-                    Text("Submit Dispute Case")
+                    Text("Submit")
                 }
             },
             dismissButton = {
@@ -505,7 +390,7 @@ fun OrdersScreen(
         )
     }
 
-    // Dialog 4: Cancel Order Dialog
+    // F4.8 Cancel Order Dialog
     if (showCancelOrderId != null) {
         val ord = snapshot.orders.find { it.id == showCancelOrderId }
         val cancelReasons = listOf(
@@ -530,7 +415,7 @@ fun OrdersScreen(
                     Text("Order ID: ${ord?.id}", fontWeight = FontWeight.Bold, fontSize = 13.sp)
                     Spacer(modifier = Modifier.height(4.dp))
                     Text(
-                        "Are you sure you want to cancel this order? Any active stock holds and allocated cylinders will be released back to inventory. If you already paid online, a full refund will be processed.",
+                        "Your reserved cylinder will be released. If you already paid online, the refund is handled by our Finance team.",
                         fontSize = 11.sp,
                         color = Color(0xFF64748B),
                         lineHeight = 15.sp
@@ -554,8 +439,8 @@ fun OrdersScreen(
             confirmButton = {
                 Button(
                     onClick = {
-                        val (_, msg) = store.cancelOrder(showCancelOrderId ?: "", cancelReason)
-                        onActionMessage(msg)
+                        val (ok, msg) = store.cancelOrder(showCancelOrderId ?: "", cancelReason)
+                        onActionMessage(msg, !ok)
                         showCancelOrderId = null
                     },
                     colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFDC2626)),
@@ -579,15 +464,15 @@ private fun CustomerOrderCard(
     store: BlueGasStore,
     snapshot: SharedAppState,
     onTrackOrder: () -> Unit,
-    onPayOnline: () -> Unit,
+    onOpenPaymentGateway: () -> Unit,
     onViewReceipt: () -> Unit,
+    onRateOrder: () -> Unit,
     onReportComplaint: () -> Unit,
     onCancelOrder: () -> Unit,
     onReorder: () -> Unit,
-    onNavigateToHome: () -> Unit
+    onNavigateToHome: () -> Unit,
+    onActionMessage: (String, Boolean) -> Unit
 ) {
-    val payment = snapshot.payments.find { it.orderId == order.id }
-
     Card(
         colors = CardDefaults.cardColors(containerColor = Color.White),
         border = BorderStroke(1.dp, Color(0xFFE2E8F0)),
@@ -597,14 +482,12 @@ private fun CustomerOrderCard(
             .testTag("order_card_${order.id}")
             .then(
                 if (!order.status.isTerminal) {
-                    Modifier.clickable {
-                        onTrackOrder()
-                    }
+                    Modifier.clickable { onTrackOrder() }
                 } else Modifier
             )
     ) {
         Column(modifier = Modifier.padding(12.dp)) {
-            // Row 1: ID + Status Chip
+            // Row 1: ID + Date + Status Chip
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -642,7 +525,7 @@ private fun CustomerOrderCard(
 
             Spacer(modifier = Modifier.height(4.dp))
 
-            // Pricing & Payment Method
+            // F4.4 Pricing & Payment Method
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -660,8 +543,8 @@ private fun CustomerOrderCard(
                 ) {
                     Text(
                         text = when (order.paymentMethod) {
-                            PaymentMethod.ONLINE_HOSTED -> "Online Hosted"
-                            PaymentMethod.CASH_ON_DELIVERY -> "Cash on Delivery"
+                            PaymentMethod.ONLINE_HOSTED -> "Online payment"
+                            PaymentMethod.CASH_ON_DELIVERY -> "Cash on delivery"
                         },
                         fontSize = 10.sp,
                         fontWeight = FontWeight.SemiBold,
@@ -671,13 +554,13 @@ private fun CustomerOrderCard(
                 }
             }
 
-            // Bound Serial Badge if allocated
+            // F4.4 Cylinder ID Badge if allocated
             if (order.allocatedSerial != null) {
                 Spacer(modifier = Modifier.height(6.dp))
                 Surface(
                     color = Color(0xFFECFDF5),
                     shape = RoundedCornerShape(6.dp),
-                    border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFFA7F3D0)),
+                    border = BorderStroke(1.dp, Color(0xFFA7F3D0)),
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     Row(
@@ -692,7 +575,7 @@ private fun CustomerOrderCard(
                         )
                         Spacer(modifier = Modifier.width(6.dp))
                         Text(
-                            text = "Bound Cylinder Serial: ${order.allocatedSerial}",
+                            text = "Cylinder ID: ${order.allocatedSerial}",
                             fontSize = 11.sp,
                             fontWeight = FontWeight.Bold,
                             fontFamily = FontFamily.Monospace,
@@ -702,48 +585,16 @@ private fun CustomerOrderCard(
                 }
             }
 
-            // Hold TTL countdown for ORD_PAYPEND
-            if (order.status == OrderStatus.ORD_PAYPEND && order.holdExpiresAt != null) {
-                var countdownTick by remember { mutableIntStateOf(0) }
-                LaunchedEffect(order.id, order.holdExpiresAt) {
-                    while (true) {
-                        delay(1000L)
-                        countdownTick++
-                    }
-                }
-                val now = System.currentTimeMillis() + (countdownTick * 0L)
-                val remainingMs = order.holdExpiresAt - now
-                val countdownText = if (remainingMs <= 0L) {
-                    "Expired"
-                } else {
-                    "${remainingMs / 60000}m ${(remainingMs % 60000) / 1000}s"
-                }
-                Spacer(modifier = Modifier.height(6.dp))
-                Surface(
-                    color = Color(0xFFFFFBEB),
-                    shape = RoundedCornerShape(6.dp),
-                    border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFFFDE68A)),
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.Timer,
-                            contentDescription = null,
-                            tint = Color(0xFFB45309),
-                            modifier = Modifier.size(14.dp)
-                        )
-                        Spacer(modifier = Modifier.width(6.dp))
-                        Text(
-                            text = if (remainingMs <= 0L) "Stock Hold TTL: Expired" else "Stock Hold TTL: $countdownText remaining before auto-release",
-                            fontSize = 10.sp,
-                            color = Color(0xFFB45309),
-                            fontWeight = FontWeight.Bold
-                        )
-                    }
-                }
+            // F4.1 PaymentActionsRow for ORD_PAYPEND
+            if (order.status == OrderStatus.ORD_PAYPEND) {
+                Spacer(modifier = Modifier.height(8.dp))
+                PaymentActionsRow(
+                    order = order,
+                    snapshot = snapshot,
+                    store = store,
+                    onResult = onActionMessage,
+                    onOpenGateway = onOpenPaymentGateway
+                )
             }
 
             // Action Buttons
@@ -752,38 +603,23 @@ private fun CustomerOrderCard(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                // Track button
-                OutlinedButton(
-                    onClick = onTrackOrder,
-                    modifier = Modifier
-                        .weight(1f)
-                        .height(34.dp)
-                        .testTag("track_order_${order.id}"),
-                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp)
-                ) {
-                    Icon(Icons.Default.Navigation, contentDescription = null, modifier = Modifier.size(14.dp))
-                    Spacer(modifier = Modifier.width(4.dp))
-                    Text("Track Order", fontSize = 11.sp)
-                }
-
-                // Pay Online button for ORD_PAYPEND
-                if (order.status == OrderStatus.ORD_PAYPEND && order.paymentMethod == PaymentMethod.ONLINE_HOSTED) {
-                    Button(
-                        onClick = onPayOnline,
-                        colors = ButtonDefaults.buttonColors(containerColor = BlueGasPrimary),
+                // Track button (for active orders)
+                if (!order.status.isTerminal) {
+                    OutlinedButton(
+                        onClick = onTrackOrder,
                         modifier = Modifier
                             .weight(1f)
                             .height(34.dp)
-                            .testTag("pay_online_${order.id}"),
+                            .testTag("track_order_${order.id}"),
                         contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp)
                     ) {
-                        Icon(Icons.Default.Payment, contentDescription = null, modifier = Modifier.size(14.dp))
+                        Icon(Icons.Default.Navigation, contentDescription = null, modifier = Modifier.size(14.dp))
                         Spacer(modifier = Modifier.width(4.dp))
-                        Text("Pay Online", fontSize = 11.sp)
+                        Text("Track Order", fontSize = 11.sp)
                     }
                 }
 
-                // Receipt and Dispute buttons for completed
+                // Completed orders: Receipt and Rate
                 if (order.status == OrderStatus.ORD_COMP) {
                     FilledTonalButton(
                         onClick = onViewReceipt,
@@ -796,6 +632,38 @@ private fun CustomerOrderCard(
                         Icon(Icons.Default.Receipt, contentDescription = null, modifier = Modifier.size(13.dp))
                         Spacer(modifier = Modifier.width(4.dp))
                         Text("Receipt", fontSize = 11.sp)
+                    }
+
+                    if (order.ratingStars != null) {
+                        Surface(
+                            color = Color(0xFFFEF3C7),
+                            shape = RoundedCornerShape(8.dp),
+                            modifier = Modifier.weight(1f).height(34.dp)
+                        ) {
+                            Row(
+                                modifier = Modifier.fillMaxSize(),
+                                horizontalArrangement = Arrangement.Center,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Icon(Icons.Default.Star, contentDescription = null, tint = Color(0xFFD97706), modifier = Modifier.size(14.dp))
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text("Rated ${order.ratingStars}/5", fontWeight = FontWeight.Bold, fontSize = 11.sp, color = Color(0xFF92400E))
+                            }
+                        }
+                    } else {
+                        Button(
+                            onClick = onRateOrder,
+                            colors = ButtonDefaults.buttonColors(containerColor = BlueGasPrimary),
+                            modifier = Modifier
+                                .weight(1f)
+                                .height(34.dp)
+                                .testTag("rate_order_${order.id}"),
+                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp)
+                        ) {
+                            Icon(Icons.Default.Star, contentDescription = null, modifier = Modifier.size(13.dp))
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text("Rate", fontSize = 11.sp)
+                        }
                     }
 
                     OutlinedButton(
@@ -844,35 +712,25 @@ private fun CustomerOrderCard(
 
             // Quick Reorder from Completed Orders
             if (order.status == OrderStatus.ORD_COMP) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(top = 6.dp),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                Spacer(modifier = Modifier.height(6.dp))
+                Button(
+                    onClick = onReorder,
+                    modifier = Modifier.fillMaxWidth().height(36.dp).testTag("reorder_button_${order.id}"),
+                    colors = ButtonDefaults.buttonColors(containerColor = BlueGasPrimary),
+                    shape = RoundedCornerShape(8.dp)
                 ) {
-                    Button(
-                        onClick = onReorder,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(36.dp),
-                        colors = ButtonDefaults.buttonColors(containerColor = BlueGasPrimary),
-                        shape = RoundedCornerShape(8.dp)
-                    ) {
-                        Icon(Icons.Default.Replay, contentDescription = null, modifier = Modifier.size(16.dp))
-                        Spacer(modifier = Modifier.width(4.dp))
-                        Text("Reorder", fontSize = 12.sp)
-                    }
+                    Icon(Icons.Default.Replay, contentDescription = null, modifier = Modifier.size(16.dp))
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text("Reorder", fontSize = 12.sp)
                 }
             }
 
             // Place New Order CTA on Terminal-State Cards
             if (order.status == OrderStatus.ORD_CANC || order.status == OrderStatus.ORD_SUPS || order.status == OrderStatus.ORD_FCLO) {
+                Spacer(modifier = Modifier.height(6.dp))
                 OutlinedButton(
                     onClick = onNavigateToHome,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(top = 6.dp)
-                        .height(36.dp),
+                    modifier = Modifier.fillMaxWidth().height(36.dp),
                     shape = RoundedCornerShape(8.dp),
                     border = BorderStroke(1.dp, BlueGasPrimary)
                 ) {

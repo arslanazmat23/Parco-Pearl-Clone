@@ -381,8 +381,8 @@ class BlueGasStore {
     }
 
     fun raiseComplaint(orderId: String, issueType: String, description: String, actor: String = "Customer"): Pair<Boolean, String> {
-        val ord = orders.find { it.id == orderId }
-        val custId = ord?.customerId ?: "CUST-001"
+        val ord = orders.find { it.id == orderId } ?: return Pair(false, "Order not found.")
+        val custId = ord.customerId
         val newCase = SupportCase(
             id = "CASE-" + UUID.randomUUID().toString().take(6),
             orderId = orderId,

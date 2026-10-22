@@ -228,8 +228,11 @@ fun BlueGasStore.completeCounterHandover(
         if (settings.approvedEmptyBrands.contains(emptyBrand)) {
             order.emptyCollectedBrand = emptyBrand
             order.emptyCollectedCylinderId = emptyCylinderId
-            val stock = stockBalances.find { it.pointId == order.fulfilmentPointId && it.skuId == order.items.first().sku }
-            stock?.let { it.emptyQty++ }
+            val targetSku = order.items.firstOrNull { it.lineType == "GAS" }?.sku ?: order.items.firstOrNull()?.sku
+            if (targetSku != null) {
+                val stock = stockBalances.find { it.pointId == order.fulfilmentPointId && it.skuId == targetSku }
+                stock?.let { it.emptyQty++ }
+            }
         }
     }
 
@@ -584,8 +587,11 @@ fun BlueGasStore.completeHandover(
         if (settings.approvedEmptyBrands.contains(brand)) {
             order.emptyCollectedBrand = brand
             order.emptyCollectedCylinderId = emptySerial
-            val stock = stockBalances.find { it.pointId == order.fulfilmentPointId && it.skuId == order.items.first().sku }
-            stock?.let { it.emptyQty++ }
+            val targetSku = order.items.firstOrNull { it.lineType == "GAS" }?.sku ?: order.items.firstOrNull()?.sku
+            if (targetSku != null) {
+                val stock = stockBalances.find { it.pointId == order.fulfilmentPointId && it.skuId == targetSku }
+                stock?.let { it.emptyQty++ }
+            }
         } else {
             // Declined
             order.emptyCollectedBrand = "DECLINED_OTHER_BRAND"

@@ -1,12 +1,14 @@
 package com.example.bluegas.ui.customer
 
+import android.content.Intent
+import android.net.Uri
 import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -24,6 +26,8 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.PathEffect
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -35,7 +39,9 @@ import com.example.bluegas.model.*
 import com.example.bluegas.ui.components.CanonicalStatusChip
 import com.example.ui.theme.BlueGasDark
 import com.example.ui.theme.BlueGasPrimary
+import kotlin.math.min
 
+// F2 TrackingScreen
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun TrackingScreen(
@@ -43,8 +49,10 @@ fun TrackingScreen(
     initialOrderId: String?,
     onSelectOrderToTrack: (String) -> Unit,
     onBackToOrders: () -> Unit,
+    onActionMessage: ((String, Boolean) -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
+    val context = LocalContext.current
     val snapshot by store.appState.collectAsStateWithLifecycle()
     val activeCustomer = snapshot.activeCustomer ?: return
     val customerOrders = snapshot.orders.filter { it.customerId == activeCustomer.id }.sortedByDescending { it.createdAt }
@@ -58,13 +66,36 @@ fun TrackingScreen(
 
     val currentOrder = customerOrders.find { it.id == selectedOrderId }
     val assignedRider = snapshot.riders.find { it.id == currentOrder?.assignedRiderId }
-    val assignedNode = snapshot.nodes.find { it.id == assignedRider?.nodeId }
+    val depotNode = snapshot.nodes.find { it.id == (currentOrder?.pickupPointId ?: currentOrder?.fulfilmentPointId ?: assignedRider?.nodeId) }
     val deliveryInfo = snapshot.deliveries.find { it.orderId == currentOrder?.id }
 
-    var showCallRiderDialog by remember { mutableStateOf(false) }
+    // Dialog & Banner state
+    var localBanner by remember { mutableStateOf<BannerMsg?>(null) }
+    val postMessage: (String, Boolean) -> Unit = { msg, isErr ->
+        if (onActionMessage != null) {
+            onActionMessage(msg, isErr)
+        } else {
+            localBanner = BannerMsg(msg, isErr)
+        }
+    }
+
     var showCancelDialog by remember { mutableStateOf(false) }
     var cancelReason by remember { mutableStateOf("Changed my mind") }
-    var notificationBannerMessage by remember { mutableStateOf<String?>(null) }
+    var showPaymentGatewayDialog by remember { mutableStateOf(false) }
+    var showReceiptDialog by remember { mutableStateOf(false) }
+    var showRateDialog by remember { mutableStateOf(false) }
+
+    // F2.3 Pickup Arrival state
+    var depotNotifiedLocal by remember(currentOrder?.id) {
+        mutableStateOf(
+            snapshot.notifications.any {
+                it.orderId == currentOrder?.id && it.title == "Customer Arrived for Pickup"
+            }
+        )
+    }
+
+    // F2.4 Live timer for pin & countdown
+    val nowMillis = rememberNowMillis(enabled = currentOrder?.status == OrderStatus.ORD_DISP || currentOrder?.status == OrderStatus.ORD_PAYPEND)
 
     Column(
         modifier = modifier
@@ -136,48 +167,43 @@ fun TrackingScreen(
             }
         }
 
-        Spacer(modifier = Modifier.height(10.dp))
+        Spacer(modifier = Modifier.height(8.dp))
 
-        // Notification / action feedback banner
+        // Local fallback banner if shell banner not attached
         AnimatedVisibility(
-            visible = notificationBannerMessage != null,
+            visible = localBanner != null,
             enter = fadeIn(),
             exit = fadeOut()
         ) {
-            Surface(
-                color = Color(0xFFFEF3C7),
-                shape = RoundedCornerShape(8.dp),
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(bottom = 8.dp)
-            ) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)
+            localBanner?.let { banner ->
+                Surface(
+                    color = if (banner.isError) Color(0xFFFEE2E2) else Color(0xFFDCFCE7),
+                    shape = RoundedCornerShape(8.dp),
+                    modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp)
                 ) {
-                    Icon(
-                        imageVector = Icons.Default.Info,
-                        contentDescription = null,
-                        tint = Color(0xFFB45309),
-                        modifier = Modifier.size(16.dp)
-                    )
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text(
-                        text = notificationBannerMessage ?: "",
-                        fontSize = 11.sp,
-                        color = Color(0xFF78350F),
-                        modifier = Modifier.weight(1f)
-                    )
-                    IconButton(
-                        onClick = { notificationBannerMessage = null },
-                        modifier = Modifier.size(24.dp)
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)
                     ) {
                         Icon(
-                            imageVector = Icons.Default.Close,
-                            contentDescription = "Dismiss",
-                            tint = Color(0xFF78350F),
-                            modifier = Modifier.size(14.dp)
+                            imageVector = if (banner.isError) Icons.Default.Error else Icons.Default.CheckCircle,
+                            contentDescription = null,
+                            tint = if (banner.isError) Color(0xFFDC2626) else Color(0xFF16A34A),
+                            modifier = Modifier.size(16.dp)
                         )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            text = banner.text,
+                            fontSize = 11.sp,
+                            color = if (banner.isError) Color(0xFF991B1B) else Color(0xFF166534),
+                            modifier = Modifier.weight(1f)
+                        )
+                        IconButton(
+                            onClick = { localBanner = null },
+                            modifier = Modifier.size(24.dp)
+                        ) {
+                            Icon(Icons.Default.Close, contentDescription = "Dismiss", modifier = Modifier.size(14.dp))
+                        }
                     }
                 }
             }
@@ -185,9 +211,7 @@ fun TrackingScreen(
 
         if (currentOrder == null) {
             Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(vertical = 40.dp),
+                modifier = Modifier.fillMaxSize().padding(vertical = 40.dp),
                 contentAlignment = Alignment.Center
             ) {
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
@@ -216,56 +240,132 @@ fun TrackingScreen(
                 modifier = Modifier.fillMaxSize(),
                 verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
-                // SECTION 1: Status Hero Banner
+                // F2.1 SECTION 1: Status Hero Banner
                 item {
-                    val (bannerBg, bannerIcon, bannerTitle, bannerSubtitle) = when (currentOrder.status) {
-                        OrderStatus.ORD_DRAFT, OrderStatus.ORD_VALPEND -> Quadruple(
-                            Color(0xFFEFF6FF), Icons.Default.PendingActions, "Validating Order & Zone", "Checking safety compliance and distributor pilot coverage"
+                    val isPickup = currentOrder.fulfilmentMode == FulfilmentMode.PICKUP
+                    val depotName = depotNode?.name ?: "Depot"
+                    val remainingMs = (currentOrder.holdExpiresAt ?: 0L) - nowMillis
+                    val countdownStr = formatCountdown(remainingMs)
+
+                    val (tintColor, accentColor, iconVec, titleText, subtitleText) = when (currentOrder.status) {
+                        OrderStatus.ORD_DRAFT, OrderStatus.ORD_VALPEND -> HeroBannerConfig(
+                            tint = Color(0xFFEFF6FF),
+                            accent = Color(0xFF3B82F6),
+                            icon = Icons.Default.PendingActions,
+                            title = "Checking your order",
+                            subtitle = "We're confirming your address and stock."
                         )
-                        OrderStatus.ORD_PAYPEND -> Quadruple(
-                            Color(0xFFFFFBEB), Icons.Default.Timer, "Awaiting Payment Authorization", "Stock held for 15 minutes. Authorize online or select COD"
+                        OrderStatus.ORD_PAYPEND -> HeroBannerConfig(
+                            tint = Color(0xFFFFFBEB),
+                            accent = Color(0xFFF59E0B),
+                            icon = Icons.Default.Timer,
+                            title = "Waiting for payment",
+                            subtitle = "Pay within $countdownStr to keep your cylinder reserved."
                         )
-                        OrderStatus.ORD_CONF, OrderStatus.ORD_RSVD -> Quadruple(
-                            Color(0xFFEFF6FF), Icons.Default.CheckCircle, "Order Confirmed & Stock Reserved", "Distributor node is allocating an inspection-passed cylinder"
+                        OrderStatus.ORD_CONF, OrderStatus.ORD_RSVD -> HeroBannerConfig(
+                            tint = Color(0xFFEFF6FF),
+                            accent = Color(0xFF3B82F6),
+                            icon = Icons.Default.CheckCircle,
+                            title = "Order confirmed",
+                            subtitle = if (isPickup) "Your depot is being assigned." else "Your cylinder is reserved."
                         )
-                        OrderStatus.ORD_ASGN -> Quadruple(
-                            Color(0xFFF0FDF4), Icons.Default.PersonSearch, "Rider Assigned", "Awaiting rider shift acceptance & pickup confirmation"
+                        OrderStatus.ORD_ASGN -> HeroBannerConfig(
+                            tint = Color(0xFFEFF6FF),
+                            accent = Color(0xFF3B82F6),
+                            icon = Icons.Default.PersonSearch,
+                            title = "Assigned",
+                            subtitle = if (isPickup) "Your depot has been assigned." else "A delivery partner has been assigned."
                         )
-                        OrderStatus.ORD_ACPT -> Quadruple(
-                            Color(0xFFEFF6FF), Icons.Default.ThumbUp, "Rider Accepted Order", "Heading to distributor hub for vehicle loading"
+                        OrderStatus.ORD_ACPT -> HeroBannerConfig(
+                            tint = Color(0xFFEFF6FF),
+                            accent = Color(0xFF3B82F6),
+                            icon = Icons.Default.ThumbUp,
+                            title = "Order accepted",
+                            subtitle = "Your order is being organised."
                         )
-                        OrderStatus.ORD_PREP -> Quadruple(
-                            Color(0xFFFEF3C7), Icons.Default.Build, "Preparing your order", "The distributor is getting your cylinder ready."
+                        OrderStatus.ORD_PREP -> HeroBannerConfig(
+                            tint = Color(0xFFFFFBEB),
+                            accent = Color(0xFFF59E0B),
+                            icon = Icons.Default.Build,
+                            title = "Preparing your order",
+                            subtitle = "Your cylinder is being made ready."
                         )
-                        OrderStatus.ORD_DISP -> Quadruple(
-                            Color(0xFF0284C7), Icons.Default.DeliveryDining, "Dispatched & On the Way!", "Rider is en route to your delivery address"
+                        OrderStatus.ORD_DISP -> HeroBannerConfig(
+                            tint = Color(0xFFEFF6FF),
+                            accent = Color(0xFF3B82F6),
+                            icon = Icons.Default.DeliveryDining,
+                            title = "On the way",
+                            subtitle = "Your rider is heading to your address."
                         )
-                        OrderStatus.ORD_RDYPU -> Quadruple(
-                            Color(0xFF047857), Icons.Default.Store, "Ready for Self Pickup", "Your cylinder package is ready at the distributor hub"
+                        OrderStatus.ORD_RDYPU -> HeroBannerConfig(
+                            tint = Color(0xFFF0FDF4),
+                            accent = Color(0xFF10B981),
+                            icon = Icons.Default.Store,
+                            title = "Ready for pickup",
+                            subtitle = "Your cylinder is ready at $depotName."
                         )
-                        OrderStatus.ORD_ATHO -> Quadruple(
-                            Color(0xFF16A34A), Icons.Default.PinDrop, "Rider Arrived at Doorstep!", "Conducting bubble leak test & non-technical installation"
+                        OrderStatus.ORD_ATHO -> HeroBannerConfig(
+                            tint = Color(0xFFF0FDF4),
+                            accent = Color(0xFF10B981),
+                            icon = Icons.Default.PinDrop,
+                            title = if (isPickup) "You're at the depot" else "Rider has arrived",
+                            subtitle = if (isPickup) "Show your handover code at the counter." else "Please share your handover code with the rider."
                         )
-                        OrderStatus.ORD_INSP, OrderStatus.ORD_ADJ -> Quadruple(
-                            Color(0xFFD97706), Icons.AutoMirrored.Filled.FactCheck, "Safety Inspection & Handover", "Leak test passed. Verifying digital signature & payment"
+                        OrderStatus.ORD_INSP, OrderStatus.ORD_ADJ -> HeroBannerConfig(
+                            tint = Color(0xFFFFFBEB),
+                            accent = Color(0xFFF59E0B),
+                            icon = Icons.AutoMirrored.Filled.FactCheck,
+                            title = "Handover in progress",
+                            subtitle = "Final checks and payment are being completed."
                         )
-                        OrderStatus.ORD_HOC, OrderStatus.ORD_COMP -> Quadruple(
-                            Color(0xFF15803D), Icons.Default.Verified, "Handover Complete & Delivered", "Safe LPG cylinder delivered and verified with official POD"
+                        OrderStatus.ORD_HOC -> HeroBannerConfig(
+                            tint = Color(0xFFF0FDF4),
+                            accent = Color(0xFF10B981),
+                            icon = Icons.Default.Verified,
+                            title = "Handover complete",
+                            subtitle = "We're finalising your receipt."
                         )
-                        OrderStatus.ORD_EXC -> Quadruple(
-                            Color(0xFFDC2626), Icons.Default.Warning, "Fulfilment Exception", currentOrder.exceptionReason?.description ?: "Under Ops review"
+                        OrderStatus.ORD_COMP -> HeroBannerConfig(
+                            tint = Color(0xFFF0FDF4),
+                            accent = Color(0xFF10B981),
+                            icon = Icons.Default.Verified,
+                            title = if (isPickup) "Collected" else "Delivered",
+                            subtitle = "Thank you for choosing BLUE GAS."
                         )
-                        OrderStatus.ORD_CANC, OrderStatus.ORD_FCLO -> Quadruple(
-                            Color(0xFF64748B), Icons.Default.Cancel, "Order Cancelled / Closed", "This order was cancelled or failed closed"
+                        OrderStatus.ORD_EXC -> HeroBannerConfig(
+                            tint = Color(0xFFFEF2F2),
+                            accent = Color(0xFFEF4444),
+                            icon = Icons.Default.Warning,
+                            title = "We're sorting something out",
+                            subtitle = "${currentOrder.exceptionReason?.description ?: "Fulfilment issue"}. Operations is working on it."
                         )
-                        OrderStatus.ORD_SUPS -> Quadruple(
-                            Color(0xFF7C3AED), Icons.Default.ChangeCircle, "Order Superseded", "Replaced by updated order request"
+                        OrderStatus.ORD_CANC -> HeroBannerConfig(
+                            tint = Color(0xFFF8FAFC),
+                            accent = Color(0xFF94A3B8),
+                            icon = Icons.Default.Cancel,
+                            title = "Order cancelled",
+                            subtitle = currentOrder.exceptionDetails ?: "This order was cancelled."
+                        )
+                        OrderStatus.ORD_FCLO -> HeroBannerConfig(
+                            tint = Color(0xFFF8FAFC),
+                            accent = Color(0xFF94A3B8),
+                            icon = Icons.Default.Cancel,
+                            title = "Order closed",
+                            subtitle = "This order could not be completed."
+                        )
+                        OrderStatus.ORD_SUPS -> HeroBannerConfig(
+                            tint = Color(0xFFF5F3FF),
+                            accent = Color(0xFF8B5CF6),
+                            icon = Icons.Default.ChangeCircle,
+                            title = "Order replaced",
+                            subtitle = "A newer order replaced this one."
                         )
                     }
 
                     Card(
-                        colors = CardDefaults.cardColors(containerColor = bannerBg),
+                        colors = CardDefaults.cardColors(containerColor = tintColor),
                         shape = RoundedCornerShape(12.dp),
+                        border = androidx.compose.foundation.BorderStroke(1.dp, accentColor),
                         modifier = Modifier
                             .fillMaxWidth()
                             .testTag("tracking_status_hero")
@@ -278,11 +378,11 @@ fun TrackingScreen(
                                 modifier = Modifier
                                     .size(44.dp)
                                     .clip(CircleShape)
-                                    .background(Color(0x33000000)),
+                                    .background(accentColor),
                                 contentAlignment = Alignment.Center
                             ) {
                                 Icon(
-                                    imageVector = bannerIcon,
+                                    imageVector = iconVec,
                                     contentDescription = null,
                                     tint = Color.White,
                                     modifier = Modifier.size(24.dp)
@@ -291,15 +391,15 @@ fun TrackingScreen(
                             Spacer(modifier = Modifier.width(12.dp))
                             Column(modifier = Modifier.weight(1f)) {
                                 Text(
-                                    text = bannerTitle,
+                                    text = titleText,
                                     fontWeight = FontWeight.Bold,
                                     fontSize = 14.sp,
-                                    color = Color.White
+                                    color = Color(0xFF0F172A)
                                 )
                                 Text(
-                                    text = bannerSubtitle,
+                                    text = subtitleText,
                                     fontSize = 11.sp,
-                                    color = Color(0xFFF1F5F9),
+                                    color = Color(0xFF475569),
                                     lineHeight = 15.sp
                                 )
                             }
@@ -307,388 +407,18 @@ fun TrackingScreen(
                     }
                 }
 
-                // Show "I've Arrived" button for pickup orders at ORD_RDYPU
-                if (currentOrder.fulfilmentMode == FulfilmentMode.PICKUP && currentOrder.status == OrderStatus.ORD_RDYPU) {
-                    item {
-                        Button(
-                            onClick = {
-                                val (_, msg) = store.notifyPickupArrival(currentOrder.id)
-                                notificationBannerMessage = msg
-                            },
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(vertical = 4.dp)
-                                .height(48.dp),
-                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF047857))
-                        ) {
-                            Icon(Icons.Default.PinDrop, contentDescription = null, tint = Color.White)
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Text("I've Arrived at Hub", fontWeight = FontWeight.Bold, color = Color.White)
-                        }
-                    }
-                }
-
-                // If Order is Cancelled, show dedicated cancellation card
-                if (currentOrder.status == OrderStatus.ORD_CANC) {
-                    item {
-                        Card(
-                            colors = CardDefaults.cardColors(containerColor = Color(0xFFFEF2F2)),
-                            shape = RoundedCornerShape(12.dp),
-                            border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFFFECACA)),
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .testTag("cancelled_order_notice_card")
-                        ) {
-                            Column(modifier = Modifier.padding(14.dp)) {
-                                Row(verticalAlignment = Alignment.CenterVertically) {
-                                    Icon(
-                                        imageVector = Icons.Default.Cancel,
-                                        contentDescription = null,
-                                        tint = Color(0xFFDC2626),
-                                        modifier = Modifier.size(20.dp)
-                                    )
-                                    Spacer(modifier = Modifier.width(8.dp))
-                                    Text(
-                                        text = "Order Cancelled",
-                                        fontWeight = FontWeight.Bold,
-                                        fontSize = 14.sp,
-                                        color = Color(0xFF991B1B)
-                                    )
-                                }
-                                Spacer(modifier = Modifier.height(6.dp))
-                                Text(
-                                    text = "This order was cancelled. Reserved cylinders, distributor allocations, and temporary stock holds have been returned to inventory. Any online payments have been refunded.",
-                                    fontSize = 11.sp,
-                                    color = Color(0xFF7F1D1D),
-                                    lineHeight = 15.sp
-                                )
-                                Spacer(modifier = Modifier.height(10.dp))
-                                Button(
-                                    onClick = onBackToOrders,
-                                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFDC2626)),
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .height(36.dp)
-                                        .testTag("back_to_orders_from_cancelled"),
-                                    contentPadding = PaddingValues(vertical = 4.dp)
-                                ) {
-                                    Text("Back to Orders List", fontSize = 12.sp)
-                                }
-                            }
-                        }
-                    }
-                }
-
-                // Cancel Order CTA if order is in a cancellable status
-                val isCancellableInTracking = currentOrder.status in setOf(
-                    OrderStatus.ORD_DRAFT,
-                    OrderStatus.ORD_VALPEND,
-                    OrderStatus.ORD_PAYPEND,
-                    OrderStatus.ORD_CONF,
-                    OrderStatus.ORD_RSVD,
-                    OrderStatus.ORD_ASGN,
-                    OrderStatus.ORD_ACPT,
-                    OrderStatus.ORD_PREP,
-                    OrderStatus.ORD_EXC
-                )
-
-                if (isCancellableInTracking) {
-                    item {
-                        Card(
-                            colors = CardDefaults.cardColors(containerColor = Color.White),
-                            shape = RoundedCornerShape(12.dp),
-                            border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFFFCA5A5)),
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .testTag("cancel_order_tracking_card")
-                        ) {
-                            Row(
-                                modifier = Modifier
-                                    .padding(12.dp)
-                                    .fillMaxWidth(),
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Column(modifier = Modifier.weight(1f)) {
-                                    Text(
-                                        text = "Need to cancel this order?",
-                                        fontWeight = FontWeight.Bold,
-                                        fontSize = 12.sp,
-                                        color = Color(0xFF991B1B)
-                                    )
-                                    Text(
-                                        text = "Orders can be cancelled before dispatch without penalty.",
-                                        fontSize = 10.sp,
-                                        color = Color(0xFF7F1D1D)
-                                    )
-                                }
-                                OutlinedButton(
-                                    onClick = { showCancelDialog = true },
-                                    colors = ButtonDefaults.outlinedButtonColors(contentColor = Color(0xFFDC2626)),
-                                    modifier = Modifier
-                                        .height(34.dp)
-                                        .testTag("tracking_cancel_button")
-                                ) {
-                                    Icon(Icons.Default.Cancel, contentDescription = null, modifier = Modifier.size(14.dp))
-                                    Spacer(modifier = Modifier.width(4.dp))
-                                    Text("Cancel Order", fontSize = 11.sp, color = Color(0xFFDC2626))
-                                }
-                            }
-                        }
-                    }
-                }
-
-                // SECTION 2: Interactive Simulated Vector Map
+                // F2.8 SECTION 2: Payment Card
                 item {
+                    val orderPayments = snapshot.payments.filter { it.orderId == currentOrder.id }
+                    val latestPayment = orderPayments.maxByOrNull { it.attemptNo }
+                    val orderRefunds: List<Refund> = snapshot.refunds.filter { it.orderId == currentOrder.id }
+                    val latestRefund = orderRefunds.maxByOrNull { it.timestamp }
+
                     Card(
                         colors = CardDefaults.cardColors(containerColor = Color.White),
                         shape = RoundedCornerShape(12.dp),
-                        border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFFCBD5E1)),
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .testTag("tracking_map_view")
-                    ) {
-                        Column {
-                            Box(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .height(160.dp)
-                                    .background(Color(0xFFE2E8F0))
-                            ) {
-                                // Stylized canvas route
-                                Canvas(modifier = Modifier.fillMaxSize()) {
-                                    val startX = size.width * 0.18f
-                                    val startY = size.height * 0.75f
-                                    val endX = size.width * 0.82f
-                                    val endY = size.height * 0.25f
-
-                                    // Road grid
-                                    drawLine(
-                                        color = Color(0xFFCBD5E1),
-                                        start = Offset(0f, size.height * 0.5f),
-                                        end = Offset(size.width, size.height * 0.5f),
-                                        strokeWidth = 32f
-                                    )
-                                    drawLine(
-                                        color = Color(0xFF94A3B8),
-                                        start = Offset(startX, startY),
-                                        end = Offset(endX, endY),
-                                        strokeWidth = 14f,
-                                        pathEffect = PathEffect.dashPathEffect(floatArrayOf(20f, 10f), 0f)
-                                    )
-                                }
-
-                                // Hub Marker
-                                Box(
-                                    modifier = Modifier
-                                        .align(Alignment.BottomStart)
-                                        .padding(start = 16.dp, bottom = 16.dp)
-                                ) {
-                                    Surface(
-                                        color = Color(0xFF1E293B),
-                                        shape = RoundedCornerShape(8.dp),
-                                        shadowElevation = 4.dp
-                                    ) {
-                                        Row(
-                                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 4.dp),
-                                            verticalAlignment = Alignment.CenterVertically
-                                        ) {
-                                            Icon(Icons.Default.Store, contentDescription = null, tint = Color(0xFF93C5FD), modifier = Modifier.size(12.dp))
-                                            Spacer(modifier = Modifier.width(4.dp))
-                                            Text(assignedNode?.name ?: "Distributor Hub", fontSize = 9.sp, color = Color.White, fontWeight = FontWeight.Bold)
-                                        }
-                                    }
-                                }
-
-                                // Rider Moving Pin
-                                val riderProgress = when (currentOrder.status) {
-                                    OrderStatus.ORD_DISP -> 0.55f
-                                    OrderStatus.ORD_ATHO, OrderStatus.ORD_INSP, OrderStatus.ORD_HOC, OrderStatus.ORD_COMP -> 0.88f
-                                    OrderStatus.ORD_PREP, OrderStatus.ORD_ACPT -> 0.25f
-                                    else -> 0.15f
-                                }
-
-                                Box(
-                                    modifier = Modifier
-                                        .fillMaxWidth(riderProgress)
-                                        .align(Alignment.CenterStart)
-                                        .wrapContentWidth(Alignment.End)
-                                        .padding(bottom = 10.dp)
-                                ) {
-                                    Surface(
-                                        color = BlueGasPrimary,
-                                        shape = CircleShape,
-                                        shadowElevation = 6.dp
-                                    ) {
-                                        Box(modifier = Modifier.size(36.dp), contentAlignment = Alignment.Center) {
-                                            Icon(
-                                                imageVector = Icons.Default.DeliveryDining,
-                                                contentDescription = "Rider Van",
-                                                tint = Color.White,
-                                                modifier = Modifier.size(20.dp)
-                                            )
-                                        }
-                                    }
-                                }
-
-                                // Customer Home Marker
-                                Box(
-                                    modifier = Modifier
-                                        .align(Alignment.TopEnd)
-                                        .padding(end = 16.dp, top = 16.dp)
-                                ) {
-                                    Surface(
-                                        color = Color(0xFF16A34A),
-                                        shape = RoundedCornerShape(8.dp),
-                                        shadowElevation = 4.dp
-                                    ) {
-                                        Row(
-                                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 4.dp),
-                                            verticalAlignment = Alignment.CenterVertically
-                                        ) {
-                                            Icon(Icons.Default.Home, contentDescription = null, tint = Color.White, modifier = Modifier.size(12.dp))
-                                            Spacer(modifier = Modifier.width(4.dp))
-                                            Text("Your Doorstep", fontSize = 9.sp, color = Color.White, fontWeight = FontWeight.Bold)
-                                        }
-                                    }
-                                }
-
-                                // Live ETA Tag
-                                Surface(
-                                    color = Color(0xDD000000),
-                                    shape = RoundedCornerShape(20.dp),
-                                    modifier = Modifier
-                                        .align(Alignment.BottomCenter)
-                                        .padding(bottom = 8.dp)
-                                ) {
-                                    Row(
-                                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
-                                        verticalAlignment = Alignment.CenterVertically
-                                    ) {
-                                        Box(
-                                            modifier = Modifier
-                                                .size(6.dp)
-                                                .clip(CircleShape)
-                                                .background(Color(0xFF22C55E))
-                                        )
-                                        Spacer(modifier = Modifier.width(6.dp))
-                                        Text(
-                                            text = when (currentOrder.status) {
-                                                OrderStatus.ORD_DISP -> "ETA: 18 - 25 minutes"
-                                                OrderStatus.ORD_ATHO -> "Rider is outside your gate!"
-                                                OrderStatus.ORD_COMP -> "Handover Completed"
-                                                else -> "Dispatching from ${assignedNode?.name ?: "Lahore Central"}"
-                                            },
-                                            fontSize = 11.sp,
-                                            fontWeight = FontWeight.Bold,
-                                            color = Color.White
-                                        )
-                                    }
-                                }
-                            }
-
-                            // Route telemetry details
-                            Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(10.dp),
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Column {
-                                    Text("Fulfilment Route", fontSize = 10.sp, color = Color.Gray)
-                                    Text("Direct Node-to-Consumer Van", fontWeight = FontWeight.Bold, fontSize = 11.sp)
-                                }
-                                Surface(
-                                    color = Color(0xFFEFF6FF),
-                                    shape = RoundedCornerShape(4.dp)
-                                ) {
-                                    Text(
-                                        text = "GPS Trace Active",
-                                        fontSize = 10.sp,
-                                        fontWeight = FontWeight.Bold,
-                                        color = BlueGasPrimary,
-                                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
-                                    )
-                                }
-                            }
-                        }
-                    }
-                }
-
-                // SECTION 3: Assigned Rider Card
-                if (assignedRider != null) {
-                    item {
-                        Card(
-                            colors = CardDefaults.cardColors(containerColor = Color.White),
-                            shape = RoundedCornerShape(12.dp),
-                            border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFFE2E8F0)),
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .testTag("assigned_rider_card")
-                        ) {
-                            Row(
-                                modifier = Modifier.padding(12.dp),
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Box(
-                                    modifier = Modifier
-                                        .size(42.dp)
-                                        .clip(CircleShape)
-                                        .background(Color(0xFFDBEAFE)),
-                                    contentAlignment = Alignment.Center
-                                ) {
-                                    Icon(
-                                        imageVector = Icons.Default.Person,
-                                        contentDescription = null,
-                                        tint = BlueGasPrimary,
-                                        modifier = Modifier.size(24.dp)
-                                    )
-                                }
-                                Spacer(modifier = Modifier.width(10.dp))
-                                Column(modifier = Modifier.weight(1f)) {
-                                    Row(verticalAlignment = Alignment.CenterVertically) {
-                                        Text(
-                                            text = assignedRider.name,
-                                            fontWeight = FontWeight.Bold,
-                                            fontSize = 13.sp,
-                                            color = Color(0xFF0F172A)
-                                        )
-                                        Spacer(modifier = Modifier.width(4.dp))
-                                        Icon(
-                                            imageVector = Icons.Default.Verified,
-                                            contentDescription = "Verified Rider",
-                                            tint = BlueGasPrimary,
-                                            modifier = Modifier.size(13.dp)
-                                        )
-                                    }
-                                    Text(
-                                        text = "Vehicle: ${assignedRider.vehicleNumber} • BlueGas Van",
-                                        fontSize = 11.sp,
-                                        color = Color(0xFF475569)
-                                    )
-                                }
-
-                                FilledTonalIconButton(
-                                    onClick = { showCallRiderDialog = true },
-                                    modifier = Modifier.size(38.dp)
-                                ) {
-                                    Icon(Icons.Default.Phone, contentDescription = "Call Rider", tint = BlueGasPrimary)
-                                }
-                            }
-                        }
-                    }
-                }
-
-                // SECTION 4: Cylinder Safety & Traceability Card
-                item {
-                    Card(
-                        colors = CardDefaults.cardColors(containerColor = Color(0xFFF8FAFC)),
-                        shape = RoundedCornerShape(12.dp),
                         border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFFE2E8F0)),
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .testTag("cylinder_safety_traceability_card")
+                        modifier = Modifier.fillMaxWidth().testTag("tracking_payment_card")
                     ) {
                         Column(modifier = Modifier.padding(12.dp)) {
                             Row(
@@ -696,113 +426,121 @@ fun TrackingScreen(
                                 horizontalArrangement = Arrangement.SpaceBetween,
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
-                                Row(verticalAlignment = Alignment.CenterVertically) {
-                                    Icon(
-                                        imageVector = Icons.Default.QrCodeScanner,
-                                        contentDescription = null,
-                                        tint = Color(0xFF047857),
-                                        modifier = Modifier.size(18.dp)
-                                    )
-                                    Spacer(modifier = Modifier.width(6.dp))
-                                    Text(
-                                        text = "Cylinder Safety & Traceability",
-                                        fontWeight = FontWeight.Bold,
-                                        fontSize = 13.sp,
-                                        color = Color(0xFF065F46)
-                                    )
+                                Text("Payment", fontWeight = FontWeight.Bold, fontSize = 13.sp, color = BlueGasDark)
+                                if (currentOrder.status == OrderStatus.ORD_PAYPEND) {
+                                    Surface(color = Color(0xFFFFFBEB), shape = RoundedCornerShape(4.dp)) {
+                                        Text(
+                                            "Payment Pending",
+                                            fontSize = 10.sp,
+                                            fontWeight = FontWeight.Bold,
+                                            color = Color(0xFFB45309),
+                                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                        )
+                                    }
                                 }
                             }
-
-                            Spacer(modifier = Modifier.height(8.dp))
-
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.SpaceBetween
-                            ) {
-                                Column {
-                                    Text("Bound Cylinder Serial:", fontSize = 10.sp, color = Color.Gray)
-                                    Text(
-                                        text = currentOrder.allocatedSerial ?: "Allocating Serial...",
-                                        fontWeight = FontWeight.Bold,
-                                        fontSize = 12.sp,
-                                        fontFamily = FontFamily.Monospace,
-                                        color = Color(0xFF0F172A)
-                                    )
-                                }
-                                Column(horizontalAlignment = Alignment.End) {
-                                    Text("Leak Inspection:", fontSize = 10.sp, color = Color.Gray)
-                                    Text(
-                                        text = if (deliveryInfo?.nonTechnicalInstallationPassed == true) "PASSED (Bubble Test)" else "Scheduled at Handover",
-                                        fontWeight = FontWeight.Bold,
-                                        fontSize = 11.sp,
-                                        color = if (deliveryInfo?.nonTechnicalInstallationPassed == true) Color(0xFF16A34A) else Color(0xFFD97706)
-                                    )
-                                }
-                            }
-
-                            Spacer(modifier = Modifier.height(6.dp))
-                            HorizontalDivider()
                             Spacer(modifier = Modifier.height(6.dp))
 
-                            val productLine = currentOrder.items.firstOrNull { it.lineType == "GAS" } ?: currentOrder.items.firstOrNull()
-                            if (productLine != null) {
-                                Text(
-                                    text = "Order Item: ${productLine.quantity}x ${productLine.productName}",
-                                    fontSize = 11.sp,
-                                    color = Color(0xFF334155)
-                                )
+                            // Payment description logic per F2.8
+                            if (currentOrder.status == OrderStatus.ORD_CANC) {
+                                val refundText = when {
+                                    latestRefund != null && (latestRefund.state == PaymentState.FULL_REFUND_PENDING || latestRefund.state == PaymentState.PARTIAL_REFUND_PENDING) ->
+                                        "Refund of ${formatRupees(latestRefund.amountPaisa)} is being processed by Finance."
+                                    latestRefund != null && (latestRefund.state == PaymentState.FULLY_REFUNDED || latestRefund.state == PaymentState.PARTIAL_REFUND_COMPLETED) ->
+                                        "Refund of ${formatRupees(latestRefund.amountPaisa)} completed."
+                                    latestPayment?.state == PaymentState.VOIDED ->
+                                        "Your payment hold was released."
+                                    else ->
+                                        "No payment was taken."
+                                }
+                                Text(refundText, fontSize = 12.sp, color = Color(0xFF475569))
+                            } else if (currentOrder.paymentMethod == PaymentMethod.CASH_ON_DELIVERY) {
+                                val codText = if (latestPayment?.state == PaymentState.CASH_COLLECTED || latestPayment?.state == PaymentState.SETTLED) {
+                                    "Cash received — Finance is reconciling it."
+                                } else {
+                                    "Cash on delivery — ${formatRupees(currentOrder.totalAmountPaisa)} due at handover."
+                                }
+                                Text(codText, fontSize = 12.sp, color = Color(0xFF475569))
+                            } else {
+                                // Online payment
+                                when {
+                                    latestPayment?.state == PaymentState.SETTLED -> {
+                                        Text("Paid.", fontSize = 12.sp, color = Color(0xFF16A34A), fontWeight = FontWeight.Medium)
+                                    }
+                                    latestPayment?.state == PaymentState.INITIAL_AMOUNT_CAPTURED || latestPayment?.state == PaymentState.PREAUTHORIZED -> {
+                                        Text("Paid online.", fontSize = 12.sp, color = Color(0xFF16A34A), fontWeight = FontWeight.Medium)
+                                    }
+                                    currentOrder.status == OrderStatus.ORD_PAYPEND -> {
+                                        PaymentActionsRow(
+                                            order = currentOrder,
+                                            snapshot = snapshot,
+                                            store = store,
+                                            onResult = postMessage,
+                                            onOpenGateway = { showPaymentGatewayDialog = true }
+                                        )
+                                    }
+                                    latestPayment?.state == PaymentState.PAYMENT_FAILED_CLOSED || latestPayment?.state == PaymentState.AUTHORIZATION_FAILED || latestPayment?.state == PaymentState.PAYMENT_TIMEOUT -> {
+                                        Text("Your last payment attempt didn't go through.", fontSize = 12.sp, color = Color(0xFFDC2626))
+                                    }
+                                    else -> {
+                                        Text("Online payment: ${latestPayment?.state?.name ?: "Pending"}", fontSize = 12.sp, color = Color(0xFF475569))
+                                    }
+                                }
                             }
                         }
                     }
                 }
 
-                // SECTION 5: Customer Doorstep Verification PIN
-                item {
-                    val handoverPin = remember(currentOrder.id) {
-                        val num = (currentOrder.id.hashCode() and 0x7FFFFFFF) % 9000 + 1000
-                        num.toString()
-                    }
-
-                    Card(
-                        colors = CardDefaults.cardColors(containerColor = Color(0xFFEFF6FF)),
-                        shape = RoundedCornerShape(12.dp),
-                        border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFFBFDBFE)),
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .testTag("doorstep_pin_card")
-                    ) {
-                        Column(
-                            modifier = Modifier.padding(14.dp),
-                            horizontalAlignment = Alignment.CenterHorizontally
+                // F2.2 SECTION 3: Customer Handover Verification PIN
+                val showPinStatuses = setOf(
+                    OrderStatus.ORD_DISP,
+                    OrderStatus.ORD_RDYPU,
+                    OrderStatus.ORD_ATHO,
+                    OrderStatus.ORD_INSP,
+                    OrderStatus.ORD_ADJ
+                )
+                if (currentOrder.status in showPinStatuses) {
+                    item {
+                        val isPickup = currentOrder.fulfilmentMode == FulfilmentMode.PICKUP
+                        Card(
+                            colors = CardDefaults.cardColors(containerColor = Color(0xFFEFF6FF)),
+                            shape = RoundedCornerShape(12.dp),
+                            border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFFBFDBFE)),
+                            modifier = Modifier.fillMaxWidth().testTag("doorstep_pin_card")
                         ) {
-                            Text(
-                                text = "Doorstep Handover Verification PIN",
-                                fontSize = 12.sp,
-                                fontWeight = FontWeight.Bold,
-                                color = BlueGasDark
-                            )
-                            Text(
-                                text = "Share this 4-digit code with the rider upon arrival to authorize cylinder release.",
-                                fontSize = 10.sp,
-                                color = Color(0xFF1E40AF),
-                                lineHeight = 14.sp
-                            )
-                            Spacer(modifier = Modifier.height(8.dp))
-                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                handoverPin.forEach { digit ->
-                                    Surface(
-                                        color = Color.White,
-                                        shape = RoundedCornerShape(8.dp),
-                                        border = androidx.compose.foundation.BorderStroke(1.dp, BlueGasPrimary),
-                                        modifier = Modifier.size(38.dp)
-                                    ) {
-                                        Box(contentAlignment = Alignment.Center) {
-                                            Text(
-                                                text = digit.toString(),
-                                                fontSize = 18.sp,
-                                                fontWeight = FontWeight.Bold,
-                                                color = BlueGasPrimary
-                                            )
+                            Column(
+                                modifier = Modifier.padding(14.dp),
+                                horizontalAlignment = Alignment.CenterHorizontally
+                            ) {
+                                Text(
+                                    text = "Handover Code",
+                                    fontSize = 13.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = BlueGasDark
+                                )
+                                Spacer(modifier = Modifier.height(2.dp))
+                                Text(
+                                    text = if (isPickup) "Show this code at the counter." else "Share this 4-digit code with the rider at handover.",
+                                    fontSize = 11.sp,
+                                    color = Color(0xFF1E40AF)
+                                )
+                                Spacer(modifier = Modifier.height(8.dp))
+                                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    currentOrder.handoverPin.forEach { digit ->
+                                        Surface(
+                                            color = Color.White,
+                                            shape = RoundedCornerShape(8.dp),
+                                            border = androidx.compose.foundation.BorderStroke(1.dp, BlueGasPrimary),
+                                            modifier = Modifier.size(40.dp)
+                                        ) {
+                                            Box(contentAlignment = Alignment.Center) {
+                                                Text(
+                                                    text = digit.toString(),
+                                                    fontSize = 18.sp,
+                                                    fontWeight = FontWeight.Bold,
+                                                    color = BlueGasPrimary
+                                                )
+                                            }
                                         }
                                     }
                                 }
@@ -811,15 +549,386 @@ fun TrackingScreen(
                     }
                 }
 
-                // SECTION 6: Canonical Lifecycle Stepper
+                // F2.3 Pickup Orders: Depot Card & Arrival Button
+                if (currentOrder.fulfilmentMode == FulfilmentMode.PICKUP) {
+                    item {
+                        Card(
+                            colors = CardDefaults.cardColors(containerColor = Color.White),
+                            shape = RoundedCornerShape(12.dp),
+                            border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFFE2E8F0)),
+                            modifier = Modifier.fillMaxWidth().testTag("pickup_depot_card")
+                        ) {
+                            Column(modifier = Modifier.padding(14.dp)) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Icon(Icons.Default.Store, contentDescription = null, tint = BlueGasPrimary, modifier = Modifier.size(20.dp))
+                                    Spacer(modifier = Modifier.width(8.dp))
+                                    Text(depotNode?.name ?: "Pickup Depot", fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                                }
+                                Spacer(modifier = Modifier.height(4.dp))
+                                Text(depotNode?.address ?: "Hub address", fontSize = 12.sp, color = Color(0xFF475569))
+                                Spacer(modifier = Modifier.height(8.dp))
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Text("Opening hours: ", fontSize = 11.sp, color = Color(0xFF64748B))
+                                    DemoValuePill("Demo value · Q14")
+                                }
+
+                                if (currentOrder.status == OrderStatus.ORD_RDYPU) {
+                                    Spacer(modifier = Modifier.height(12.dp))
+                                    if (depotNotifiedLocal) {
+                                        Surface(
+                                            color = Color(0xFFDCFCE7),
+                                            shape = RoundedCornerShape(8.dp),
+                                            modifier = Modifier.fillMaxWidth()
+                                        ) {
+                                            Row(
+                                                modifier = Modifier.padding(10.dp),
+                                                verticalAlignment = Alignment.CenterVertically,
+                                                horizontalArrangement = Arrangement.Center
+                                            ) {
+                                                Icon(Icons.Default.CheckCircle, contentDescription = null, tint = Color(0xFF16A34A), modifier = Modifier.size(18.dp))
+                                                Spacer(modifier = Modifier.width(6.dp))
+                                                Text("Depot notified", fontWeight = FontWeight.Bold, fontSize = 13.sp, color = Color(0xFF166534))
+                                            }
+                                        }
+                                    } else {
+                                        Button(
+                                            onClick = {
+                                                val (ok, msg) = store.notifyPickupArrival(currentOrder.id)
+                                                postMessage(msg, !ok)
+                                                if (ok) depotNotifiedLocal = true
+                                            },
+                                            modifier = Modifier.fillMaxWidth().height(44.dp).testTag("im_at_depot_button"),
+                                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF047857))
+                                        ) {
+                                            Icon(Icons.Default.PinDrop, contentDescription = null, tint = Color.White)
+                                            Spacer(modifier = Modifier.width(8.dp))
+                                            Text("I'm at the depot", fontWeight = FontWeight.Bold, color = Color.White)
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    // F2.4 Delivery Orders: Live Tracking Map
+                    item {
+                        Card(
+                            colors = CardDefaults.cardColors(containerColor = Color.White),
+                            shape = RoundedCornerShape(12.dp),
+                            border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFFCBD5E1)),
+                            modifier = Modifier.fillMaxWidth().testTag("tracking_map_view")
+                        ) {
+                            Column {
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .height(160.dp)
+                                        .background(Color(0xFFE2E8F0))
+                                ) {
+                                    Canvas(modifier = Modifier.fillMaxSize()) {
+                                        val startX = size.width * 0.18f
+                                        val startY = size.height * 0.75f
+                                        val endX = size.width * 0.82f
+                                        val endY = size.height * 0.25f
+
+                                        drawLine(
+                                            color = Color(0xFFCBD5E1),
+                                            start = Offset(0f, size.height * 0.5f),
+                                            end = Offset(size.width, size.height * 0.5f),
+                                            strokeWidth = 32f
+                                        )
+                                        drawLine(
+                                            color = Color(0xFF94A3B8),
+                                            start = Offset(startX, startY),
+                                            end = Offset(endX, endY),
+                                            strokeWidth = 14f,
+                                            pathEffect = PathEffect.dashPathEffect(floatArrayOf(20f, 10f), 0f)
+                                        )
+                                    }
+
+                                    // Hub Marker
+                                    Box(
+                                        modifier = Modifier
+                                            .align(Alignment.BottomStart)
+                                            .padding(start = 16.dp, bottom = 16.dp)
+                                    ) {
+                                        Surface(
+                                            color = Color(0xFF1E293B),
+                                            shape = RoundedCornerShape(8.dp),
+                                            shadowElevation = 4.dp
+                                        ) {
+                                            Row(
+                                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 4.dp),
+                                                verticalAlignment = Alignment.CenterVertically
+                                            ) {
+                                                Icon(Icons.Default.Store, contentDescription = null, tint = Color(0xFF93C5FD), modifier = Modifier.size(12.dp))
+                                                Spacer(modifier = Modifier.width(4.dp))
+                                                Text(depotNode?.name ?: "Depot Hub", fontSize = 9.sp, color = Color.White, fontWeight = FontWeight.Bold)
+                                            }
+                                        }
+                                    }
+
+                                    // Rider Animated Pin per F2.4
+                                    val orderHistory = snapshot.orderStatusHistory.filter { it.orderId == currentOrder.id }
+                                    val dispatchedTimestamp = orderHistory.find { it.toStatus == OrderStatus.ORD_DISP }?.timestamp ?: currentOrder.createdAt
+                                    val elapsedSinceDispatch = (nowMillis - dispatchedTimestamp).coerceAtLeast(0L)
+
+                                    val targetProgress = when (currentOrder.status) {
+                                        OrderStatus.ORD_DISP -> 0.20f + 0.65f * min(1f, elapsedSinceDispatch / 60_000f)
+                                        OrderStatus.ORD_ATHO, OrderStatus.ORD_INSP, OrderStatus.ORD_ADJ, OrderStatus.ORD_HOC, OrderStatus.ORD_COMP -> 0.88f
+                                        else -> 0.15f
+                                    }
+                                    val animatedProgress by animateFloatAsState(targetValue = targetProgress, animationSpec = tween(1200))
+
+                                    Box(
+                                        modifier = Modifier
+                                            .fillMaxWidth(animatedProgress)
+                                            .align(Alignment.CenterStart)
+                                            .wrapContentWidth(Alignment.End)
+                                            .padding(bottom = 10.dp)
+                                    ) {
+                                        Surface(
+                                            color = BlueGasPrimary,
+                                            shape = CircleShape,
+                                            shadowElevation = 6.dp
+                                        ) {
+                                            Box(modifier = Modifier.size(36.dp), contentAlignment = Alignment.Center) {
+                                                Icon(
+                                                    imageVector = Icons.Default.DeliveryDining,
+                                                    contentDescription = "Rider Van",
+                                                    tint = Color.White,
+                                                    modifier = Modifier.size(20.dp)
+                                                )
+                                            }
+                                        }
+                                    }
+
+                                    // Doorstep Marker
+                                    Box(
+                                        modifier = Modifier
+                                            .align(Alignment.TopEnd)
+                                            .padding(end = 16.dp, top = 16.dp)
+                                    ) {
+                                        Surface(
+                                            color = Color(0xFF16A34A),
+                                            shape = RoundedCornerShape(8.dp),
+                                            shadowElevation = 4.dp
+                                        ) {
+                                            Row(
+                                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 4.dp),
+                                                verticalAlignment = Alignment.CenterVertically
+                                            ) {
+                                                Icon(Icons.Default.Home, contentDescription = null, tint = Color.White, modifier = Modifier.size(12.dp))
+                                                Spacer(modifier = Modifier.width(4.dp))
+                                                Text("Your Doorstep", fontSize = 9.sp, color = Color.White, fontWeight = FontWeight.Bold)
+                                            }
+                                        }
+                                    }
+
+                                    // F2.4 Plain Status Pill
+                                    val mapPillText = when (currentOrder.status) {
+                                        OrderStatus.ORD_DISP -> "On the way"
+                                        OrderStatus.ORD_ATHO -> "At your door"
+                                        OrderStatus.ORD_COMP -> "Delivered"
+                                        else -> "Preparing at ${depotNode?.name ?: "Depot"}"
+                                    }
+                                    Surface(
+                                        color = Color(0xDD000000),
+                                        shape = RoundedCornerShape(20.dp),
+                                        modifier = Modifier
+                                            .align(Alignment.BottomCenter)
+                                            .padding(bottom = 8.dp)
+                                    ) {
+                                        Row(
+                                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            Box(
+                                                modifier = Modifier
+                                                    .size(6.dp)
+                                                    .clip(CircleShape)
+                                                    .background(Color(0xFF22C55E))
+                                            )
+                                            Spacer(modifier = Modifier.width(6.dp))
+                                            Text(
+                                                text = mapPillText,
+                                                fontSize = 11.sp,
+                                                fontWeight = FontWeight.Bold,
+                                                color = Color.White
+                                            )
+                                        }
+                                    }
+                                }
+
+                                // Route Telemetry Footer
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(10.dp),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Column {
+                                        Text("Fulfilment Route", fontSize = 10.sp, color = Color.Gray)
+                                        Text("Delivery from ${depotNode?.name ?: "Depot"}", fontWeight = FontWeight.Bold, fontSize = 11.sp)
+                                    }
+                                    Surface(
+                                        color = Color(0xFFEFF6FF),
+                                        shape = RoundedCornerShape(4.dp)
+                                    ) {
+                                        Text(
+                                            text = "Live tracking (simulated for demo)",
+                                            fontSize = 10.sp,
+                                            fontWeight = FontWeight.Bold,
+                                            color = BlueGasPrimary,
+                                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // F2.5 Rider Card (from ORD_DISP onward)
+                    val showRiderFromDisp = setOf(
+                        OrderStatus.ORD_DISP,
+                        OrderStatus.ORD_ATHO,
+                        OrderStatus.ORD_INSP,
+                        OrderStatus.ORD_ADJ,
+                        OrderStatus.ORD_HOC,
+                        OrderStatus.ORD_COMP
+                    )
+                    if (assignedRider != null && currentOrder.status in showRiderFromDisp) {
+                        item {
+                            Card(
+                                colors = CardDefaults.cardColors(containerColor = Color.White),
+                                shape = RoundedCornerShape(12.dp),
+                                border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFFE2E8F0)),
+                                modifier = Modifier.fillMaxWidth().testTag("assigned_rider_card")
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(12.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Box(
+                                        modifier = Modifier
+                                            .size(42.dp)
+                                            .clip(CircleShape)
+                                            .background(Color(0xFFDBEAFE)),
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.Person,
+                                            contentDescription = null,
+                                            tint = BlueGasPrimary,
+                                            modifier = Modifier.size(24.dp)
+                                        )
+                                    }
+                                    Spacer(modifier = Modifier.width(10.dp))
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Row(verticalAlignment = Alignment.CenterVertically) {
+                                            Text(
+                                                text = assignedRider.name,
+                                                fontWeight = FontWeight.Bold,
+                                                fontSize = 13.sp,
+                                                color = Color(0xFF0F172A)
+                                            )
+                                            if (assignedRider.status == "ACTIVE" || assignedRider.onboardingStatus == "APPROVED") {
+                                                Spacer(modifier = Modifier.width(4.dp))
+                                                Icon(
+                                                    imageVector = Icons.Default.Verified,
+                                                    contentDescription = "Verified Rider",
+                                                    tint = BlueGasPrimary,
+                                                    modifier = Modifier.size(13.dp)
+                                                )
+                                            }
+                                        }
+                                        Text(
+                                            text = "Vehicle: ${assignedRider.vehicleNumber}",
+                                            fontSize = 11.sp,
+                                            color = Color(0xFF475569)
+                                        )
+                                    }
+
+                                    FilledTonalIconButton(
+                                        onClick = {
+                                            val dialIntent = Intent(Intent.ACTION_DIAL, Uri.parse("tel:${assignedRider.phone}"))
+                                            context.startActivity(dialIntent)
+                                        },
+                                        modifier = Modifier.size(38.dp).testTag("tracking_call_rider_button")
+                                    ) {
+                                        Icon(Icons.Default.Phone, contentDescription = "Call Rider", tint = BlueGasPrimary)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // F2.6 "Your cylinder" Card
+                item {
+                    Card(
+                        colors = CardDefaults.cardColors(containerColor = Color(0xFFF8FAFC)),
+                        shape = RoundedCornerShape(12.dp),
+                        border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFFE2E8F0)),
+                        modifier = Modifier.fillMaxWidth().testTag("your_cylinder_card")
+                    ) {
+                        Column(modifier = Modifier.padding(12.dp)) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Icon(Icons.Default.QrCodeScanner, contentDescription = null, tint = Color(0xFF047857), modifier = Modifier.size(18.dp))
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text("Your cylinder", fontWeight = FontWeight.Bold, fontSize = 13.sp, color = Color(0xFF065F46))
+                            }
+                            Spacer(modifier = Modifier.height(8.dp))
+
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text("Cylinder ID", fontSize = 10.sp, color = Color.Gray)
+                                    Text(
+                                        text = currentOrder.allocatedSerial ?: "Assigned while your order is prepared",
+                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 11.sp,
+                                        fontFamily = if (currentOrder.allocatedSerial != null) FontFamily.Monospace else FontFamily.Default,
+                                        color = Color(0xFF0F172A)
+                                    )
+                                }
+
+                                if (currentOrder.fulfilmentMode == FulfilmentMode.DELIVERY) {
+                                    Column(horizontalAlignment = Alignment.End) {
+                                        Text("Installation", fontSize = 10.sp, color = Color.Gray)
+                                        val installText = when (currentOrder.installationResult) {
+                                            InstallationResult.INSTALLED -> "Installed by rider"
+                                            InstallationResult.NOT_INSTALLED -> "Not installed — ${currentOrder.installationNotDoneReason ?: "Declined"}"
+                                            InstallationResult.NOT_APPLICABLE -> "Not applicable"
+                                            null -> "At handover"
+                                        }
+                                        Text(
+                                            text = installText,
+                                            fontWeight = FontWeight.Bold,
+                                            fontSize = 11.sp,
+                                            color = when (currentOrder.installationResult) {
+                                                InstallationResult.INSTALLED -> Color(0xFF16A34A)
+                                                InstallationResult.NOT_INSTALLED -> Color(0xFFDC2626)
+                                                else -> Color(0xFF475569)
+                                            }
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // F2.7 Stepper
                 item {
                     Card(
                         colors = CardDefaults.cardColors(containerColor = Color.White),
                         shape = RoundedCornerShape(12.dp),
                         border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFFE2E8F0)),
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .testTag("canonical_lifecycle_stepper")
+                        modifier = Modifier.fillMaxWidth().testTag("canonical_lifecycle_stepper")
                     ) {
                         Column(modifier = Modifier.padding(12.dp)) {
                             Text(
@@ -831,38 +940,40 @@ fun TrackingScreen(
                             Spacer(modifier = Modifier.height(10.dp))
 
                             val orderHistory = snapshot.orderStatusHistory.filter { it.orderId == currentOrder.id }
+                            val isPickup = currentOrder.fulfilmentMode == FulfilmentMode.PICKUP
 
-                            val steps = if (currentOrder.fulfilmentMode == FulfilmentMode.PICKUP) {
-                                listOf(
-                                    Triple("1. Order Placed & Confirmed", OrderStatus.ORD_CONF, "Validation passed, stock reserved"),
-                                    Triple("2. Distributor Assigned", OrderStatus.ORD_ACPT, "Pickup hub confirmed"),
-                                    Triple("3. Cylinder Prepared", OrderStatus.ORD_PREP, "Inspected & ready for collection"),
-                                    Triple("4. Ready for Pickup", OrderStatus.ORD_RDYPU, "Awaiting your arrival at hub"),
-                                    Triple("5. Customer at Hub", OrderStatus.ORD_ATHO, "Handover & safety check"),
-                                    Triple("6. Pickup Complete", OrderStatus.ORD_COMP, "Official POD & receipt generated")
-                                )
-                            } else {
-                                listOf(
-                                    Triple("1. Order Placed & Confirmed", OrderStatus.ORD_CONF, "Validation passed, stock reserved"),
-                                    Triple("2. Rider Assigned & Accepted", OrderStatus.ORD_ACPT, "Rider accepted, heading to hub"),
-                                    Triple("3. Cylinder Serial Bound", OrderStatus.ORD_PREP, "Inspected & allocated to vehicle"),
-                                    Triple("4. Dispatched & In Transit", OrderStatus.ORD_DISP, "En route to delivery premises"),
-                                    Triple("5. Arrived at Handover", OrderStatus.ORD_ATHO, "Leak test & regulator check"),
-                                    Triple("6. Delivered & Handover Complete", OrderStatus.ORD_COMP, "Official POD & receipt generated")
-                                )
-                            }
+                            val standardSteps = listOf(
+                                StepperStep(OrderStatus.ORD_CONF, "Confirmed"),
+                                StepperStep(OrderStatus.ORD_ACPT, "Partner assigned"),
+                                StepperStep(OrderStatus.ORD_PREP, "Being prepared"),
+                                StepperStep(
+                                    if (isPickup) OrderStatus.ORD_RDYPU else OrderStatus.ORD_DISP,
+                                    if (isPickup) "Ready to collect" else "On the way"
+                                ),
+                                StepperStep(OrderStatus.ORD_ATHO, if (isPickup) "At the counter" else "Rider arrived"),
+                                StepperStep(OrderStatus.ORD_COMP, if (isPickup) "Collected" else "Delivered")
+                            )
 
-                            steps.forEachIndexed { idx, (label, statusThreshold, defaultDesc) ->
-                                val isDone = isStepCompleted(currentOrder.status, statusThreshold)
-                                val isCurrent = isStepCurrent(currentOrder.status, statusThreshold)
+                            val isCompleted = currentOrder.status == OrderStatus.ORD_COMP
+                            val isExceptionOrCancelled = currentOrder.status in setOf(
+                                OrderStatus.ORD_EXC, OrderStatus.ORD_CANC, OrderStatus.ORD_FCLO, OrderStatus.ORD_SUPS
+                            )
 
-                                // Pull real timestamp if this step has been reached
-                                val historyEntry = orderHistory.find { it.toStatus == statusThreshold }
-                                val displayDesc = if (historyEntry != null) {
-                                    "${defaultDesc} • ${formatTimestamp(historyEntry.timestamp)}"
+                            // Find highest reached step in history
+                            val reachedTargets = orderHistory.map { it.toStatus }.toSet()
+
+                            standardSteps.forEachIndexed { idx, step ->
+                                val isDone = if (isCompleted) {
+                                    true
+                                } else if (isExceptionOrCancelled) {
+                                    reachedTargets.contains(step.status) || isStepCompleted(currentOrder.status, step.status)
                                 } else {
-                                    defaultDesc
+                                    isStepCompleted(currentOrder.status, step.status)
                                 }
+                                val isCurrent = !isCompleted && !isExceptionOrCancelled && isStepCurrent(currentOrder.status, step.status)
+
+                                val histEntry = orderHistory.find { it.toStatus == step.status }
+                                val stepTimeText = histEntry?.let { " • ${formatTimestamp(it.timestamp)}" } ?: ""
 
                                 Row(modifier = Modifier.fillMaxWidth()) {
                                     Column(horizontalAlignment = Alignment.CenterHorizontally) {
@@ -890,11 +1001,11 @@ fun TrackingScreen(
                                                 )
                                             }
                                         }
-                                        if (idx < steps.size - 1) {
+                                        if (idx < standardSteps.size - 1 || isExceptionOrCancelled) {
                                             Box(
                                                 modifier = Modifier
                                                     .width(2.dp)
-                                                    .height(26.dp)
+                                                    .height(24.dp)
                                                     .background(if (isDone) Color(0xFF16A34A) else Color(0xFFE2E8F0))
                                             )
                                         }
@@ -902,19 +1013,181 @@ fun TrackingScreen(
 
                                     Spacer(modifier = Modifier.width(10.dp))
 
-                                    Column(modifier = Modifier.padding(bottom = if (idx < steps.size - 1) 12.dp else 0.dp)) {
+                                    Column(modifier = Modifier.padding(bottom = 10.dp)) {
                                         Text(
-                                            text = label,
+                                            text = step.label,
                                             fontWeight = if (isCurrent || isDone) FontWeight.Bold else FontWeight.Normal,
                                             fontSize = 12.sp,
                                             color = if (isCurrent) BlueGasPrimary else if (isDone) Color(0xFF0F172A) else Color(0xFF94A3B8)
                                         )
+                                        if (stepTimeText.isNotEmpty()) {
+                                            Text(
+                                                text = stepTimeText.removePrefix(" • "),
+                                                fontSize = 10.sp,
+                                                color = Color(0xFF64748B)
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+
+                            // Terminal row for exception/cancelled/failed/superseded
+                            if (isExceptionOrCancelled) {
+                                val isExc = currentOrder.status == OrderStatus.ORD_EXC
+                                val terminalHist = orderHistory.find { it.toStatus == currentOrder.status }
+                                val terminalTime = terminalHist?.let { " • ${formatTimestamp(it.timestamp)}" } ?: ""
+                                val terminalColor = if (isExc) Color(0xFFDC2626) else Color(0xFF64748B)
+                                val terminalTitle = when (currentOrder.status) {
+                                    OrderStatus.ORD_EXC -> "Fulfilment Exception"
+                                    OrderStatus.ORD_CANC -> "Order Cancelled"
+                                    OrderStatus.ORD_FCLO -> "Order Closed"
+                                    OrderStatus.ORD_SUPS -> "Order Superseded"
+                                    else -> currentOrder.status.displayName
+                                }
+                                val terminalDesc = when (currentOrder.status) {
+                                    OrderStatus.ORD_EXC -> currentOrder.exceptionReason?.description ?: "Operations review"
+                                    OrderStatus.ORD_CANC -> currentOrder.exceptionDetails ?: "Order was cancelled"
+                                    else -> "Order terminated"
+                                }
+
+                                Row(modifier = Modifier.fillMaxWidth()) {
+                                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                        Box(
+                                            modifier = Modifier
+                                                .size(24.dp)
+                                                .clip(CircleShape)
+                                                .background(terminalColor),
+                                            contentAlignment = Alignment.Center
+                                        ) {
+                                            Icon(
+                                                imageVector = if (isExc) Icons.Default.Warning else Icons.Default.Close,
+                                                contentDescription = null,
+                                                tint = Color.White,
+                                                modifier = Modifier.size(14.dp)
+                                            )
+                                        }
+                                    }
+                                    Spacer(modifier = Modifier.width(10.dp))
+                                    Column {
                                         Text(
-                                            text = displayDesc,
+                                            text = "$terminalTitle$terminalTime",
+                                            fontWeight = FontWeight.Bold,
+                                            fontSize = 12.sp,
+                                            color = terminalColor
+                                        )
+                                        Text(
+                                            text = terminalDesc,
                                             fontSize = 10.sp,
-                                            color = if (isCurrent || isDone) Color(0xFF475569) else Color(0xFF94A3B8)
+                                            color = terminalColor
                                         )
                                     }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // F2.10 Completed Order Actions: View Receipt & Rate Delivery
+                if (currentOrder.status == OrderStatus.ORD_COMP) {
+                    item {
+                        Card(
+                            colors = CardDefaults.cardColors(containerColor = Color.White),
+                            shape = RoundedCornerShape(12.dp),
+                            border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFFE2E8F0)),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(12.dp).fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                OutlinedButton(
+                                    onClick = { showReceiptDialog = true },
+                                    modifier = Modifier.weight(1f).testTag("tracking_view_receipt_button")
+                                ) {
+                                    Icon(Icons.Default.Receipt, contentDescription = null, modifier = Modifier.size(14.dp))
+                                    Spacer(modifier = Modifier.width(4.dp))
+                                    Text("View receipt", fontSize = 12.sp)
+                                }
+
+                                if (currentOrder.ratingStars != null) {
+                                    Surface(
+                                        color = Color(0xFFFEF3C7),
+                                        shape = RoundedCornerShape(8.dp),
+                                        modifier = Modifier.weight(1f).height(40.dp)
+                                    ) {
+                                        Row(
+                                            modifier = Modifier.fillMaxSize(),
+                                            horizontalArrangement = Arrangement.Center,
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            Icon(Icons.Default.Star, contentDescription = null, tint = Color(0xFFD97706), modifier = Modifier.size(16.dp))
+                                            Spacer(modifier = Modifier.width(4.dp))
+                                            Text("Rated ${currentOrder.ratingStars}/5", fontWeight = FontWeight.Bold, fontSize = 12.sp, color = Color(0xFF92400E))
+                                        }
+                                    }
+                                } else {
+                                    Button(
+                                        onClick = { showRateDialog = true },
+                                        colors = ButtonDefaults.buttonColors(containerColor = BlueGasPrimary),
+                                        modifier = Modifier.weight(1f).testTag("tracking_rate_order_button")
+                                    ) {
+                                        Icon(Icons.Default.Star, contentDescription = null, modifier = Modifier.size(14.dp))
+                                        Spacer(modifier = Modifier.width(4.dp))
+                                        Text("Rate delivery", fontSize = 12.sp)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // F2.9 Cancel Order CTA if order is in a cancellable status
+                val isCancellableInTracking = currentOrder.status in setOf(
+                    OrderStatus.ORD_DRAFT,
+                    OrderStatus.ORD_VALPEND,
+                    OrderStatus.ORD_PAYPEND,
+                    OrderStatus.ORD_CONF,
+                    OrderStatus.ORD_RSVD,
+                    OrderStatus.ORD_ASGN,
+                    OrderStatus.ORD_ACPT,
+                    OrderStatus.ORD_PREP,
+                    OrderStatus.ORD_EXC
+                )
+
+                if (isCancellableInTracking) {
+                    item {
+                        Card(
+                            colors = CardDefaults.cardColors(containerColor = Color.White),
+                            shape = RoundedCornerShape(12.dp),
+                            border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFFFCA5A5)),
+                            modifier = Modifier.fillMaxWidth().testTag("cancel_order_tracking_card")
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(12.dp).fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        text = "Need to cancel this order?",
+                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 12.sp,
+                                        color = Color(0xFF991B1B)
+                                    )
+                                    Text(
+                                        text = "You can cancel until your order is dispatched.",
+                                        fontSize = 10.sp,
+                                        color = Color(0xFF7F1D1D)
+                                    )
+                                }
+                                OutlinedButton(
+                                    onClick = { showCancelDialog = true },
+                                    colors = ButtonDefaults.outlinedButtonColors(contentColor = Color(0xFFDC2626)),
+                                    modifier = Modifier.height(34.dp).testTag("tracking_cancel_button")
+                                ) {
+                                    Icon(Icons.Default.Cancel, contentDescription = null, modifier = Modifier.size(14.dp))
+                                    Spacer(modifier = Modifier.width(4.dp))
+                                    Text("Cancel Order", fontSize = 11.sp, color = Color(0xFFDC2626))
                                 }
                             }
                         }
@@ -928,42 +1201,36 @@ fun TrackingScreen(
         }
     }
 
-    // Call Rider Dialog simulation
-    if (showCallRiderDialog && assignedRider != null) {
-        AlertDialog(
-            onDismissRequest = { showCallRiderDialog = false },
-            title = {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(Icons.Default.Phone, contentDescription = null, tint = BlueGasPrimary)
-                    Spacer(modifier = Modifier.width(6.dp))
-                    Text("Call Delivery Rider", fontWeight = FontWeight.Bold, fontSize = 15.sp)
-                }
-            },
-            text = {
-                Column {
-                    Text("Rider: ${assignedRider.name}", fontWeight = FontWeight.Bold, fontSize = 13.sp)
-                    Text("Phone: ${assignedRider.phone}", fontSize = 12.sp, color = BlueGasPrimary, fontFamily = FontFamily.Monospace)
-                    Text("Vehicle: ${assignedRider.vehicleNumber}", fontSize = 11.sp, color = Color.Gray)
-                    Spacer(modifier = Modifier.height(8.dp))
-                    Text(
-                        "Connecting directly to rider van hands-free system...",
-                        fontSize = 11.sp,
-                        color = Color(0xFF475569)
-                    )
-                }
-            },
-            confirmButton = {
-                Button(onClick = { showCallRiderDialog = false }) {
-                    Text("Simulate Call Connected")
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { showCallRiderDialog = false }) { Text("Dismiss") }
-            }
+    // F1.2 Payment Dialog
+    if (showPaymentGatewayDialog && currentOrder != null) {
+        DemoPaymentDialog(
+            orderId = currentOrder.id,
+            store = store,
+            onResult = postMessage,
+            onDismiss = { showPaymentGatewayDialog = false }
         )
     }
 
-    // Cancel Order Dialog simulation
+    // F1.3 Receipt Dialog
+    if (showReceiptDialog && currentOrder != null) {
+        ReceiptDialog(
+            order = currentOrder,
+            snapshot = snapshot,
+            onDismiss = { showReceiptDialog = false }
+        )
+    }
+
+    // F1.4 Rate Order Dialog
+    if (showRateDialog && currentOrder != null) {
+        RateOrderDialog(
+            orderId = currentOrder.id,
+            store = store,
+            onResult = postMessage,
+            onDismiss = { showRateDialog = false }
+        )
+    }
+
+    // F2.9 Cancel Order Dialog
     if (showCancelDialog && currentOrder != null) {
         val cancelReasons = listOf(
             "Changed my mind",
@@ -985,7 +1252,7 @@ fun TrackingScreen(
             text = {
                 Column {
                     Text(
-                        "Are you sure you want to cancel this order? Active stock holds and allocated cylinders will be returned to inventory. Any online payments will be refunded.",
+                        "Your reserved cylinder will be released. If you already paid online, the refund is handled by our Finance team.",
                         fontSize = 11.sp,
                         color = Color(0xFF64748B),
                         lineHeight = 15.sp
@@ -1010,11 +1277,7 @@ fun TrackingScreen(
                 Button(
                     onClick = {
                         val (cancelSuccess, cancelMsg) = store.cancelOrder(currentOrder.id, cancelReason)
-                        if (cancelSuccess) {
-                            notificationBannerMessage = cancelMsg ?: "Order cancelled successfully"
-                        } else {
-                            notificationBannerMessage = cancelMsg ?: "Unable to cancel order"
-                        }
+                        postMessage(cancelMsg, !cancelSuccess)
                         showCancelDialog = false
                     },
                     colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFDC2626)),
@@ -1032,7 +1295,21 @@ fun TrackingScreen(
     }
 }
 
+private data class HeroBannerConfig(
+    val tint: Color,
+    val accent: Color,
+    val icon: ImageVector,
+    val title: String,
+    val subtitle: String
+)
+
+private data class StepperStep(
+    val status: OrderStatus,
+    val label: String
+)
+
 private fun isStepCompleted(current: OrderStatus, target: OrderStatus): Boolean {
+    if (current == OrderStatus.ORD_COMP) return true
     val rank = mapOf(
         OrderStatus.ORD_DRAFT to 0,
         OrderStatus.ORD_VALPEND to 1,
@@ -1066,5 +1343,3 @@ private fun isStepCurrent(current: OrderStatus, target: OrderStatus): Boolean {
         else -> false
     }
 }
-
-private data class Quadruple<A, B, C, D>(val first: A, val second: B, val third: C, val fourth: D)

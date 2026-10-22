@@ -11,6 +11,10 @@ fun BlueGasStore.payOnline(
     demoOutcome: String = "SUCCESS" // "SUCCESS", "DECLINED", "TIMEOUT"
 ): Pair<Boolean, String> {
     val order = orders.find { it.id == orderId } ?: return Pair(false, "Order not found.")
+    if (order.holdExpiresAt != null && System.currentTimeMillis() > order.holdExpiresAt) {
+        processTimers()
+        return Pair(false, "The payment window has ended. Please place a new order.")
+    }
     if (order.status != OrderStatus.ORD_PAYPEND) {
         return Pair(false, "Order is not awaiting payment (Status: ${order.status.displayName}).")
     }
@@ -93,6 +97,10 @@ fun BlueGasStore.retryPayment(
     method: PaymentMethod
 ): Pair<Boolean, String> {
     val order = orders.find { it.id == orderId } ?: return Pair(false, "Order not found.")
+    if (order.holdExpiresAt != null && System.currentTimeMillis() > order.holdExpiresAt) {
+        processTimers()
+        return Pair(false, "The payment window has ended. Please place a new order.")
+    }
     if (order.status != OrderStatus.ORD_PAYPEND) {
         return Pair(false, "Order is not in payment pending state.")
     }

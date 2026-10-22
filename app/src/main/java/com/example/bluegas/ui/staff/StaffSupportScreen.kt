@@ -182,7 +182,7 @@ fun StaffSupportScreen(
                                     )
                                 }
                             }
-                            Text("Order ID: ${c.orderId} (Customer: ${c.customerId})", fontSize = 10.sp, color = Color(0xFF1E40AF))
+                            Text("Order ID: ${c.orderId ?: "General"} (Customer: ${c.customerId})", fontSize = 10.sp, color = Color(0xFF1E40AF))
                             Text(c.description, fontSize = 11.sp, modifier = Modifier.padding(vertical = 4.dp))
 
                             if (c.status == "RESOLVED" && c.resolutionNotes != null) {

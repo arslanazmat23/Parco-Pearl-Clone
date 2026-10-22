@@ -1,9 +1,13 @@
 package com.example.bluegas.viewmodel
 
 import androidx.lifecycle.ViewModel
+import androidx.lifecycle.viewModelScope
 import com.example.bluegas.data.*
 import com.example.bluegas.model.*
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
 
 /**
  * Centralized ViewModel acting as the single source of truth for all three surfaces
@@ -12,6 +16,16 @@ import kotlinx.coroutines.flow.StateFlow
 class BlueGasViewModel(
     val store: BlueGasStore = BlueGasStore()
 ) : ViewModel() {
+
+    init {
+        // Stands in for the scheduled hold-expiry job.
+        viewModelScope.launch {
+            while (isActive) {
+                delay(5_000)
+                store.processTimers()
+            }
+        }
+    }
 
     /**
      * Centralized SharedAppState StateFlow observed by all surfaces.
@@ -151,5 +165,17 @@ class BlueGasViewModel(
 
     fun markNotificationRead(notificationId: String): Pair<Boolean, String> {
         return store.markNotificationRead(notificationId)
+    }
+
+    fun setActiveCustomer(customerId: String): Pair<Boolean, String> {
+        return store.setActiveCustomer(customerId)
+    }
+
+    fun raiseSafetyConcern(customerId: String, description: String, orderId: String? = null): Pair<Boolean, String> {
+        return store.raiseSafetyConcern(customerId, description, orderId)
+    }
+
+    fun notifyPickupArrival(orderId: String): Pair<Boolean, String> {
+        return store.notifyPickupArrival(orderId)
     }
 }

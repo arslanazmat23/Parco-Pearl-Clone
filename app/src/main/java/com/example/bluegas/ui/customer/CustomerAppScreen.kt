@@ -4,7 +4,6 @@ import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -25,9 +24,9 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.bluegas.data.*
 import com.example.bluegas.model.AppSurface
 import com.example.bluegas.model.OrderStatus
-import com.example.bluegas.ui.components.CanonicalStatusChip
 import com.example.ui.theme.BlueGasDark
 import com.example.ui.theme.BlueGasPrimary
+import kotlinx.coroutines.delay
 
 enum class CustomerTab(val label: String, val icon: androidx.compose.ui.graphics.vector.ImageVector, val testTag: String) {
     HOME("Home", Icons.Default.Home, "customer_tab_home"),
@@ -36,6 +35,7 @@ enum class CustomerTab(val label: String, val icon: androidx.compose.ui.graphics
     PROFILE("Profile", Icons.Default.Person, "customer_tab_profile")
 }
 
+// F3 CustomerAppScreen
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun CustomerAppScreen(store: BlueGasStore, modifier: Modifier = Modifier) {
@@ -47,17 +47,27 @@ fun CustomerAppScreen(store: BlueGasStore, modifier: Modifier = Modifier) {
         else -> CustomerTab.HOME
     }
     var selectedTrackingOrderId by remember { mutableStateOf<String?>(null) }
-    var notificationBannerMessage by remember { mutableStateOf<String?>(null) }
 
-    // Reorder prefill fields
-    var prefillSku by remember { mutableStateOf<String?>(null) }
-    var prefillQuantity by remember { mutableIntStateOf(1) }
-    var prefillOrderType by remember { mutableStateOf<com.example.bluegas.model.OrderType?>(null) }
-    var prefillAddressId by remember { mutableStateOf<String?>(null) }
-    var prefillMode by remember { mutableStateOf<com.example.bluegas.model.FulfilmentMode?>(null) }
-    var prefillPaymentMethod by remember { mutableStateOf<com.example.bluegas.model.PaymentMethod?>(null) }
+    // F3.1 Global banner for whole customer app
+    var banner by remember { mutableStateOf<BannerMsg?>(null) }
+    LaunchedEffect(banner) {
+        if (banner != null) {
+            delay(5000L)
+            banner = null
+        }
+    }
+    val onActionMessage: (String, Boolean) -> Unit = { text, isError ->
+        banner = BannerMsg(text, isError)
+    }
 
+    // F3.2 Reorder prefill object keyed on active customer
+    var reorderPrefill by remember { mutableStateOf<ReorderPrefill?>(null) }
     val activeCustomer = snapshot.activeCustomer
+
+    LaunchedEffect(activeCustomer?.id) {
+        reorderPrefill = null
+    }
+
     val activeAddress = snapshot.addresses.find { it.customerId == activeCustomer?.id && it.isServiceable }
         ?: snapshot.addresses.find { it.customerId == activeCustomer?.id }
         ?: snapshot.addresses.firstOrNull()
@@ -68,7 +78,7 @@ fun CustomerAppScreen(store: BlueGasStore, modifier: Modifier = Modifier) {
         it.status == OrderStatus.ORD_DISP || it.status == OrderStatus.ORD_ATHO || it.status == OrderStatus.ORD_PREP
     }
 
-    // Default tracking order to the latest active order or most recent order
+    // Default tracking order to latest active order or most recent order
     LaunchedEffect(customerOrders.size, currentTab) {
         if (selectedTrackingOrderId == null || snapshot.orders.none { it.id == selectedTrackingOrderId }) {
             selectedTrackingOrderId = inTransitOrder?.id
@@ -141,7 +151,6 @@ fun CustomerAppScreen(store: BlueGasStore, modifier: Modifier = Modifier) {
                                     }
                                 }
 
-                                // Active Pilot Zone Badge
                                 Surface(
                                     color = if (activeAddress?.isServiceable == true) Color(0xFF166534) else Color(0xFF991B1B),
                                     shape = RoundedCornerShape(12.dp)
@@ -167,7 +176,6 @@ fun CustomerAppScreen(store: BlueGasStore, modifier: Modifier = Modifier) {
                                 }
                             }
 
-                            // Subheader delivery address strip
                             if (activeAddress != null) {
                                 Spacer(modifier = Modifier.height(6.dp))
                                 Surface(
@@ -294,43 +302,45 @@ fun CustomerAppScreen(store: BlueGasStore, modifier: Modifier = Modifier) {
                         .fillMaxSize()
                         .padding(innerPadding)
                 ) {
-                    // Global action / notification banner
+                    // F3.1 Global action / notification banner
                     AnimatedVisibility(
-                        visible = notificationBannerMessage != null,
+                        visible = banner != null,
                         enter = fadeIn(),
                         exit = fadeOut()
                     ) {
-                        Surface(
-                            color = Color(0xFFFEF3C7),
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)
+                        banner?.let { b ->
+                            Surface(
+                                color = if (b.isError) Color(0xFFFEF3C7) else Color(0xFFDCFCE7),
+                                modifier = Modifier.fillMaxWidth().testTag("customer_global_banner")
                             ) {
-                                Icon(
-                                    imageVector = Icons.Default.Info,
-                                    contentDescription = null,
-                                    tint = Color(0xFFB45309),
-                                    modifier = Modifier.size(16.dp)
-                                )
-                                Spacer(modifier = Modifier.width(8.dp))
-                                Text(
-                                    text = notificationBannerMessage ?: "",
-                                    fontSize = 11.sp,
-                                    color = Color(0xFF78350F),
-                                    modifier = Modifier.weight(1f)
-                                )
-                                IconButton(
-                                    onClick = { notificationBannerMessage = null },
-                                    modifier = Modifier.size(24.dp)
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)
                                 ) {
                                     Icon(
-                                        imageVector = Icons.Default.Close,
-                                        contentDescription = "Dismiss",
-                                        tint = Color(0xFF78350F),
-                                        modifier = Modifier.size(14.dp)
+                                        imageVector = if (b.isError) Icons.Default.Warning else Icons.Default.CheckCircle,
+                                        contentDescription = null,
+                                        tint = if (b.isError) Color(0xFFB45309) else Color(0xFF16A34A),
+                                        modifier = Modifier.size(16.dp)
                                     )
+                                    Spacer(modifier = Modifier.width(8.dp))
+                                    Text(
+                                        text = b.text,
+                                        fontSize = 11.sp,
+                                        color = if (b.isError) Color(0xFF78350F) else Color(0xFF166534),
+                                        modifier = Modifier.weight(1f)
+                                    )
+                                    IconButton(
+                                        onClick = { banner = null },
+                                        modifier = Modifier.size(24.dp)
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.Close,
+                                            contentDescription = "Dismiss",
+                                            tint = if (b.isError) Color(0xFF78350F) else Color(0xFF166534),
+                                            modifier = Modifier.size(14.dp)
+                                        )
+                                    }
                                 }
                             }
                         }
@@ -344,7 +354,6 @@ fun CustomerAppScreen(store: BlueGasStore, modifier: Modifier = Modifier) {
                                     store = store,
                                     onOrderCreated = { newOrder ->
                                         selectedTrackingOrderId = newOrder.id
-                                        notificationBannerMessage = "Order ${newOrder.id} placed! Stock held for ${snapshot.settings.holdTtlMinutes} min."
                                     },
                                     onNavigateToOrders = {
                                         store.setCustomerTab("ORDERS")
@@ -353,12 +362,9 @@ fun CustomerAppScreen(store: BlueGasStore, modifier: Modifier = Modifier) {
                                         selectedTrackingOrderId = orderId
                                         store.setCustomerTab("TRACKING")
                                     },
-                                    prefillSku = prefillSku,
-                                    prefillQuantity = prefillQuantity,
-                                    prefillOrderType = prefillOrderType,
-                                    prefillAddressId = prefillAddressId,
-                                    prefillMode = prefillMode,
-                                    prefillPaymentMethod = prefillPaymentMethod
+                                    onActionMessage = onActionMessage,
+                                    prefill = reorderPrefill,
+                                    onPrefillConsumed = { reorderPrefill = null }
                                 )
                             }
                             CustomerTab.ORDERS -> {
@@ -368,17 +374,21 @@ fun CustomerAppScreen(store: BlueGasStore, modifier: Modifier = Modifier) {
                                         selectedTrackingOrderId = orderId
                                         store.setCustomerTab("TRACKING")
                                     },
-                                    onActionMessage = { msg ->
-                                        notificationBannerMessage = msg
-                                    },
+                                    onActionMessage = onActionMessage,
                                     onReorder = { order ->
                                         val gasItem = order.items.firstOrNull { it.lineType == "GAS" } ?: order.items.firstOrNull()
-                                        prefillSku = gasItem?.sku ?: "SKU-LPG-11-8"
-                                        prefillQuantity = gasItem?.quantity ?: 1
-                                        prefillOrderType = order.orderType
-                                        prefillAddressId = order.addressId
-                                        prefillMode = order.fulfilmentMode
-                                        prefillPaymentMethod = order.paymentMethod
+                                        val hasAccessory = order.items.any { it.lineType == "ACCESSORY" }
+                                        reorderPrefill = ReorderPrefill(
+                                            sku = gasItem?.sku ?: "SKU-LPG-11-8",
+                                            quantity = gasItem?.quantity ?: 1,
+                                            orderType = order.orderType,
+                                            addressId = order.addressId,
+                                            mode = order.fulfilmentMode,
+                                            paymentMethod = order.paymentMethod,
+                                            pickupPointId = order.pickupPointId ?: order.fulfilmentPointId,
+                                            addAccessory = hasAccessory,
+                                            nonce = System.currentTimeMillis()
+                                        )
                                         store.setCustomerTab("HOME")
                                     },
                                     onNavigateToHome = {
@@ -395,15 +405,14 @@ fun CustomerAppScreen(store: BlueGasStore, modifier: Modifier = Modifier) {
                                     },
                                     onBackToOrders = {
                                         store.setCustomerTab("ORDERS")
-                                    }
+                                    },
+                                    onActionMessage = onActionMessage
                                 )
                             }
                             CustomerTab.PROFILE -> {
                                 ProfileScreen(
                                     store = store,
-                                    onCustomerChanged = {
-                                        notificationBannerMessage = "Switched customer profile"
-                                    }
+                                    onActionMessage = onActionMessage
                                 )
                             }
                         }
