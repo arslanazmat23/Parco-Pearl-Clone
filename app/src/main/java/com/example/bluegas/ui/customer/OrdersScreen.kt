@@ -1,5 +1,6 @@
 package com.example.bluegas.ui.customer
 
+import android.content.Intent
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
@@ -18,6 +19,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -48,6 +50,7 @@ fun OrdersScreen(
     onNavigateToHome: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
+    val context = LocalContext.current
     var selectedFilter by remember { mutableStateOf(OrdersFilterTab.ALL) }
     var searchQuery by remember { mutableStateOf("") }
 
@@ -223,7 +226,7 @@ fun OrdersScreen(
         }
     }
 
-    // Dialog 1: Hosted Payment Gateway Dialog
+    // Dialog 1: Demo Payment Dialog
     if (showPaymentGatewayDialog && selectedOrderIdForPayment != null) {
         val ord = snapshot.orders.find { it.id == selectedOrderIdForPayment }
 
@@ -231,22 +234,22 @@ fun OrdersScreen(
             onDismissRequest = { showPaymentGatewayDialog = false },
             title = {
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(Icons.Default.AccountBalance, contentDescription = null, tint = BlueGasPrimary)
+                    Icon(Icons.Default.CreditCard, contentDescription = null, tint = BlueGasPrimary)
                     Spacer(modifier = Modifier.width(6.dp))
-                    Text("Pay Online (Hosted Gateway)", fontWeight = FontWeight.Bold, fontSize = 15.sp)
+                    Text("Pay now (demo)", fontWeight = FontWeight.Bold, fontSize = 15.sp)
                 }
             },
             text = {
                 Column {
                     Text("Order: ${ord?.id}", fontWeight = FontWeight.Bold, fontSize = 13.sp)
                     Text(
-                        "Total Amount: ${ord?.totalAmountPaisa?.let { formatPaisaToPkr(it) }}",
+                        "Payable: ${ord?.totalAmountPaisa?.let { formatRupees(it) }}",
                         fontSize = 14.sp,
                         color = BlueGasPrimary,
                         fontWeight = FontWeight.Bold
                     )
-                    Spacer(modifier = Modifier.height(6.dp))
-                    Text("Demonstrator: Choose simulation outcome for payment authorization:", fontSize = 11.sp)
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Text("This is a demo gateway for the pilot. Choose an outcome:", fontSize = 11.sp, color = Color(0xFF475569))
                     Spacer(modifier = Modifier.height(10.dp))
 
                     Button(
@@ -256,9 +259,11 @@ fun OrdersScreen(
                             showPaymentGatewayDialog = false
                         },
                         colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF16A34A)),
-                        modifier = Modifier.fillMaxWidth()
+                        modifier = Modifier.fillMaxWidth().testTag("orders_gateway_success_button")
                     ) {
-                        Text("Simulate Payment SUCCESS")
+                        Icon(Icons.Default.Check, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text("Payment approved")
                     }
                     Spacer(modifier = Modifier.height(6.dp))
                     Button(
@@ -268,9 +273,11 @@ fun OrdersScreen(
                             showPaymentGatewayDialog = false
                         },
                         colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFDC2626)),
-                        modifier = Modifier.fillMaxWidth()
+                        modifier = Modifier.fillMaxWidth().testTag("orders_gateway_decline_button")
                     ) {
-                        Text("Simulate Payment DECLINED")
+                        Icon(Icons.Default.Close, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text("Payment declined")
                     }
                     Spacer(modifier = Modifier.height(6.dp))
                     OutlinedButton(
@@ -279,9 +286,11 @@ fun OrdersScreen(
                             onActionMessage(msg)
                             showPaymentGatewayDialog = false
                         },
-                        modifier = Modifier.fillMaxWidth()
+                        modifier = Modifier.fillMaxWidth().testTag("orders_gateway_timeout_button")
                     ) {
-                        Text("Simulate Payment TIMEOUT")
+                        Icon(Icons.Default.Timer, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text("Connection lost")
                     }
                 }
             },
@@ -292,10 +301,39 @@ fun OrdersScreen(
         )
     }
 
-    // Dialog 2: Official Delivery Receipt Dialog
+    // Dialog 2: Official Delivery Receipt Dialog (S6: Share sheet)
     if (showReceiptOrderId != null) {
         val ord = snapshot.orders.find { it.id == showReceiptOrderId }
-        var isDownloaded by remember { mutableStateOf(false) }
+        val shareReceiptText = remember(ord) {
+            buildString {
+                appendLine("BLUE GAS — Delivery Receipt")
+                appendLine("Order ID: ${ord?.id}")
+                appendLine("Date: ${formatTimestamp(ord?.createdAt ?: System.currentTimeMillis())}")
+                appendLine("Status: ${ord?.status?.canonicalLabel}")
+                appendLine("POD Reference: ${ord?.podReference ?: "POD-${ord?.id?.takeLast(4)}-DONE"}")
+                if (ord?.allocatedSerial != null) {
+                    appendLine("Cylinder Serial: ${ord.allocatedSerial}")
+                }
+                appendLine("--------------------------------")
+                ord?.items?.forEach { itm ->
+                    appendLine("${itm.quantity}x ${itm.productName}: ${formatRupees(itm.subtotalPaisa)}")
+                }
+                if ((ord?.depositTotalPaisa ?: 0L) > 0) {
+                    appendLine("Cylinder Security Deposit: ${formatRupees(ord?.depositTotalPaisa ?: 0L)}")
+                }
+                appendLine("Fulfilment / Delivery Fee: ${formatRupees(ord?.deliveryFeePaisa ?: 0L)}")
+                appendLine("Platform Convenience Fee: ${formatRupees(ord?.platformFeePaisa ?: 0L)}")
+                appendLine("Sales Tax: ${formatRupees(ord?.taxPaisa ?: 0L)}")
+                if ((ord?.discountPaisa ?: 0L) > 0) {
+                    appendLine("Discount: -${formatRupees(ord?.discountPaisa ?: 0L)}")
+                }
+                appendLine("--------------------------------")
+                appendLine("Total Paid: ${formatRupees(ord?.totalAmountPaisa ?: 0L)}")
+                appendLine("Payment Method: ${ord?.paymentMethod?.name?.replace("_", " ")}")
+                appendLine("--------------------------------")
+                appendLine("Prices, fees and tax are demo settings pending client decisions (Q03, Q04, Q22, Q24).")
+            }
+        }
 
         AlertDialog(
             onDismissRequest = { showReceiptOrderId = null },
@@ -336,56 +374,58 @@ fun OrdersScreen(
                     ord?.items?.forEach { itm ->
                         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                             Text("${itm.quantity}x ${itm.productName}", fontSize = 11.sp)
-                            Text(formatPaisaToPkr(itm.subtotalPaisa), fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
+                            Text(formatRupees(itm.subtotalPaisa), fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
                         }
                     }
 
                     if ((ord?.depositTotalPaisa ?: 0L) > 0) {
                         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                             Text("Cylinder Security Deposit", fontSize = 11.sp, color = Color(0xFFB45309))
-                            Text(formatPaisaToPkr(ord?.depositTotalPaisa ?: 0L), fontSize = 11.sp, color = Color(0xFFB45309), fontWeight = FontWeight.SemiBold)
+                            Text(formatRupees(ord?.depositTotalPaisa ?: 0L), fontSize = 11.sp, color = Color(0xFFB45309), fontWeight = FontWeight.SemiBold)
                         }
                     }
 
                     Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                         Text("Fulfilment / Delivery Fee", fontSize = 11.sp)
-                        Text(formatPaisaToPkr(ord?.deliveryFeePaisa ?: 0L), fontSize = 11.sp)
+                        Text(formatRupees(ord?.deliveryFeePaisa ?: 0L), fontSize = 11.sp)
                     }
 
                     Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                        Text("Sales Tax (5%)", fontSize = 11.sp)
-                        Text(formatPaisaToPkr(ord?.taxPaisa ?: 0L), fontSize = 11.sp)
+                        Text("Sales Tax", fontSize = 11.sp)
+                        Text(formatRupees(ord?.taxPaisa ?: 0L), fontSize = 11.sp)
                     }
 
                     HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
 
                     Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                         Text("Total Amount Paid:", fontWeight = FontWeight.Bold, fontSize = 12.sp)
-                        Text(formatPaisaToPkr(ord?.totalAmountPaisa ?: 0L), fontWeight = FontWeight.Bold, fontSize = 14.sp, color = BlueGasPrimary)
+                        Text(formatRupees(ord?.totalAmountPaisa ?: 0L), fontWeight = FontWeight.Bold, fontSize = 14.sp, color = BlueGasPrimary)
                     }
 
-                    if (isDownloaded) {
-                        Spacer(modifier = Modifier.height(8.dp))
-                        Surface(
-                            color = Color(0xFFDCFCE7),
-                            shape = RoundedCornerShape(4.dp),
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            Text(
-                                text = "✓ PDF Receipt saved to phone storage: receipt_${ord?.id}.pdf",
-                                fontSize = 10.sp,
-                                color = Color(0xFF166534),
-                                modifier = Modifier.padding(6.dp)
-                            )
-                        }
-                    }
+                    Spacer(modifier = Modifier.height(6.dp))
+                    Text(
+                        text = "Prices, fees and tax are demo settings pending client decisions (Q03, Q04, Q22, Q24).",
+                        fontSize = 9.sp,
+                        color = Color.Gray,
+                        lineHeight = 12.sp
+                    )
                 }
             },
             confirmButton = {
-                Button(onClick = { isDownloaded = true }) {
-                    Icon(Icons.Default.Download, contentDescription = null, modifier = Modifier.size(14.dp))
+                Button(
+                    onClick = {
+                        val shareIntent = Intent(Intent.ACTION_SEND).apply {
+                            type = "text/plain"
+                            putExtra(Intent.EXTRA_SUBJECT, "Receipt for Order ${ord?.id}")
+                            putExtra(Intent.EXTRA_TEXT, shareReceiptText)
+                        }
+                        context.startActivity(Intent.createChooser(shareIntent, "Share receipt"))
+                    },
+                    modifier = Modifier.testTag("share_receipt_button")
+                ) {
+                    Icon(Icons.Default.Share, contentDescription = null, modifier = Modifier.size(14.dp))
                     Spacer(modifier = Modifier.width(4.dp))
-                    Text("Download PDF", fontSize = 11.sp)
+                    Text("Share receipt", fontSize = 11.sp)
                 }
             },
             dismissButton = {
@@ -609,7 +649,7 @@ private fun CustomerOrderCard(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Text(
-                    text = "Total: ${formatPaisaToPkr(order.totalAmountPaisa)}",
+                    text = "Total: ${formatRupees(order.totalAmountPaisa)}",
                     fontSize = 13.sp,
                     fontWeight = FontWeight.Bold,
                     color = BlueGasPrimary

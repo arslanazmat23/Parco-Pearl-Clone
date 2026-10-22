@@ -39,11 +39,24 @@ enum class CustomerTab(val label: String, val icon: androidx.compose.ui.graphics
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun CustomerAppScreen(store: BlueGasStore, modifier: Modifier = Modifier) {
-    var currentTab by remember { mutableStateOf(CustomerTab.HOME) }
+    val snapshot by store.appState.collectAsStateWithLifecycle()
+    val currentTab = when (snapshot.customerTab.uppercase()) {
+        "ORDERS" -> CustomerTab.ORDERS
+        "TRACKING" -> CustomerTab.TRACKING
+        "PROFILE" -> CustomerTab.PROFILE
+        else -> CustomerTab.HOME
+    }
     var selectedTrackingOrderId by remember { mutableStateOf<String?>(null) }
     var notificationBannerMessage by remember { mutableStateOf<String?>(null) }
 
-    val snapshot by store.appState.collectAsStateWithLifecycle()
+    // Reorder prefill fields
+    var prefillSku by remember { mutableStateOf<String?>(null) }
+    var prefillQuantity by remember { mutableIntStateOf(1) }
+    var prefillOrderType by remember { mutableStateOf<com.example.bluegas.model.OrderType?>(null) }
+    var prefillAddressId by remember { mutableStateOf<String?>(null) }
+    var prefillMode by remember { mutableStateOf<com.example.bluegas.model.FulfilmentMode?>(null) }
+    var prefillPaymentMethod by remember { mutableStateOf<com.example.bluegas.model.PaymentMethod?>(null) }
+
     val activeCustomer = snapshot.activeCustomer
     val activeAddress = snapshot.addresses.find { it.customerId == activeCustomer?.id && it.isServiceable }
         ?: snapshot.addresses.find { it.customerId == activeCustomer?.id }
@@ -211,7 +224,7 @@ fun CustomerAppScreen(store: BlueGasStore, modifier: Modifier = Modifier) {
                             val selected = currentTab == tab
                             NavigationBarItem(
                                 selected = selected,
-                                onClick = { currentTab = tab },
+                                onClick = { store.setCustomerTab(tab.name) },
                                 modifier = Modifier.testTag(tab.testTag),
                                 icon = {
                                     BadgedBox(
@@ -331,15 +344,21 @@ fun CustomerAppScreen(store: BlueGasStore, modifier: Modifier = Modifier) {
                                     store = store,
                                     onOrderCreated = { newOrder ->
                                         selectedTrackingOrderId = newOrder.id
-                                        notificationBannerMessage = "Order ${newOrder.id} placed! Stock held for ${snapshot.priceBookConfig.holdTtlMinutes} min."
+                                        notificationBannerMessage = "Order ${newOrder.id} placed! Stock held for ${snapshot.settings.holdTtlMinutes} min."
                                     },
                                     onNavigateToOrders = {
-                                        currentTab = CustomerTab.ORDERS
+                                        store.setCustomerTab("ORDERS")
                                     },
                                     onTrackOrder = { orderId ->
                                         selectedTrackingOrderId = orderId
-                                        currentTab = CustomerTab.TRACKING
-                                    }
+                                        store.setCustomerTab("TRACKING")
+                                    },
+                                    prefillSku = prefillSku,
+                                    prefillQuantity = prefillQuantity,
+                                    prefillOrderType = prefillOrderType,
+                                    prefillAddressId = prefillAddressId,
+                                    prefillMode = prefillMode,
+                                    prefillPaymentMethod = prefillPaymentMethod
                                 )
                             }
                             CustomerTab.ORDERS -> {
@@ -347,16 +366,23 @@ fun CustomerAppScreen(store: BlueGasStore, modifier: Modifier = Modifier) {
                                     store = store,
                                     onTrackOrder = { orderId ->
                                         selectedTrackingOrderId = orderId
-                                        currentTab = CustomerTab.TRACKING
+                                        store.setCustomerTab("TRACKING")
                                     },
                                     onActionMessage = { msg ->
                                         notificationBannerMessage = msg
                                     },
                                     onReorder = { order ->
-                                        currentTab = CustomerTab.HOME
+                                        val gasItem = order.items.firstOrNull { it.lineType == "GAS" } ?: order.items.firstOrNull()
+                                        prefillSku = gasItem?.sku ?: "SKU-LPG-11-8"
+                                        prefillQuantity = gasItem?.quantity ?: 1
+                                        prefillOrderType = order.orderType
+                                        prefillAddressId = order.addressId
+                                        prefillMode = order.fulfilmentMode
+                                        prefillPaymentMethod = order.paymentMethod
+                                        store.setCustomerTab("HOME")
                                     },
                                     onNavigateToHome = {
-                                        currentTab = CustomerTab.HOME
+                                        store.setCustomerTab("HOME")
                                     }
                                 )
                             }
@@ -368,7 +394,7 @@ fun CustomerAppScreen(store: BlueGasStore, modifier: Modifier = Modifier) {
                                         selectedTrackingOrderId = orderId
                                     },
                                     onBackToOrders = {
-                                        currentTab = CustomerTab.ORDERS
+                                        store.setCustomerTab("ORDERS")
                                     }
                                 )
                             }

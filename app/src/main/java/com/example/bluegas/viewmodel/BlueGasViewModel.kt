@@ -128,4 +128,28 @@ class BlueGasViewModel(
     fun resolveSupportCase(caseId: String, notes: String, actor: String = "Support Lead"): Pair<Boolean, String> {
         return store.resolveSupportCase(caseId, notes, actor)
     }
+
+    fun addAddress(
+        customerId: String,
+        label: String,
+        street: String,
+        area: String,
+        city: String,
+        zoneId: String,
+        makeDefault: Boolean
+    ): Pair<Boolean, String> {
+        return store.addAddress(customerId, label, street, area, city, zoneId, makeDefault)
+    }
+
+    fun setDefaultAddress(customerId: String, addressId: String): Pair<Boolean, String> {
+        return store.setDefaultAddress(customerId, addressId)
+    }
+
+    fun rateOrder(orderId: String, stars: Int, comment: String): Pair<Boolean, String> {
+        return store.rateOrder(orderId, stars, comment)
+    }
+
+    fun markNotificationRead(notificationId: String): Pair<Boolean, String> {
+        return store.markNotificationRead(notificationId)
+    }
 }

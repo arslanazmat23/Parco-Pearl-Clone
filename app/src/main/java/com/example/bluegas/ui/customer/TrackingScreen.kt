@@ -235,7 +235,7 @@ fun TrackingScreen(
                             Color(0xFFEFF6FF), Icons.Default.ThumbUp, "Rider Accepted Order", "Heading to distributor hub for vehicle loading"
                         )
                         OrderStatus.ORD_PREP -> Quadruple(
-                            Color(0xFFFEF3C7), Icons.Default.Build, "Preparing & Hydro-Testing", "Binding certified cylinder serial & verifying safety valve"
+                            Color(0xFFFEF3C7), Icons.Default.Build, "Preparing your order", "The distributor is getting your cylinder ready."
                         )
                         OrderStatus.ORD_DISP -> Quadruple(
                             Color(0xFF0284C7), Icons.Default.DeliveryDining, "Dispatched & On the Way!", "Rider is en route to your delivery address"
@@ -312,22 +312,8 @@ fun TrackingScreen(
                     item {
                         Button(
                             onClick = {
-                                store.addNotification(
-                                    surface = AppSurface.STAFF,
-                                    title = "Customer Arrived for Pickup",
-                                    message = "Customer has arrived at hub for order ${currentOrder.id}",
-                                    canonicalStatus = currentOrder.status.canonicalLabel,
-                                    orderId = currentOrder.id
-                                )
-                                store.addNotification(
-                                    surface = AppSurface.CUSTOMER,
-                                    title = "Arrival Confirmed",
-                                    message = "Your arrival has been notified. Please proceed to the collection counter.",
-                                    canonicalStatus = currentOrder.status.canonicalLabel,
-                                    orderId = currentOrder.id
-                                )
-                                store.notifyChanged()
-                                notificationBannerMessage = "Arrival notified to hub counter!"
+                                val (_, msg) = store.notifyPickupArrival(currentOrder.id)
+                                notificationBannerMessage = msg
                             },
                             modifier = Modifier
                                 .fillMaxWidth()
@@ -681,12 +667,6 @@ fun TrackingScreen(
                                         fontSize = 11.sp,
                                         color = Color(0xFF475569)
                                     )
-                                    Text(
-                                        text = "Certified for PESSI Non-Technical Installations",
-                                        fontSize = 9.sp,
-                                        color = Color(0xFF16A34A),
-                                        fontWeight = FontWeight.SemiBold
-                                    )
                                 }
 
                                 FilledTonalIconButton(
@@ -731,19 +711,6 @@ fun TrackingScreen(
                                         color = Color(0xFF065F46)
                                     )
                                 }
-
-                                Surface(
-                                    color = Color(0xFFDCFCE7),
-                                    shape = RoundedCornerShape(4.dp)
-                                ) {
-                                    Text(
-                                        text = "OGRA Certified",
-                                        fontSize = 9.sp,
-                                        fontWeight = FontWeight.Bold,
-                                        color = Color(0xFF166534),
-                                        modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp)
-                                    )
-                                }
                             }
 
                             Spacer(modifier = Modifier.height(8.dp))
@@ -777,12 +744,14 @@ fun TrackingScreen(
                             HorizontalDivider()
                             Spacer(modifier = Modifier.height(6.dp))
 
-                            Text(
-                                text = "✓ Tamper-evident holographic neck seal intact\n✓ Calibrated tare weight verified\n✓ Pressure regulator joint inspection included",
-                                fontSize = 10.sp,
-                                color = Color(0xFF334155),
-                                lineHeight = 14.sp
-                            )
+                            val productLine = currentOrder.items.firstOrNull { it.lineType == "GAS" } ?: currentOrder.items.firstOrNull()
+                            if (productLine != null) {
+                                Text(
+                                    text = "Order Item: ${productLine.quantity}x ${productLine.productName}",
+                                    fontSize = 11.sp,
+                                    color = Color(0xFF334155)
+                                )
+                            }
                         }
                     }
                 }

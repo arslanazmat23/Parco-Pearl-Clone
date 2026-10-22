@@ -496,8 +496,7 @@ fun NotificationCenterDialog(store: BlueGasStore, onDismiss: () -> Unit) {
         onDismissRequest = onDismiss,
         confirmButton = {
             Button(onClick = {
-                store.notifications.forEach { it.isRead = true }
-                store.notifyChanged()
+                store.markNotificationsRead(store.activeSurface, if (store.activeSurface == AppSurface.STAFF) store.activeStaffSubRole else null)
                 onDismiss()
             }) {
                 Text("Mark All Read")
