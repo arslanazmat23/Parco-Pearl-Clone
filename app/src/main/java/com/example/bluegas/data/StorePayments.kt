@@ -1,3 +1,11 @@
+/**
+ * Payment processing operations for BLUE GAS orders.
+ *
+ * Implements the payment state machine transitions, online gateway demo outcomes,
+ * payment retry attempts, and cash on delivery confirmation. Reads order and payment
+ * records from the store and advances order status to confirmed upon successful
+ * payment authorization or COD selection.
+ */
 package com.example.bluegas.data
 
 import com.example.bluegas.lifecycle.OrderStateMachine
@@ -6,11 +14,25 @@ import com.example.bluegas.lifecycle.TransitionResult
 import com.example.bluegas.model.*
 import java.util.UUID
 
+/**
+ * Simulates online payment gateway processing for an order awaiting payment.
+ *
+ * Validates that the order is in ORD_PAYPEND status and that its inventory reservation
+ * hold window has not expired. Transitions the payment record through the payment state
+ * machine (preauthorization under Branch A or initial capture under Branch B), advances
+ * the order status to ORD_CONF on success, triggers stock assignment, and generates notifications.
+ *
+ * @param orderId Identifier of the order being paid.
+ * @param demoOutcome Simulated gateway response: "SUCCESS", "DECLINED", or "TIMEOUT".
+ * @return Pair indicating whether the operation succeeded and a customer-facing message.
+ */
 fun BlueGasStore.payOnline(
     orderId: String,
     demoOutcome: String = "SUCCESS" // "SUCCESS", "DECLINED", "TIMEOUT"
 ): Pair<Boolean, String> {
     val order = orders.find { it.id == orderId } ?: return Pair(false, "Order not found.")
+    // Guard against stale payments: if the reservation payment window expired, reject the attempt
+    // and let processTimers transition the order to ORD_EXP.
     if (order.holdExpiresAt != null && System.currentTimeMillis() > order.holdExpiresAt) {
         processTimers()
         return Pair(false, "The payment window has ended. Please place a new order.")
@@ -21,7 +43,7 @@ fun BlueGasStore.payOnline(
 
     val payment = activePaymentFor(orderId) ?: return Pair(false, "No active payment record found for order.")
 
-    // Idempotency check (EXC-04, UAT-15)
+    // Verify idempotency key to prevent double-charging or processing duplicate gateway callbacks.
     if (idempotencyKeys.contains(payment.idempotencyKey)) {
         return Pair(true, "Duplicate gateway message ignored (Already processed).")
     }
@@ -92,6 +114,16 @@ fun BlueGasStore.payOnline(
     }
 }
 
+/**
+ * Creates a new payment attempt for an order that encountered a payment failure or timeout.
+ *
+ * Increments the attempt counter, registers a new Payment entity with a unique idempotency key,
+ * and if switching to Cash on Delivery, immediately confirms the order.
+ *
+ * @param orderId Target order identifier.
+ * @param method Chosen payment method for this attempt.
+ * @return Pair indicating success and a status description.
+ */
 fun BlueGasStore.retryPayment(
     orderId: String,
     method: PaymentMethod
@@ -133,6 +165,16 @@ fun BlueGasStore.retryPayment(
     return Pair(true, "New payment attempt created.")
 }
 
+/**
+ * Confirms an order with Cash on Delivery payment.
+ *
+ * Sets the active payment state to COD_PENDING (Branch C), advances the order status
+ * to ORD_CONF via the order state machine, fires customer notifications, and triggers
+ * inventory assignment.
+ *
+ * @param orderId Identifier of the order to confirm.
+ * @return Pair indicating success and a customer-facing confirmation message.
+ */
 fun BlueGasStore.confirmCod(orderId: String): Pair<Boolean, String> {
     val order = orders.find { it.id == orderId } ?: return Pair(false, "Order not found.")
     if (order.status != OrderStatus.ORD_PAYPEND) {
@@ -173,6 +215,17 @@ fun BlueGasStore.confirmCod(orderId: String): Pair<Boolean, String> {
     return Pair(true, "Order ${order.id} confirmed for Cash on Delivery.")
 }
 
+/**
+ * Convenience entry point to confirm payment and advance the order.
+ *
+ * For Cash on Delivery, calls [confirmCod]. For online methods, delegates to [payOnline]
+ * using the specified demo gateway outcome.
+ *
+ * @param orderId Target order identifier.
+ * @param forcedOutcome Demo outcome for online payment ("SUCCESS", "DECLINED", or "TIMEOUT").
+ * @param actor Name of the triggering actor (defaults to "Customer").
+ * @return Pair indicating success and a descriptive message.
+ */
 fun BlueGasStore.confirmPaymentAndAdvance(orderId: String, forcedOutcome: String = "SUCCESS", actor: String = "Customer"): Pair<Boolean, String> {
     val order = orders.find { it.id == orderId } ?: return Pair(false, "Order not found")
     if (order.paymentMethod == PaymentMethod.CASH_ON_DELIVERY) {

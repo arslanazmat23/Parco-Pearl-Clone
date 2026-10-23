@@ -1,3 +1,19 @@
+/**
+ * Primary ordering screen for the BLUE GAS Customer App.
+ *
+ * Implements the customer order placement journey:
+ * - Order type selection: Refill Exchange (handing back an empty cylinder) or New Cylinder (with security deposit)
+ * - Approved household LPG cylinder SKU & quantity selection (up to maxQuantityPerOrder)
+ * - Optional regulator and reinforced hose accessory add-on priced dynamically via active price list
+ * - Fulfilment mode selection (Doorstep Delivery or Depot Pickup) with automated city-level depot resolution
+ * - Delivery address selection with zone-serviceability enforcement (forces pickup if outside active zone)
+ * - Payment method selection (Cash on Delivery or Online Hosted Gateway)
+ * - Real-time total quote generation using [PricingEngine.buildQuote]
+ *
+ * Reads: [SharedAppState.activeCustomer], [SharedAppState.addresses], [SharedAppState.productVariants],
+ *        [SharedAppState.nodes], [SharedAppState.currentPriceList], [SharedAppState.taxConfig], [SharedAppState.settings]
+ * Calls: [BlueGasStore.createOrder], [BlueGasStore.confirmPaymentAndAdvance]
+ */
 package com.example.bluegas.ui.customer
 
 import androidx.compose.foundation.BorderStroke
@@ -30,7 +46,20 @@ import com.example.bluegas.model.*
 import com.example.ui.theme.BlueGasDark
 import com.example.ui.theme.BlueGasPrimary
 
-// F5 HomeScreen
+/**
+ * Composable screen enabling customers to configure and place LPG orders.
+ *
+ * Preserves user selections across navigation tab switches via [rememberSaveable].
+ *
+ * @param store BlueGasStore application state container.
+ * @param onOrderCreated Callback invoked when an order is successfully created in store.
+ * @param onNavigateToOrders Callback to switch active tab to Orders view.
+ * @param onTrackOrder Callback to navigate to order tracking for a specific order ID.
+ * @param onActionMessage Global banner callback receiving (message: String, isError: Boolean).
+ * @param prefill Optional reorder prefill object containing past order details.
+ * @param onPrefillConsumed Invoked once the prefill values have been applied.
+ * @param modifier Optional layout modifier.
+ */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun HomeScreen(
@@ -47,16 +76,16 @@ fun HomeScreen(
     val activeCustomer = snapshot.activeCustomer ?: return
     val customerAddresses = snapshot.addresses.filter { it.customerId == activeCustomer.id }
 
-    // F5.6 Choices held in rememberSaveable across tabs
-    var orderType by rememberSaveable { mutableStateOf(OrderType.REFILL_EXCHANGE) }
-    var selectedSku by rememberSaveable { mutableStateOf("SKU-LPG-11-8") }
+    // Customer selection state preserved across tab transitions
     var selectedAddressId by rememberSaveable {
         mutableStateOf(
-            customerAddresses.firstOrNull { it.isServiceable }?.id
+            customerAddresses.firstOrNull { it.isDefault }?.id
                 ?: customerAddresses.firstOrNull()?.id
                 ?: ""
         )
     }
+    var selectedSku by rememberSaveable { mutableStateOf("SKU-LPG-11-8") }
+    var orderType by rememberSaveable { mutableStateOf(OrderType.REFILL_EXCHANGE) }
     var selectedMode by rememberSaveable { mutableStateOf(FulfilmentMode.DELIVERY) }
     var hasEmptyCylinderToExchange by rememberSaveable { mutableStateOf(true) }
     var quantity by rememberSaveable { mutableIntStateOf(1) }
@@ -64,26 +93,29 @@ fun HomeScreen(
     var addAccessory by rememberSaveable { mutableStateOf(false) }
     var selectedPickupNodeId by rememberSaveable { mutableStateOf("") }
 
-    // F5.7 Double-tap guard
-    var placing by remember { mutableStateOf(false) }
+    // Dialog state for payment execution
     var createdOrderIdForPayment by remember { mutableStateOf<String?>(null) }
     var showPaymentGatewayDialog by remember { mutableStateOf(false) }
 
-    // Reset when switching customer
+    // Track active customer to ensure form resets only on actual customer switches
+    var lastCustomerId by rememberSaveable { mutableStateOf(activeCustomer.id) }
     LaunchedEffect(activeCustomer.id) {
-        val defaultAddr = customerAddresses.firstOrNull { it.isDefault }
-            ?: customerAddresses.firstOrNull { it.isServiceable }
-            ?: customerAddresses.firstOrNull()
-        selectedAddressId = defaultAddr?.id ?: ""
-        selectedSku = "SKU-LPG-11-8"
-        quantity = 1
-        orderType = OrderType.REFILL_EXCHANGE
-        selectedMode = FulfilmentMode.DELIVERY
-        paymentMethodChoice = PaymentMethod.ONLINE_HOSTED
-        addAccessory = false
+        if (lastCustomerId != activeCustomer.id) {
+            val defaultAddr = customerAddresses.firstOrNull { it.isDefault }
+                ?: customerAddresses.firstOrNull { it.isServiceable }
+                ?: customerAddresses.firstOrNull()
+            selectedAddressId = defaultAddr?.id ?: ""
+            selectedSku = "SKU-LPG-11-8"
+            quantity = 1
+            orderType = OrderType.REFILL_EXCHANGE
+            selectedMode = FulfilmentMode.DELIVERY
+            paymentMethodChoice = PaymentMethod.ONLINE_HOSTED
+            addAccessory = false
+            lastCustomerId = activeCustomer.id
+        }
     }
 
-    // F5.5 Apply Reorder Prefill
+    // Apply reorder prefill when triggered from OrdersScreen
     LaunchedEffect(prefill?.nonce) {
         val p = prefill ?: return@LaunchedEffect
         if (customerAddresses.any { it.id == p.addressId }) {
@@ -101,6 +133,15 @@ fun HomeScreen(
         selectedMode = p.mode
         paymentMethodChoice = p.paymentMethod
         addAccessory = p.addAccessory
+
+        // Preserve previous depot selection if valid for the address's city
+        val targetAddress = snapshot.addresses.find { it.id == selectedAddressId }
+        val depotsInCity = snapshot.nodes.filter {
+            it.pickupEnabled && it.type != FulfilmentPointType.PLANT && it.city.equals(targetAddress?.city ?: "", ignoreCase = true)
+        }
+        if (p.mode == FulfilmentMode.PICKUP && p.pickupPointId != null && depotsInCity.any { it.id == p.pickupPointId }) {
+            selectedPickupNodeId = p.pickupPointId
+        }
         onPrefillConsumed()
     }
 
@@ -118,12 +159,12 @@ fun HomeScreen(
             isServiceable = false
         )
 
-    // F5.3 Pickup depots restricted to address city
+    // Depot pickup nodes restricted to the chosen delivery address's city
     val cityPickupNodes = snapshot.nodes.filter {
         it.pickupEnabled && it.type != FulfilmentPointType.PLANT && it.city.equals(activeAddress.city, ignoreCase = true)
     }
 
-    // Force PICKUP when address is not serviceable, and set valid pickup depot
+    // Enforce depot pickup whenever the address falls outside the serviceable delivery area
     LaunchedEffect(activeAddress.id, activeAddress.isServiceable, cityPickupNodes.size) {
         if (!activeAddress.isServiceable) {
             selectedMode = FulfilmentMode.PICKUP
@@ -133,11 +174,13 @@ fun HomeScreen(
         }
     }
 
-    // F5.1 Accessory price
-    val accessoryUnitPricePaisa = snapshot.currentPriceList.accessoryPaisa["SKU-REG-HOSE"] ?: 145000L
-    val accessoryPriceRupees = PricingEngine.roundToRupees(accessoryUnitPricePaisa)
+    // Accessory pricing calculation adhering to price list rounding rules
+    val rawAccessoryPaisa = snapshot.currentPriceList.accessoryPaisa["SKU-REG-HOSE"]
+    val accessoryPricePaisa = rawAccessoryPaisa?.let {
+        PricingEngine.roundToRupees(it, snapshot.currentPriceList.roundingRule)
+    }
 
-    // Unified pricing quote with PricingEngine
+    // Compute preview price quote with exact item breakdown
     val accessoriesList = if (addAccessory) listOf("SKU-REG-HOSE" to 1) else emptyList()
     val quote = remember(
         selectedSku,
@@ -178,58 +221,40 @@ fun HomeScreen(
                 else -> "Good Evening"
             }
 
-            Column(modifier = Modifier.padding(horizontal = 4.dp, vertical = 4.dp)) {
-                Text(
-                    text = "$greeting, ${activeCustomer.name.split(" ").first()} 👋",
-                    fontSize = 20.sp,
-                    fontWeight = FontWeight.Bold,
-                    color = BlueGasDark
-                )
-                Text(
-                    text = "LPG delivered to your doorstep",
-                    fontSize = 12.sp,
-                    color = Color(0xFF64748B)
-                )
-            }
-        }
-
-        // Hero Card
-        item {
             Card(
-                colors = CardDefaults.cardColors(containerColor = BlueGasPrimary),
+                colors = CardDefaults.cardColors(containerColor = BlueGasDark),
                 shape = RoundedCornerShape(14.dp),
-                modifier = Modifier.fillMaxWidth().testTag("home_hero_card")
+                modifier = Modifier.fillMaxWidth().testTag("home_greeting_card")
             ) {
                 Row(
-                    modifier = Modifier.padding(14.dp),
+                    modifier = Modifier.padding(16.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Column(modifier = Modifier.weight(1f)) {
                         Text(
-                            text = "Order LPG in one tap",
-                            fontSize = 17.sp,
+                            text = "$greeting, ${activeCustomer.name.split(" ").firstOrNull() ?: activeCustomer.name}",
                             fontWeight = FontWeight.Bold,
+                            fontSize = 17.sp,
                             color = Color.White
                         )
-                        Spacer(modifier = Modifier.height(2.dp))
+                        Spacer(modifier = Modifier.height(4.dp))
                         Text(
-                            text = "Clear pricing, doorstep delivery and live tracking.",
+                            text = "Licensed LPG doorstep supply in Lahore pilot zone.",
                             fontSize = 11.sp,
-                            color = Color(0xFFDBEAFE),
-                            lineHeight = 15.sp
+                            color = Color(0xFF94A3B8)
                         )
                     }
                     Box(
                         modifier = Modifier
-                            .size(46.dp)
+                            .size(44.dp)
                             .clip(CircleShape)
-                            .background(Color(0x22FFFFFF)),
+                            .background(BlueGasPrimary.copy(alpha = 0.2f)),
                         contentAlignment = Alignment.Center
                     ) {
                         Icon(
                             imageVector = Icons.Default.LocalFireDepartment,
                             contentDescription = null,
-                            tint = Color.White,
+                            tint = BlueGasPrimary,
                             modifier = Modifier.size(26.dp)
                         )
                     }
@@ -237,37 +262,113 @@ fun HomeScreen(
             }
         }
 
-        // F5.1 Order Type Selector: 2 options only
+        // Active Order Quick-Track Card
+        val inFlightOrders = snapshot.orders.filter {
+            it.customerId == activeCustomer.id &&
+                (it.status == OrderStatus.ORD_DISP || it.status == OrderStatus.ORD_ATHO || it.status == OrderStatus.ORD_PREP)
+        }
+        if (inFlightOrders.isNotEmpty()) {
+            item {
+                val liveOrder = inFlightOrders.first()
+                Card(
+                    colors = CardDefaults.cardColors(containerColor = Color(0xFFF0FDF4)),
+                    shape = RoundedCornerShape(12.dp),
+                    border = BorderStroke(1.dp, Color(0xFF86EFAC)),
+                    modifier = Modifier.fillMaxWidth().testTag("active_order_tracking_banner")
+                ) {
+                    Row(
+                        modifier = Modifier.padding(12.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
+                            Box(
+                                modifier = Modifier
+                                    .size(36.dp)
+                                    .clip(CircleShape)
+                                    .background(Color(0xFF22C55E)),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(Icons.Default.LocalShipping, contentDescription = null, tint = Color.White, modifier = Modifier.size(20.dp))
+                            }
+                            Spacer(modifier = Modifier.width(10.dp))
+                            Column {
+                                Text(
+                                    text = "Order ${liveOrder.id} is ${liveOrder.status.customerLabel(liveOrder.fulfilmentMode)}",
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 12.sp,
+                                    color = Color(0xFF14532D)
+                                )
+                                Text(
+                                    text = "Tap to track live rider & handover PIN",
+                                    fontSize = 10.sp,
+                                    color = Color(0xFF166534)
+                                )
+                            }
+                        }
+                        Button(
+                            onClick = { onTrackOrder(liveOrder.id) },
+                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF16A34A)),
+                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
+                            modifier = Modifier.height(32.dp).testTag("track_now_home_button")
+                        ) {
+                            Text("Track", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                        }
+                    }
+                }
+            }
+        }
+
+        // Section 1: Order Requirement
         item {
             Card(
                 colors = CardDefaults.cardColors(containerColor = Color.White),
-                shape = RoundedCornerShape(12.dp),
+                shape = RoundedCornerShape(14.dp),
                 border = BorderStroke(1.dp, Color(0xFFE2E8F0)),
                 modifier = Modifier.fillMaxWidth().testTag("order_type_selector_card")
             ) {
-                Column(modifier = Modifier.padding(12.dp)) {
+                Column(modifier = Modifier.padding(14.dp)) {
                     Text(
-                        text = "What do you need?",
+                        text = "1. What do you need?",
                         fontWeight = FontWeight.Bold,
                         fontSize = 13.sp,
-                        color = BlueGasDark
+                        color = Color(0xFF0F172A)
                     )
-                    Spacer(modifier = Modifier.height(8.dp))
-                    SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth()) {
-                        val types = listOf(
-                            Triple("Refill (empty exchange)", OrderType.REFILL_EXCHANGE, "order_type_refill"),
-                            Triple("New cylinder", OrderType.NEW_CYLINDER, "order_type_new")
+                    Spacer(modifier = Modifier.height(10.dp))
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        val isRefill = orderType == OrderType.REFILL_EXCHANGE
+                        FilterChip(
+                            selected = isRefill,
+                            onClick = { orderType = OrderType.REFILL_EXCHANGE },
+                            label = { Text("Refill (empty exchange)", fontSize = 11.sp) },
+                            leadingIcon = if (isRefill) {
+                                { Icon(Icons.Default.Check, contentDescription = null, modifier = Modifier.size(14.dp)) }
+                            } else null,
+                            colors = FilterChipDefaults.filterChipColors(
+                                selectedContainerColor = Color(0xFFDBEAFE),
+                                selectedLabelColor = BlueGasPrimary
+                            ),
+                            modifier = Modifier.weight(1f).testTag("order_type_refill_chip")
                         )
-                        types.forEachIndexed { index, (label, type, tag) ->
-                            SegmentedButton(
-                                selected = orderType == type,
-                                onClick = { orderType = type },
-                                shape = SegmentedButtonDefaults.itemShape(index = index, count = types.size),
-                                modifier = Modifier.testTag(tag)
-                            ) {
-                                Text(label, fontSize = 11.sp, maxLines = 1)
-                            }
-                        }
+
+                        val isNew = orderType == OrderType.NEW_CYLINDER
+                        FilterChip(
+                            selected = isNew,
+                            onClick = { orderType = OrderType.NEW_CYLINDER },
+                            label = { Text("New cylinder", fontSize = 11.sp) },
+                            leadingIcon = if (isNew) {
+                                { Icon(Icons.Default.Check, contentDescription = null, modifier = Modifier.size(14.dp)) }
+                            } else null,
+                            colors = FilterChipDefaults.filterChipColors(
+                                selectedContainerColor = Color(0xFFDBEAFE),
+                                selectedLabelColor = BlueGasPrimary
+                            ),
+                            modifier = Modifier.weight(1f).testTag("order_type_new_chip")
+                        )
                     }
 
                     Spacer(modifier = Modifier.height(8.dp))
@@ -275,7 +376,7 @@ fun HomeScreen(
                         OrderType.NEW_CYLINDER -> {
                             val modelNote = when (snapshot.settings.newCylinderModel) {
                                 NewCylinderModel.SOLD -> "You will own the cylinder"
-                                NewCylinderModel.DEPOSIT -> "Held against a refundable deposit — you don't own it"
+                                NewCylinderModel.DEPOSIT -> "Held against a security deposit — you don't own it"
                                 NewCylinderModel.LOAN -> "Loaned to you"
                             }
                             Row(
@@ -298,12 +399,10 @@ fun HomeScreen(
                             ) {
                                 DemoValuePill("Demo value · Q20")
                                 Text(
-                                    text = if (hasEmptyCylinderToExchange)
-                                        "Standard refill: I'll hand back an empty BLUE GAS cylinder at delivery."
-                                    else
-                                        "No empty cylinder to exchange.",
+                                    text = "Hand over an empty BLUE GAS cylinder at delivery",
                                     fontSize = 11.sp,
-                                    color = Color(0xFF475569)
+                                    color = Color(0xFF475569),
+                                    fontWeight = FontWeight.Medium
                                 )
                             }
                         }
@@ -313,199 +412,124 @@ fun HomeScreen(
             }
         }
 
-        // Delivery Address Card & Serviceability
+        // Section 1B: Cylinder Size Selection (Filtered to household cylinders)
         item {
             Card(
                 colors = CardDefaults.cardColors(containerColor = Color.White),
-                shape = RoundedCornerShape(12.dp),
+                shape = RoundedCornerShape(14.dp),
                 border = BorderStroke(1.dp, Color(0xFFE2E8F0)),
-                modifier = Modifier.fillMaxWidth().testTag("address_serviceability_card")
+                modifier = Modifier.fillMaxWidth().testTag("cylinder_size_selector_card")
             ) {
-                Column(modifier = Modifier.padding(12.dp)) {
+                Column(modifier = Modifier.padding(14.dp)) {
+                    Text(
+                        text = "Select Cylinder Size",
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 13.sp,
+                        color = Color(0xFF0F172A)
+                    )
+                    Spacer(modifier = Modifier.height(10.dp))
+
+                    val cylinderVariants = snapshot.productVariants.filter { it.isCylinder && it.isHouseholdApproved }
+
+                    cylinderVariants.forEach { pv ->
+                        val isSelected = selectedSku == pv.sku
+                        val basePricePaisa = PricingEngine.unitPricePublished(pv.sku, snapshot.currentPriceList)
+                        val depositPaisa = if (orderType == OrderType.NEW_CYLINDER) {
+                            PricingEngine.roundToRupees(snapshot.currentPriceList.depositPaisa[pv.sku] ?: 0L, snapshot.currentPriceList.roundingRule)
+                        } else 0L
+                        val lineTotal = basePricePaisa + depositPaisa
+
+                        Surface(
+                            shape = RoundedCornerShape(10.dp),
+                            border = BorderStroke(1.5.dp, if (isSelected) BlueGasPrimary else Color(0xFFE2E8F0)),
+                            color = if (isSelected) Color(0xFFF0F9FF) else Color.White,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(vertical = 4.dp)
+                                .clickable { selectedSku = pv.sku }
+                                .testTag("sku_option_${pv.sku}")
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(12.dp),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    RadioButton(
+                                        selected = isSelected,
+                                        onClick = { selectedSku = pv.sku },
+                                        colors = RadioButtonDefaults.colors(selectedColor = BlueGasPrimary)
+                                    )
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Column {
+                                        Text(
+                                            text = pv.name,
+                                            fontWeight = FontWeight.Bold,
+                                            fontSize = 13.sp,
+                                            color = Color(0xFF0F172A)
+                                        )
+                                        Text(
+                                            text = pv.description,
+                                            fontSize = 11.sp,
+                                            color = Color(0xFF64748B)
+                                        )
+                                    }
+                                }
+                                Text(
+                                    text = formatRupees(lineTotal),
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 13.sp,
+                                    color = BlueGasPrimary
+                                )
+                            }
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(10.dp))
+                    // Quantity Control
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
+                        Text(
+                            text = "Quantity (Cylinders)",
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            color = Color(0xFF334155)
+                        )
                         Row(verticalAlignment = Alignment.CenterVertically) {
-                            Icon(
-                                imageVector = Icons.Default.LocationOn,
-                                contentDescription = null,
-                                tint = if (activeAddress.isServiceable) BlueGasPrimary else Color(0xFFDC2626),
-                                modifier = Modifier.size(18.dp)
-                            )
-                            Spacer(modifier = Modifier.width(6.dp))
+                            FilledTonalIconButton(
+                                onClick = { if (quantity > 1) quantity-- },
+                                enabled = quantity > 1,
+                                modifier = Modifier.size(34.dp).testTag("decrease_quantity_button")
+                            ) {
+                                Icon(Icons.Default.Remove, contentDescription = "Decrease", modifier = Modifier.size(16.dp))
+                            }
                             Text(
-                                text = "Delivery Address & Service Area",
+                                text = quantity.toString(),
                                 fontWeight = FontWeight.Bold,
-                                fontSize = 13.sp
+                                fontSize = 15.sp,
+                                modifier = Modifier.padding(horizontal = 14.dp).testTag("quantity_text")
                             )
-                        }
-
-                        // Address Switcher if multiple
-                        if (customerAddresses.size > 1) {
-                            var showAddressMenu by remember { mutableStateOf(false) }
-                            Box {
-                                TextButton(
-                                    onClick = { showAddressMenu = true },
-                                    contentPadding = PaddingValues(horizontal = 6.dp, vertical = 2.dp)
-                                ) {
-                                    Text("Change", fontSize = 11.sp, color = BlueGasPrimary)
-                                }
-                                DropdownMenu(
-                                    expanded = showAddressMenu,
-                                    onDismissRequest = { showAddressMenu = false }
-                                ) {
-                                    customerAddresses.forEach { addr ->
-                                        DropdownMenuItem(
-                                            text = {
-                                                Column {
-                                                    Text("${addr.label} (${addr.city})", fontWeight = FontWeight.Bold, fontSize = 12.sp)
-                                                    Text(addr.street, fontSize = 10.sp, color = Color.Gray)
-                                                }
-                                            },
-                                            onClick = {
-                                                selectedAddressId = addr.id
-                                                showAddressMenu = false
-                                            }
-                                        )
-                                    }
-                                }
+                            FilledTonalIconButton(
+                                onClick = { if (quantity < snapshot.settings.maxQuantityPerOrder) quantity++ },
+                                enabled = quantity < snapshot.settings.maxQuantityPerOrder,
+                                modifier = Modifier.size(34.dp).testTag("increase_quantity_button")
+                            ) {
+                                Icon(Icons.Default.Add, contentDescription = "Increase", modifier = Modifier.size(16.dp))
                             }
                         }
                     }
-
-                    Spacer(modifier = Modifier.height(4.dp))
-                    Text(
-                        text = "${activeAddress.street}, ${activeAddress.area}, ${activeAddress.city}",
-                        fontSize = 12.sp,
-                        color = Color(0xFF334155),
-                        fontWeight = FontWeight.Medium
-                    )
-
-                    Spacer(modifier = Modifier.height(6.dp))
-                    Surface(
-                        color = if (activeAddress.isServiceable) Color(0xFFDCFCE7) else Color(0xFFFEE2E2),
-                        shape = RoundedCornerShape(6.dp),
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp)
-                        ) {
-                            Icon(
-                                imageVector = if (activeAddress.isServiceable) Icons.Default.CheckCircle else Icons.Default.Cancel,
-                                contentDescription = null,
-                                tint = if (activeAddress.isServiceable) Color(0xFF166534) else Color(0xFF991B1B),
-                                modifier = Modifier.size(14.dp)
-                            )
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Text(
-                                text = if (activeAddress.isServiceable)
-                                    "This area is in the delivery zone."
-                                else
-                                    "This address is outside the current delivery area. Depot pickup is available.",
-                                fontSize = 11.sp,
-                                fontWeight = FontWeight.SemiBold,
-                                color = if (activeAddress.isServiceable) Color(0xFF166534) else Color(0xFF991B1B),
-                                modifier = Modifier.weight(1f)
-                            )
-                        }
-                    }
                 }
             }
         }
 
-        // F5.1 Section 1: Choose Cylinder Size (Cylinders only)
-        item {
-            Column {
-                Text(
-                    text = "1. Select Cylinder Size",
-                    fontWeight = FontWeight.Bold,
-                    fontSize = 14.sp,
-                    color = BlueGasDark
-                )
-                Text(
-                    text = "Approved household cylinders",
-                    fontSize = 11.sp,
-                    color = Color(0xFF64748B)
-                )
-            }
-        }
-
-        val approvedCylinders = snapshot.productVariants.filter { it.isCylinder && it.isHouseholdApproved }
-        items(approvedCylinders) { pv ->
-            val pubPrice = PricingEngine.unitPricePublished(pv.sku, snapshot.currentPriceList)
-            val isSelected = pv.sku == selectedSku
-
-            Card(
-                colors = CardDefaults.cardColors(
-                    containerColor = if (isSelected) Color(0xFFEFF6FF) else Color.White
-                ),
-                border = BorderStroke(
-                    if (isSelected) 2.dp else 1.dp,
-                    if (isSelected) BlueGasPrimary else Color(0xFFE2E8F0)
-                ),
-                shape = RoundedCornerShape(12.dp),
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clickable { selectedSku = pv.sku }
-                    .testTag("product_item_${pv.sku}")
-            ) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    modifier = Modifier.padding(12.dp)
-                ) {
-                    RadioButton(
-                        selected = isSelected,
-                        onClick = { selectedSku = pv.sku },
-                        colors = RadioButtonDefaults.colors(selectedColor = BlueGasPrimary)
-                    )
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Column(modifier = Modifier.weight(1f)) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            Text(
-                                text = pv.name,
-                                fontWeight = FontWeight.Bold,
-                                fontSize = 13.sp,
-                                color = Color(0xFF1E293B)
-                            )
-                            Text(
-                                text = formatRupees(pubPrice),
-                                fontWeight = FontWeight.Bold,
-                                fontSize = 13.sp,
-                                color = BlueGasPrimary
-                            )
-                        }
-                        Text(
-                            text = pv.description,
-                            fontSize = 11.sp,
-                            color = Color(0xFF64748B)
-                        )
-                        if (pv.cylinderSizeKg != null) {
-                            Text(
-                                text = "Size: ${pv.cylinderSizeKg} kg",
-                                fontSize = 10.sp,
-                                fontWeight = FontWeight.Medium,
-                                color = Color(0xFF047857)
-                            )
-                        }
-                    }
-                }
-            }
-        }
-
-        // F5.1 Optional Add-on Card: Regulator & Hose
-        if (accessoryUnitPricePaisa > 0L) {
+        // Optional Accessory Add-on (regulator & hose)
+        if (accessoryPricePaisa != null) {
             item {
                 Card(
-                    colors = CardDefaults.cardColors(
-                        containerColor = if (addAccessory) Color(0xFFEFF6FF) else Color.White
-                    ),
+                    colors = CardDefaults.cardColors(containerColor = if (addAccessory) Color(0xFFEFF6FF) else Color.White),
                     shape = RoundedCornerShape(12.dp),
                     border = BorderStroke(1.dp, if (addAccessory) BlueGasPrimary else Color(0xFFE2E8F0)),
                     modifier = Modifier.fillMaxWidth().testTag("accessory_addon_card")
@@ -526,7 +550,7 @@ fun HomeScreen(
                         Spacer(modifier = Modifier.width(8.dp))
                         Column(modifier = Modifier.weight(1f)) {
                             Text(
-                                text = "Add regulator & hose (+${formatRupees(accessoryPriceRupees * 100L)})",
+                                text = "Add regulator & hose (+${formatRupees(accessoryPricePaisa)})",
                                 fontWeight = FontWeight.Bold,
                                 fontSize = 13.sp,
                                 color = Color(0xFF1E293B)
@@ -548,98 +572,178 @@ fun HomeScreen(
                 Text(
                     text = "2. Fulfilment Mode",
                     fontWeight = FontWeight.Bold,
-                    fontSize = 14.sp,
-                    color = BlueGasDark
+                    fontSize = 13.sp,
+                    color = Color(0xFF0F172A)
                 )
-                Spacer(modifier = Modifier.height(6.dp))
+                Spacer(modifier = Modifier.height(8.dp))
+
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    val deliveryFeeLabel = formatRupees(snapshot.currentPriceList.deliveryFeePaisa)
+                    val isDelivery = selectedMode == FulfilmentMode.DELIVERY
                     FilterChip(
-                        selected = selectedMode == FulfilmentMode.DELIVERY,
+                        selected = isDelivery,
                         onClick = {
                             if (activeAddress.isServiceable) {
                                 selectedMode = FulfilmentMode.DELIVERY
                             }
                         },
                         enabled = activeAddress.isServiceable,
-                        label = { Text("Doorstep delivery (+$deliveryFeeLabel)", fontSize = 11.sp) },
+                        label = { Text("Doorstep Delivery", fontSize = 11.sp) },
                         leadingIcon = {
-                            Icon(Icons.Default.DeliveryDining, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Icon(Icons.Default.LocalShipping, contentDescription = null, modifier = Modifier.size(14.dp))
                         },
+                        colors = FilterChipDefaults.filterChipColors(
+                            selectedContainerColor = Color(0xFFDBEAFE),
+                            selectedLabelColor = BlueGasPrimary
+                        ),
                         modifier = Modifier.weight(1f).testTag("mode_delivery_chip")
                     )
+
+                    val isPickup = selectedMode == FulfilmentMode.PICKUP
                     FilterChip(
-                        selected = selectedMode == FulfilmentMode.PICKUP,
+                        selected = isPickup,
                         onClick = { selectedMode = FulfilmentMode.PICKUP },
-                        label = { Text("Depot pickup (free)", fontSize = 11.sp) },
+                        label = { Text("Depot Pickup", fontSize = 11.sp) },
                         leadingIcon = {
-                            Icon(Icons.Default.Store, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Icon(Icons.Default.Storefront, contentDescription = null, modifier = Modifier.size(14.dp))
                         },
+                        colors = FilterChipDefaults.filterChipColors(
+                            selectedContainerColor = Color(0xFFDBEAFE),
+                            selectedLabelColor = BlueGasPrimary
+                        ),
                         modifier = Modifier.weight(1f).testTag("mode_pickup_chip")
                     )
+                }
+
+                if (!activeAddress.isServiceable) {
+                    Spacer(modifier = Modifier.height(6.dp))
+                    Surface(
+                        color = Color(0xFFFEF2F2),
+                        shape = RoundedCornerShape(6.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Row(modifier = Modifier.padding(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Icon(Icons.Default.Info, contentDescription = null, tint = Color(0xFFDC2626), modifier = Modifier.size(14.dp))
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text(
+                                text = "This address is outside the current delivery area. Depot pickup is available.",
+                                fontSize = 10.sp,
+                                color = Color(0xFF991B1B)
+                            )
+                        }
+                    }
                 }
             }
         }
 
-        // F5.3 Depot Picker (when PICKUP is selected)
-        if (selectedMode == FulfilmentMode.PICKUP) {
-            item {
+        // Section 2B: Delivery Address / Depot Selection
+        item {
+            if (selectedMode == FulfilmentMode.DELIVERY) {
                 Card(
                     colors = CardDefaults.cardColors(containerColor = Color.White),
                     shape = RoundedCornerShape(12.dp),
                     border = BorderStroke(1.dp, Color(0xFFE2E8F0)),
-                    modifier = Modifier.fillMaxWidth().testTag("depot_picker_card")
+                    modifier = Modifier.fillMaxWidth().testTag("home_delivery_address_card")
                 ) {
                     Column(modifier = Modifier.padding(12.dp)) {
                         Text(
-                            text = "Select Pickup Depot (${activeAddress.city})",
+                            text = "Delivery Address",
                             fontWeight = FontWeight.Bold,
-                            fontSize = 13.sp,
-                            color = BlueGasDark
+                            fontSize = 12.sp,
+                            color = Color(0xFF0F172A)
                         )
-                        Spacer(modifier = Modifier.height(8.dp))
+                        Spacer(modifier = Modifier.height(6.dp))
+
+                        customerAddresses.forEach { addr ->
+                            val isChosen = addr.id == selectedAddressId
+                            Surface(
+                                shape = RoundedCornerShape(8.dp),
+                                border = BorderStroke(1.dp, if (isChosen) BlueGasPrimary else Color(0xFFE2E8F0)),
+                                color = if (isChosen) Color(0xFFF0F9FF) else Color.White,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(vertical = 3.dp)
+                                    .clickable { selectedAddressId = addr.id }
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(8.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    RadioButton(
+                                        selected = isChosen,
+                                        onClick = { selectedAddressId = addr.id },
+                                        colors = RadioButtonDefaults.colors(selectedColor = BlueGasPrimary)
+                                    )
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Text(addr.label, fontWeight = FontWeight.Bold, fontSize = 11.sp)
+                                        Text("${addr.street}, ${addr.area}, ${addr.city}", fontSize = 10.sp, color = Color(0xFF64748B))
+                                    }
+                                    if (addr.isServiceable) {
+                                        Surface(color = Color(0xFFDCFCE7), shape = RoundedCornerShape(4.dp)) {
+                                            Text("Active", fontSize = 9.sp, color = Color(0xFF166534), modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp))
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            } else {
+                // Depot Pickup choice card
+                Card(
+                    colors = CardDefaults.cardColors(containerColor = Color.White),
+                    shape = RoundedCornerShape(12.dp),
+                    border = BorderStroke(1.dp, Color(0xFFE2E8F0)),
+                    modifier = Modifier.fillMaxWidth().testTag("home_pickup_depot_card")
+                ) {
+                    Column(modifier = Modifier.padding(12.dp)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(
+                                text = "Select Pickup Depot (${activeAddress.city})",
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 12.sp,
+                                color = Color(0xFF0F172A)
+                            )
+                            Spacer(modifier = Modifier.width(6.dp))
+                            DemoValuePill("Demo value · Q14")
+                        }
+                        Spacer(modifier = Modifier.height(6.dp))
 
                         if (cityPickupNodes.isEmpty()) {
                             Text(
                                 text = "No depot is available in your city yet.",
-                                fontSize = 12.sp,
-                                color = Color(0xFFDC2626),
-                                fontWeight = FontWeight.SemiBold
+                                fontSize = 11.sp,
+                                color = Color(0xFFDC2626)
                             )
                         } else {
-                            cityPickupNodes.forEach { depot ->
-                                val isDepotSelected = depot.id == selectedPickupNodeId
+                            cityPickupNodes.forEach { node ->
+                                val isChosen = node.id == selectedPickupNodeId
                                 Surface(
-                                    color = if (isDepotSelected) Color(0xFFEFF6FF) else Color(0xFFF8FAFC),
                                     shape = RoundedCornerShape(8.dp),
-                                    border = BorderStroke(1.dp, if (isDepotSelected) BlueGasPrimary else Color(0xFFE2E8F0)),
+                                    border = BorderStroke(1.dp, if (isChosen) BlueGasPrimary else Color(0xFFE2E8F0)),
+                                    color = if (isChosen) Color(0xFFF0F9FF) else Color.White,
                                     modifier = Modifier
                                         .fillMaxWidth()
                                         .padding(vertical = 3.dp)
-                                        .clickable { selectedPickupNodeId = depot.id }
-                                        .testTag("depot_option_${depot.id}")
+                                        .clickable { selectedPickupNodeId = node.id }
                                 ) {
                                     Row(
-                                        modifier = Modifier.padding(10.dp),
+                                        modifier = Modifier.padding(8.dp),
                                         verticalAlignment = Alignment.CenterVertically
                                     ) {
                                         RadioButton(
-                                            selected = isDepotSelected,
-                                            onClick = { selectedPickupNodeId = depot.id },
+                                            selected = isChosen,
+                                            onClick = { selectedPickupNodeId = node.id },
                                             colors = RadioButtonDefaults.colors(selectedColor = BlueGasPrimary)
                                         )
                                         Spacer(modifier = Modifier.width(6.dp))
                                         Column(modifier = Modifier.weight(1f)) {
-                                            Text(depot.name, fontWeight = FontWeight.Bold, fontSize = 12.sp, color = Color(0xFF0F172A))
-                                            Text(depot.address, fontSize = 11.sp, color = Color(0xFF64748B))
-                                            Spacer(modifier = Modifier.height(2.dp))
-                                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                                Text("Opening hours: ", fontSize = 10.sp, color = Color.Gray)
-                                                DemoValuePill("Demo value · Q14")
-                                            }
+                                            Text(node.name, fontWeight = FontWeight.Bold, fontSize = 11.sp)
+                                            Text(node.address, fontSize = 10.sp, color = Color(0xFF64748B))
+                                            Text("Opening hours: Demo value · Q14", fontSize = 9.sp, color = Color(0xFF94A3B8))
                                         }
                                     }
                                 }
@@ -650,112 +754,117 @@ fun HomeScreen(
             }
         }
 
-        // Section 3: Quantity & Payment Method
+        // Section 3: Payment Method
         item {
             Card(
                 colors = CardDefaults.cardColors(containerColor = Color.White),
-                shape = RoundedCornerShape(12.dp),
+                shape = RoundedCornerShape(14.dp),
                 border = BorderStroke(1.dp, Color(0xFFE2E8F0)),
-                modifier = Modifier.fillMaxWidth()
+                modifier = Modifier.fillMaxWidth().testTag("payment_method_card")
             ) {
-                Column(modifier = Modifier.padding(12.dp)) {
-                    val maxQty = snapshot.settings.maxQuantityPerOrder
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Column {
-                            Text("Quantity", fontWeight = FontWeight.Bold, fontSize = 13.sp)
-                            Text("Max $maxQty per order", fontSize = 10.sp, color = Color.Gray)
-                        }
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(8.dp)
-                        ) {
-                            FilledTonalIconButton(
-                                onClick = { if (quantity > 1) quantity-- },
-                                enabled = quantity > 1,
-                                modifier = Modifier.size(32.dp)
-                            ) {
-                                Icon(Icons.Default.Remove, contentDescription = "Decrease", modifier = Modifier.size(16.dp))
-                            }
-                            Text(
-                                text = quantity.toString(),
-                                fontWeight = FontWeight.Bold,
-                                fontSize = 15.sp,
-                                modifier = Modifier.testTag("order_quantity_text")
-                            )
-                            FilledTonalIconButton(
-                                onClick = { if (quantity < maxQty) quantity++ },
-                                enabled = quantity < maxQty,
-                                modifier = Modifier.size(32.dp)
-                            ) {
-                                Icon(Icons.Default.Add, contentDescription = "Increase", modifier = Modifier.size(16.dp))
-                            }
-                        }
-                    }
+                Column(modifier = Modifier.padding(14.dp)) {
+                    Text(
+                        text = "3. Payment Method",
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 13.sp,
+                        color = Color(0xFF0F172A)
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
 
-                    HorizontalDivider(modifier = Modifier.padding(vertical = 10.dp))
-
-                    Text("Payment Method", fontWeight = FontWeight.Bold, fontSize = 13.sp)
-                    Spacer(modifier = Modifier.height(6.dp))
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
+                        val isOnline = paymentMethodChoice == PaymentMethod.ONLINE_HOSTED
                         FilterChip(
-                            selected = paymentMethodChoice == PaymentMethod.ONLINE_HOSTED,
+                            selected = isOnline,
                             onClick = { paymentMethodChoice = PaymentMethod.ONLINE_HOSTED },
-                            label = { Text("Online payment", fontSize = 11.sp) },
-                            leadingIcon = {
-                                Icon(Icons.Default.CreditCard, contentDescription = null, modifier = Modifier.size(14.dp))
-                            },
+                            label = { Text("Online Payment", fontSize = 11.sp) },
+                            leadingIcon = { Icon(Icons.Default.CreditCard, contentDescription = null, modifier = Modifier.size(14.dp)) },
+                            colors = FilterChipDefaults.filterChipColors(
+                                selectedContainerColor = Color(0xFFDBEAFE),
+                                selectedLabelColor = BlueGasPrimary
+                            ),
                             modifier = Modifier.weight(1f).testTag("payment_online_chip")
                         )
+
+                        val isCod = paymentMethodChoice == PaymentMethod.CASH_ON_DELIVERY
                         FilterChip(
-                            selected = paymentMethodChoice == PaymentMethod.CASH_ON_DELIVERY,
+                            selected = isCod,
                             onClick = { paymentMethodChoice = PaymentMethod.CASH_ON_DELIVERY },
-                            label = { Text("Cash on delivery", fontSize = 11.sp) },
-                            leadingIcon = {
-                                Icon(Icons.Default.Payments, contentDescription = null, modifier = Modifier.size(14.dp))
-                            },
+                            label = { Text("Cash on Delivery", fontSize = 11.sp) },
+                            leadingIcon = { Icon(Icons.Default.Money, contentDescription = null, modifier = Modifier.size(14.dp)) },
+                            colors = FilterChipDefaults.filterChipColors(
+                                selectedContainerColor = Color(0xFFDBEAFE),
+                                selectedLabelColor = BlueGasPrimary
+                            ),
                             modifier = Modifier.weight(1f).testTag("payment_cod_chip")
                         )
                     }
+
+                    Spacer(modifier = Modifier.height(6.dp))
+                    Text(
+                        text = if (paymentMethodChoice == PaymentMethod.ONLINE_HOSTED) {
+                            "Hold expires in 15 mins if unpaid. Simulated pilot gateway."
+                        } else {
+                            "Pay in cash directly to rider at doorstep upon delivery."
+                        },
+                        fontSize = 10.sp,
+                        color = Color(0xFF64748B)
+                    )
                 }
             }
         }
 
-        // Section 4: Quotation Breakdown
+        // Section 4: Price Summary & Breakdown
         item {
             Card(
-                colors = CardDefaults.cardColors(containerColor = Color(0xFFF1F5F9)),
-                shape = RoundedCornerShape(12.dp),
+                colors = CardDefaults.cardColors(containerColor = Color.White),
+                shape = RoundedCornerShape(14.dp),
                 border = BorderStroke(1.dp, Color(0xFFCBD5E1)),
-                modifier = Modifier.fillMaxWidth().testTag("quotation_card")
+                modifier = Modifier.fillMaxWidth().testTag("order_price_summary_card")
             ) {
-                Column(modifier = Modifier.padding(12.dp)) {
+                Column(modifier = Modifier.padding(14.dp)) {
                     Text(
-                        text = "Itemized Quotation Breakdown",
+                        text = "Price Summary",
                         fontWeight = FontWeight.Bold,
                         fontSize = 13.sp,
-                        color = BlueGasDark
+                        color = Color(0xFF0F172A)
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
+
+                    QuoteLineRow(
+                        label = "LPG Refill Gas (${quantity}x)",
+                        value = formatRupees(quote.subtotalPaisa)
                     )
 
-                    HorizontalDivider(modifier = Modifier.padding(vertical = 6.dp))
-
-                    quote.lines.forEach { line ->
-                        if (line.lineType != "DEPOSIT") {
-                            QuoteLineRow("${line.quantity}x ${line.productName}", formatRupees(line.subtotalPaisa))
-                        }
+                    if (addAccessory && accessoryPricePaisa != null) {
+                        QuoteLineRow(
+                            label = "Regulator & Hose Add-on",
+                            value = formatRupees(accessoryPricePaisa)
+                        )
                     }
 
                     if (selectedMode == FulfilmentMode.DELIVERY) {
-                        QuoteLineRow("Fulfilment / Delivery Fee", formatRupees(quote.deliveryFeePaisa))
+                        QuoteLineRow(
+                            label = "Doorstep Delivery Fee",
+                            value = formatRupees(quote.deliveryFeePaisa)
+                        )
                     }
 
-                    QuoteLineRow("Digital Platform Convenience Fee", formatRupees(quote.platformFeePaisa))
+                    if (quote.platformFeePaisa > 0) {
+                        QuoteLineRow(
+                            label = "Platform Convenience Fee",
+                            value = formatRupees(quote.platformFeePaisa)
+                        )
+                    }
+
+                    if (quote.taxPaisa > 0) {
+                        QuoteLineRow(
+                            label = "Sales Tax (GST)",
+                            value = formatRupees(quote.taxPaisa)
+                        )
+                    }
 
                     if (quote.depositTotalPaisa > 0) {
                         QuoteLineRow(
@@ -770,7 +879,7 @@ fun HomeScreen(
                             modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)
                         ) {
                             Text(
-                                text = "Security deposit — refundable per BLUE GAS policy (Q03). A deposit does not make you the owner.",
+                                text = "Security deposit — refund terms follow the BLUE GAS deposit policy (Q03). A deposit does not make you the owner.",
                                 fontSize = 9.sp,
                                 color = Color(0xFF92400E),
                                 modifier = Modifier.padding(6.dp),
@@ -788,13 +897,6 @@ fun HomeScreen(
                         )
                     }
 
-                    val gstPct = snapshot.taxConfig.gstBps / 100.0
-                    QuoteLineRow("Sales Tax ($gstPct%)", formatRupees(quote.gstPaisa))
-                    if (quote.furtherTaxPaisa > 0) {
-                        val fTaxPct = snapshot.taxConfig.furtherTaxBps / 100.0
-                        QuoteLineRow("Further Tax ($fTaxPct%)", formatRupees(quote.furtherTaxPaisa))
-                    }
-
                     HorizontalDivider(modifier = Modifier.padding(vertical = 6.dp))
 
                     Row(
@@ -802,31 +904,24 @@ fun HomeScreen(
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Column {
-                            Text("Total Payable Amount", fontWeight = FontWeight.Bold, fontSize = 13.sp)
-                            Text("Inclusive of taxes and fees", fontSize = 10.sp, color = Color.Gray)
-                        }
+                        Text(
+                            text = "Total Payable",
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 14.sp,
+                            color = Color(0xFF0F172A)
+                        )
                         Text(
                             text = formatRupees(quote.totalAmountPaisa),
-                            fontWeight = FontWeight.Bold,
-                            fontSize = 16.sp,
-                            color = BlueGasPrimary,
-                            modifier = Modifier.testTag("total_quotation_amount")
+                            fontWeight = FontWeight.Black,
+                            fontSize = 17.sp,
+                            color = BlueGasPrimary
                         )
                     }
-
-                    Spacer(modifier = Modifier.height(4.dp))
-                    Text(
-                        text = "Prices, fees and tax are demo settings pending client decisions (Q03, Q04, Q22, Q24).",
-                        fontSize = 9.sp,
-                        color = Color(0xFF64748B),
-                        lineHeight = 12.sp
-                    )
                 }
             }
         }
 
-        // Section 5: Place Order CTA
+        // Section 5: Place Order Button with double-tap protection
         item {
             val isPickupValid = selectedMode == FulfilmentMode.PICKUP && cityPickupNodes.isNotEmpty() && selectedPickupNodeId.isNotEmpty()
             val isCheckoutAllowed = (selectedMode == FulfilmentMode.DELIVERY && activeAddress.isServiceable) || isPickupValid
@@ -834,9 +929,6 @@ fun HomeScreen(
             Column(modifier = Modifier.fillMaxWidth()) {
                 Button(
                     onClick = {
-                        if (placing) return@Button
-                        placing = true
-
                         val (newOrder, err) = store.createOrder(
                             customerId = activeCustomer.id,
                             addressId = activeAddress.id,
@@ -849,7 +941,6 @@ fun HomeScreen(
                             pickupPointId = if (selectedMode == FulfilmentMode.PICKUP) selectedPickupNodeId else null,
                             accessories = accessoriesList
                         )
-                        placing = false
 
                         if (err != null) {
                             onActionMessage(err, true)
@@ -861,7 +952,7 @@ fun HomeScreen(
                                 createdOrderIdForPayment = newOrder.id
                                 showPaymentGatewayDialog = true
                             } else {
-                                // COD: confirm payment and advance order
+                                // COD advances directly to Confirmed status
                                 val (codOk, codMsg) = store.confirmPaymentAndAdvance(newOrder.id, actor = activeCustomer.id)
                                 onActionMessage(codMsg, !codOk)
                                 onNavigateToOrders()
@@ -873,19 +964,15 @@ fun HomeScreen(
                         .height(48.dp)
                         .testTag("confirm_place_order_button"),
                     colors = ButtonDefaults.buttonColors(containerColor = BlueGasPrimary),
-                    enabled = isCheckoutAllowed && !placing
+                    enabled = isCheckoutAllowed && !showPaymentGatewayDialog
                 ) {
-                    if (placing) {
-                        CircularProgressIndicator(modifier = Modifier.size(20.dp), color = Color.White)
-                    } else {
-                        Icon(Icons.Default.ShoppingCartCheckout, contentDescription = null)
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text(
-                            text = "Confirm & Place Order (${formatRupees(quote.totalAmountPaisa)})",
-                            fontWeight = FontWeight.Bold,
-                            fontSize = 14.sp
-                        )
-                    }
+                    Icon(Icons.Default.ShoppingCartCheckout, contentDescription = null)
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        text = "Confirm & Place Order (${formatRupees(quote.totalAmountPaisa)})",
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 14.sp
+                    )
                 }
 
                 if (!isCheckoutAllowed) {
@@ -894,28 +981,29 @@ fun HomeScreen(
                     } else {
                         "Selected address is outside our delivery area. Switch to depot pickup above to proceed."
                     }
+                    Spacer(modifier = Modifier.height(4.dp))
                     Text(
                         text = notAllowedText,
-                        fontSize = 11.sp,
-                        color = Color(0xFFDC2626),
-                        modifier = Modifier.padding(top = 4.dp)
+                        fontSize = 10.sp,
+                        color = Color(0xFFDC2626)
                     )
                 }
             }
         }
 
         item {
-            Spacer(modifier = Modifier.height(16.dp))
+            Spacer(modifier = Modifier.height(24.dp))
         }
     }
 
-    // F1.2 Shared Demo Payment Dialog
+    // Shared Demo Payment Dialog
     if (showPaymentGatewayDialog && createdOrderIdForPayment != null) {
         DemoPaymentDialog(
             orderId = createdOrderIdForPayment!!,
+            payableLabel = formatRupees(quote.totalAmountPaisa),
             store = store,
-            onResult = { msg, ok ->
-                onActionMessage(msg, !ok)
+            onResult = { msg, isError ->
+                onActionMessage(msg, isError)
                 showPaymentGatewayDialog = false
                 onNavigateToOrders()
             },
@@ -927,6 +1015,9 @@ fun HomeScreen(
     }
 }
 
+/**
+ * Clean key-value row for the order pricing breakdown card.
+ */
 @Composable
 private fun QuoteLineRow(
     label: String,

@@ -1,12 +1,38 @@
+/**
+ * Data store operations and state transitions specific to the customer application.
+ *
+ * Implements:
+ * - Address book modifications, default address resolution, and zone serviceability tagging
+ * - Customer post-delivery star ratings and feedback logging
+ * - Customer notification read state toggling
+ * - Depot pickup counter arrival signaling with idempotent notification safeguards
+ * - Safety concern reporting linking into support ticketing and the HSE incident response engine
+ * - Customer persona switching for pilot testing and identity simulation
+ *
+ * Modifies: [BlueGasStore.addresses], [BlueGasStore.orders], [BlueGasStore.notifications],
+ *           [BlueGasStore.supportCases], [BlueGasStore.activeCustomerId]
+ */
 package com.example.bluegas.data
 
 import com.example.bluegas.model.*
 import java.util.UUID
 
 /**
- * Customer App Store Operations
+ * Adds a new delivery address for a customer.
+ *
+ * Checks delivery zone serviceability against the system zone registry.
+ * If [makeDefault] is true or if this is the customer's first address, sets it as default
+ * and clears default status from any existing addresses.
+ *
+ * @param customerId Target customer ID.
+ * @param label Friendly name (e.g., "Home", "Office").
+ * @param street Street address line or house number.
+ * @param area Sector, neighborhood, or phase.
+ * @param city City name (e.g., "Lahore", "Islamabad").
+ * @param zoneId Operational service zone identifier.
+ * @param makeDefault Whether to designate this address as the customer's default.
+ * @return Pair of success flag and new address ID (or error message if validation failed).
  */
-
 fun BlueGasStore.addAddress(
     customerId: String,
     label: String,
@@ -27,7 +53,7 @@ fun BlueGasStore.addAddress(
     val newId = "ADDR-" + UUID.randomUUID().toString().take(6).uppercase()
 
     if (makeDefault) {
-        addresses.filter { it.customerId == customerId }.forEachIndexed { idx, addr ->
+        addresses.filter { it.customerId == customerId }.forEachIndexed { _, addr ->
             if (addr.isDefault) {
                 val realIdx = addresses.indexOf(addr)
                 if (realIdx != -1) {
@@ -56,6 +82,15 @@ fun BlueGasStore.addAddress(
     return Pair(true, newId)
 }
 
+/**
+ * Designates an existing customer address as their default delivery address.
+ *
+ * Clears default designation from all other addresses owned by the customer.
+ *
+ * @param customerId Customer ID owning the address.
+ * @param addressId Unique address identifier.
+ * @return Pair of success boolean and confirmation or error message.
+ */
 fun BlueGasStore.setDefaultAddress(
     customerId: String,
     addressId: String
@@ -75,6 +110,17 @@ fun BlueGasStore.setDefaultAddress(
     return Pair(true, "Default address updated.")
 }
 
+/**
+ * Records customer star rating and feedback comment for a completed order.
+ *
+ * Verifies that the order has reached terminal completion ([OrderStatus.ORD_COMP])
+ * and has not been rated previously.
+ *
+ * @param orderId Target order ID.
+ * @param stars Rating score from 1 to 5.
+ * @param comment Optional text commentary describing the delivery experience.
+ * @return Pair of success boolean and customer confirmation message.
+ */
 fun BlueGasStore.rateOrder(
     orderId: String,
     stars: Int,
@@ -103,6 +149,12 @@ fun BlueGasStore.rateOrder(
     return Pair(true, "Thank you for rating your delivery!")
 }
 
+/**
+ * Marks an unread notification as read for the active surface.
+ *
+ * @param notificationId Unique notification identifier.
+ * @return Pair of success boolean and status string.
+ */
 fun BlueGasStore.markNotificationRead(
     notificationId: String
 ): Pair<Boolean, String> {
@@ -116,11 +168,22 @@ fun BlueGasStore.markNotificationRead(
     return Pair(true, "Notification marked as read.")
 }
 
+/**
+ * Signals to depot counter staff that the customer has arrived to collect a pickup order.
+ *
+ * Implements idempotent arrival signaling: validates order is [OrderStatus.ORD_RDYPU],
+ * and alerts staff without prematurely advancing order state (handover occurs when staff
+ * verifies the customer PIN).
+ *
+ * @param orderId Identifier of the pickup order.
+ * @return Pair of success boolean and instructions for the customer.
+ */
 fun BlueGasStore.notifyPickupArrival(orderId: String): Pair<Boolean, String> {
     val order = orders.find { it.id == orderId } ?: return Pair(false, "Order not found.")
     if (order.status != OrderStatus.ORD_RDYPU) {
         return Pair(false, "Order is not ready for pickup.")
     }
+    // Prevent duplicate alerts if the customer taps arrival multiple times
     val alreadyNotified = notifications.any {
         it.orderId == orderId && it.title == "Customer Arrived for Pickup"
     }
@@ -147,6 +210,17 @@ fun BlueGasStore.notifyPickupArrival(orderId: String): Pair<Boolean, String> {
     return Pair(true, "Arrival notified. Please show your PIN at the counter.")
 }
 
+/**
+ * Registers an emergency safety concern from a customer, creating a support case and HSE incident.
+ *
+ * Connects directly to the Level 7 HSE Incident escalation engine ([raiseIncident]).
+ * Relies on the incident manager to dispatch staff alerts, avoiding redundant duplicate notifications.
+ *
+ * @param customerId Reporting customer ID.
+ * @param description Detailed text of the hazard or safety concern.
+ * @param orderId Optional related order ID if the concern pertains to a specific delivery.
+ * @return Pair of success boolean and case ticket confirmation message.
+ */
 fun BlueGasStore.raiseSafetyConcern(
     customerId: String,
     description: String,
@@ -167,22 +241,8 @@ fun BlueGasStore.raiseSafetyConcern(
     )
     supportCases.add(newCase)
     logAudit("SupportCase", caseId, "SAFETY_CONCERN", customerId, AccountableRole.SUPPORT, "Safety concern reported: $description")
-    addNotification(
-        surface = AppSurface.STAFF,
-        title = "Safety Concern",
-        message = "Customer safety concern reported ($caseId): $description",
-        canonicalStatus = "SAFETY_CONCERN",
-        orderId = orderId,
-        staffRole = StaffSubRole.SAFETY_HSE
-    )
-    addNotification(
-        surface = AppSurface.STAFF,
-        title = "Safety Concern",
-        message = "Customer safety concern reported ($caseId): $description",
-        canonicalStatus = "SAFETY_CONCERN",
-        orderId = orderId,
-        staffRole = StaffSubRole.OPERATIONS
-    )
+
+    // Link into HSE incident management engine which publishes unified staff alert
     raiseIncident(
         source = "CUSTOMER_REPORT",
         description = description,
@@ -192,6 +252,12 @@ fun BlueGasStore.raiseSafetyConcern(
     return Pair(true, "Safety concern registered. Ticket: $caseId. Our safety team has been alerted.")
 }
 
+/**
+ * Switches the active customer identity across the application without reloading or losing state.
+ *
+ * @param customerId Target customer ID to switch to.
+ * @return Pair of success boolean and confirmation message with customer name.
+ */
 fun BlueGasStore.setActiveCustomer(customerId: String): Pair<Boolean, String> {
     val cust = customers.find { it.id == customerId }
         ?: return Pair(false, "Customer not found.")
@@ -199,4 +265,3 @@ fun BlueGasStore.setActiveCustomer(customerId: String): Pair<Boolean, String> {
     notifyChanged()
     return Pair(true, "Switched to ${cust.name}")
 }
-

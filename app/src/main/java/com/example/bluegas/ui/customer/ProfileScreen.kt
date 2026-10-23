@@ -1,3 +1,19 @@
+/**
+ * Customer profile management, cylinder holdings registry, addresses, and emergency safety support.
+ *
+ * Implements:
+ * - Customer identity display with masked CNIC verification and seamless persona switching ([BlueGasStore.setActiveCustomer])
+ * - Cylinder holdings & deposit liabilities card reflecting deposits held without ownership transfer (Q03)
+ * - Saved delivery addresses with delivery zone serviceability validation and addition ([BlueGasStore.addAddress])
+ * - Past delivery feedback and ratings for completed orders ([RateOrderDialog])
+ * - Account support cases and notification history review ([BlueGasStore.markNotificationRead])
+ * - Direct support hotline dialer and Safety & Emergencies response card (1122 dispatch + safety concern ticket)
+ *
+ * Reads: [SharedAppState.activeCustomer], [SharedAppState.addresses], [SharedAppState.customerHoldings],
+ *        [SharedAppState.supportCases], [SharedAppState.notifications], [SharedAppState.cylinders]
+ * Calls: [BlueGasStore.setActiveCustomer], [BlueGasStore.addAddress], [BlueGasStore.setDefaultAddress],
+ *        [BlueGasStore.raiseSafetyConcern], [BlueGasStore.markNotificationRead]
+ */
 package com.example.bluegas.ui.customer
 
 import android.content.Intent
@@ -36,11 +52,24 @@ import com.example.bluegas.model.*
 import com.example.ui.theme.BlueGasDark
 import com.example.ui.theme.BlueGasPrimary
 
+/**
+ * Masks the middle digits of a 13-digit Pakistani CNIC to preserve customer privacy in the UI.
+ *
+ * @param cnic The raw 13-digit CNIC string.
+ * @return Formatted CNIC with the middle 5 digits replaced with 'XXXXX'.
+ */
 fun maskCnic(cnic: String): String {
     if (cnic.length < 13) return cnic
     return cnic.take(7) + "XXXXX" + cnic.takeLast(1)
 }
 
+/**
+ * Customer profile, address book, deposit holdings, and emergency safety support screen.
+ *
+ * @param store Application data store reference.
+ * @param onActionMessage Customer notification banner callback receiving (message: String, isError: Boolean).
+ * @param modifier Optional layout modifier.
+ */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ProfileScreen(
@@ -255,7 +284,7 @@ fun ProfileScreen(
                         Spacer(modifier = Modifier.height(8.dp))
                         customerHoldings.forEach { holding ->
                             val cyl = snapshot.cylinders.find { it.serialNumber == holding.cylinderSerial }
-                            val sizeLabel = cyl?.let { "${it.weightKg} kg" } ?: "11.8 kg"
+                            val sizeLabel = cyl?.let { "${it.weightKg} kg" }
                             val ownershipLabel = when (holding.ownership) {
                                 CylinderOwnership.OWNED_BY_CUSTOMER -> "Owned"
                                 CylinderOwnership.DEPOSIT_HELD -> "Deposit held"
@@ -288,18 +317,20 @@ fun ProfileScreen(
                                                 fontFamily = FontFamily.Monospace,
                                                 fontWeight = FontWeight.Bold
                                             )
-                                            Spacer(modifier = Modifier.width(6.dp))
-                                            Surface(
-                                                color = Color(0xFFFEF3C7),
-                                                shape = RoundedCornerShape(4.dp)
-                                            ) {
-                                                Text(
-                                                    text = sizeLabel,
-                                                    fontSize = 9.sp,
-                                                    fontWeight = FontWeight.SemiBold,
-                                                    color = Color(0xFF92400E),
-                                                    modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp)
-                                                )
+                                            if (sizeLabel != null) {
+                                                Spacer(modifier = Modifier.width(6.dp))
+                                                Surface(
+                                                    color = Color(0xFFFEF3C7),
+                                                    shape = RoundedCornerShape(4.dp)
+                                                ) {
+                                                    Text(
+                                                        text = sizeLabel,
+                                                        fontSize = 9.sp,
+                                                        fontWeight = FontWeight.SemiBold,
+                                                        color = Color(0xFF92400E),
+                                                        modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp)
+                                                    )
+                                                }
                                             }
                                         }
                                         Text(

@@ -22,16 +22,23 @@ import com.example.bluegas.data.retryPayment
 import com.example.bluegas.model.*
 import com.example.ui.theme.BlueGasPrimary
 
-// F1.2
+/**
+ * Interactive demo payment gateway dialog allowing simulation of pilot payment outcomes.
+ *
+ * @param orderId Unique identifier of the order to process.
+ * @param payableLabel Formatted rupee string of the total amount due passed from snapshot state.
+ * @param store Reference to BlueGasStore for executing advance transitions.
+ * @param onResult Callback invoked with (message, isError) matching the global customer banner contract.
+ * @param onDismiss Invoked when the dialog is dismissed without selecting an outcome.
+ */
 @Composable
 fun DemoPaymentDialog(
     orderId: String,
+    payableLabel: String,
     store: BlueGasStore,
-    onResult: (String, Boolean) -> Unit,
+    onResult: (message: String, isError: Boolean) -> Unit,
     onDismiss: () -> Unit
 ) {
-    val ord = store.orders.find { it.id == orderId }
-
     AlertDialog(
         onDismissRequest = onDismiss,
         title = {
@@ -43,16 +50,14 @@ fun DemoPaymentDialog(
         },
         text = {
             Column {
-                if (ord != null) {
-                    Text("Order: ${ord.id}", fontWeight = FontWeight.Bold, fontSize = 13.sp)
-                    Text(
-                        "Payable: ${formatRupees(ord.totalAmountPaisa)}",
-                        fontSize = 14.sp,
-                        color = BlueGasPrimary,
-                        fontWeight = FontWeight.Bold
-                    )
-                    Spacer(modifier = Modifier.height(8.dp))
-                }
+                Text("Order: $orderId", fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                Text(
+                    "Payable: $payableLabel",
+                    fontSize = 14.sp,
+                    color = BlueGasPrimary,
+                    fontWeight = FontWeight.Bold
+                )
+                Spacer(modifier = Modifier.height(8.dp))
                 Text(
                     "This is a demo gateway for the pilot. Choose an outcome:",
                     fontSize = 11.sp,
@@ -63,7 +68,7 @@ fun DemoPaymentDialog(
                 Button(
                     onClick = {
                         val (ok, msg) = store.confirmPaymentAndAdvance(orderId, "SUCCESS")
-                        onResult(msg, ok)
+                        onResult(msg, !ok)
                         onDismiss()
                     },
                     colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF16A34A)),
@@ -77,7 +82,7 @@ fun DemoPaymentDialog(
                 Button(
                     onClick = {
                         val (ok, msg) = store.confirmPaymentAndAdvance(orderId, "DECLINED")
-                        onResult(msg, ok)
+                        onResult(msg, !ok)
                         onDismiss()
                     },
                     colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFDC2626)),
@@ -91,7 +96,7 @@ fun DemoPaymentDialog(
                 OutlinedButton(
                     onClick = {
                         val (ok, msg) = store.confirmPaymentAndAdvance(orderId, "TIMEOUT")
-                        onResult(msg, ok)
+                        onResult(msg, !ok)
                         onDismiss()
                     },
                     modifier = Modifier.fillMaxWidth().testTag("payment_dialog_timeout_button")
@@ -109,13 +114,27 @@ fun DemoPaymentDialog(
     )
 }
 
-// F1.2
+/**
+ * Payment actions row presented when an order is in [OrderStatus.ORD_PAYPEND].
+ *
+ * Implements the payment attempt decision table:
+ * - Active unexpired attempt present -> Direct "Pay now" gateway action.
+ * - Previous attempt failed/closed/timed-out -> Failure prompt with "Retry payment" (online)
+ *   or switch to "Pay cash on delivery instead".
+ *
+ * @param order The target pending order.
+ * @param snapshot Reactive snapshot containing system payment history.
+ * @param store Store reference for initiating payment retries.
+ * @param onResult Callback receiving (message: String, isError: Boolean).
+ * @param onOpenGateway Callback to trigger the demo payment gateway modal.
+ * @param modifier Optional modifier for the row container.
+ */
 @Composable
 fun PaymentActionsRow(
     order: Order,
     snapshot: SharedAppState,
     store: BlueGasStore,
-    onResult: (String, Boolean) -> Unit,
+    onResult: (message: String, isError: Boolean) -> Unit,
     onOpenGateway: () -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -125,7 +144,7 @@ fun PaymentActionsRow(
     val remainingMs = (order.holdExpiresAt ?: 0L) - nowMillis
     val isExpired = order.holdExpiresAt != null && remainingMs <= 0L
 
-    // Latest attempt
+    // Latest attempt lookup
     val orderPayments = snapshot.payments.filter { it.orderId == order.id }
     val latestPayment = orderPayments.maxByOrNull { it.attemptNo }
     val hasActiveAttempt = latestPayment != null &&
@@ -176,7 +195,7 @@ fun PaymentActionsRow(
                 Button(
                     onClick = {
                         val (ok, msg) = store.retryPayment(order.id, PaymentMethod.ONLINE_HOSTED)
-                        onResult(msg, ok)
+                        onResult(msg, !ok)
                     },
                     enabled = !isExpired,
                     modifier = Modifier.weight(1f).testTag("payment_actions_retry_button")
@@ -186,7 +205,7 @@ fun PaymentActionsRow(
                 OutlinedButton(
                     onClick = {
                         val (ok, msg) = store.retryPayment(order.id, PaymentMethod.CASH_ON_DELIVERY)
-                        onResult(msg, ok)
+                        onResult(msg, !ok)
                     },
                     enabled = !isExpired,
                     modifier = Modifier.weight(1f).testTag("payment_actions_cod_button")

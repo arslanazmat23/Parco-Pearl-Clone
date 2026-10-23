@@ -17,12 +17,19 @@ import com.example.bluegas.data.BlueGasStore
 import com.example.bluegas.data.rateOrder
 import com.example.ui.theme.BlueGasPrimary
 
-// F1.4
+/**
+ * Dialog allowing customer to submit star rating and optional comments for a completed order.
+ *
+ * @param orderId Target completed order ID being rated.
+ * @param store BlueGasStore instance for recording the order rating.
+ * @param onResult Global customer notification callback receiving (message: String, isError: Boolean).
+ * @param onDismiss Invoked when the dialog is cancelled or dismissed.
+ */
 @Composable
 fun RateOrderDialog(
     orderId: String,
     store: BlueGasStore,
-    onResult: (String, Boolean) -> Unit,
+    onResult: (message: String, isError: Boolean) -> Unit,
     onDismiss: () -> Unit
 ) {
     var ratingStars by remember(orderId) { mutableIntStateOf(5) }
@@ -78,7 +85,7 @@ fun RateOrderDialog(
             Button(
                 onClick = {
                     val (ok, msg) = store.rateOrder(orderId, ratingStars, ratingComment)
-                    onResult(msg, ok)
+                    onResult(msg, !ok)
                     onDismiss()
                 },
                 colors = ButtonDefaults.buttonColors(containerColor = BlueGasPrimary),

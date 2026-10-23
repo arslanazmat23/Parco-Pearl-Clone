@@ -1,3 +1,22 @@
+/**
+ * Live order tracking, dispatch progress, handover authentication, and delivery verification.
+ *
+ * Implements:
+ * - Status hero banner with visual urgency cues and plain-language operational status
+ * - Handover PIN security card (visible from Dispatched to Handover completion)
+ * - Depot pickup location guide with arrival notification trigger ([BlueGasStore.notifyPickupArrival])
+ * - Simulated real-time delivery map with animated rider vehicle progression
+ * - Assigned delivery rider credentials with direct phone dialer intent
+ * - Factual cylinder serial tracking and doorstep installation verification
+ * - 6-stage lifecycle progression stepper with terminal exception handling
+ * - Payment, hold reservation, and refund reconciliation status card
+ * - Order cancellation modal with reason capture ([BlueGasStore.cancelOrder])
+ * - Delivery rating and formal receipt viewing
+ *
+ * Reads: [SharedAppState.orders], [SharedAppState.payments], [SharedAppState.refunds],
+ *        [SharedAppState.orderStatusHistory], [SharedAppState.nodes], [SharedAppState.riders]
+ * Calls: [BlueGasStore.cancelOrder], [BlueGasStore.notifyPickupArrival]
+ */
 package com.example.bluegas.ui.customer
 
 import android.content.Intent
@@ -41,7 +60,39 @@ import com.example.ui.theme.BlueGasDark
 import com.example.ui.theme.BlueGasPrimary
 import kotlin.math.min
 
-// F2 TrackingScreen
+/**
+ * Maps internal exception codes to clear, reassuring customer-facing descriptions.
+ * Appends " Operations is working on it." for all recoverable exceptions.
+ */
+fun formatCustomerExceptionMessage(reason: ExceptionReason?): String {
+    val base = when (reason) {
+        ExceptionReason.VALIDATION_OUT_OF_AREA -> "We couldn't confirm your address or delivery area."
+        ExceptionReason.PAYMENT_ISSUE -> "There's a problem with your payment."
+        ExceptionReason.NO_ACCEPTANCE -> "We're finding a delivery partner for your order."
+        ExceptionReason.SERIAL_UNAVAILABLE_OR_PREP_FAILURE -> "Your order needs a little more time to prepare."
+        ExceptionReason.DELIVERY_FAILURE_OR_CUSTOMER_UNAVAILABLE -> "We couldn't complete the handover."
+        ExceptionReason.GOODS_REJECTED_AT_DOOR -> "The cylinder was not accepted at handover."
+        ExceptionReason.ADJUSTED_AMOUNT_REJECTION -> "The adjusted amount was not accepted."
+        ExceptionReason.UNRECOVERABLE_AFTER_RETRIES -> "We couldn't complete this order."
+        null -> "There's an issue with your order."
+    }
+    return if (reason == ExceptionReason.UNRECOVERABLE_AFTER_RETRIES) {
+        base
+    } else {
+        "$base Operations is working on it."
+    }
+}
+
+/**
+ * Screen providing comprehensive real-time tracking for customer orders.
+ *
+ * @param store Application data store reference.
+ * @param initialOrderId Optional order ID targeted when navigating to tracking.
+ * @param onSelectOrderToTrack Callback when user picks a different order from dropdown.
+ * @param onBackToOrders Callback to navigate back to the Orders list tab.
+ * @param onActionMessage Customer notification banner callback receiving (message: String, isError: Boolean).
+ * @param modifier Optional layout modifier.
+ */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun TrackingScreen(
@@ -85,7 +136,7 @@ fun TrackingScreen(
     var showReceiptDialog by remember { mutableStateOf(false) }
     var showRateDialog by remember { mutableStateOf(false) }
 
-    // F2.3 Pickup Arrival state
+    // Pickup arrival confirmation dialog state
     var depotNotifiedLocal by remember(currentOrder?.id) {
         mutableStateOf(
             snapshot.notifications.any {
@@ -94,7 +145,7 @@ fun TrackingScreen(
         )
     }
 
-    // F2.4 Live timer for pin & countdown
+    // Live ticker for animated delivery progress and countdown
     val nowMillis = rememberNowMillis(enabled = currentOrder?.status == OrderStatus.ORD_DISP || currentOrder?.status == OrderStatus.ORD_PAYPEND)
 
     Column(
@@ -122,7 +173,7 @@ fun TrackingScreen(
                         color = BlueGasDark
                     )
                     Text(
-                        text = "Real-time dispatch & doorstep telemetry",
+                        text = "Follow your order step by step",
                         fontSize = 10.sp,
                         color = Color(0xFF64748B)
                     )
@@ -240,7 +291,7 @@ fun TrackingScreen(
                 modifier = Modifier.fillMaxSize(),
                 verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
-                // F2.1 SECTION 1: Status Hero Banner
+                // Section 1: Order Status Hero Banner
                 item {
                     val isPickup = currentOrder.fulfilmentMode == FulfilmentMode.PICKUP
                     val depotName = depotNode?.name ?: "Depot"
@@ -337,14 +388,14 @@ fun TrackingScreen(
                             accent = Color(0xFFEF4444),
                             icon = Icons.Default.Warning,
                             title = "We're sorting something out",
-                            subtitle = "${currentOrder.exceptionReason?.description ?: "Fulfilment issue"}. Operations is working on it."
+                            subtitle = formatCustomerExceptionMessage(currentOrder.exceptionReason)
                         )
                         OrderStatus.ORD_CANC -> HeroBannerConfig(
                             tint = Color(0xFFF8FAFC),
                             accent = Color(0xFF94A3B8),
                             icon = Icons.Default.Cancel,
                             title = "Order cancelled",
-                            subtitle = currentOrder.exceptionDetails ?: "This order was cancelled."
+                            subtitle = currentOrder.cancelReason ?: "This order was cancelled."
                         )
                         OrderStatus.ORD_FCLO -> HeroBannerConfig(
                             tint = Color(0xFFF8FAFC),
@@ -407,7 +458,7 @@ fun TrackingScreen(
                     }
                 }
 
-                // F2.8 SECTION 2: Payment Card
+                // Section 2: Payment Status and Actions Card
                 item {
                     val orderPayments = snapshot.payments.filter { it.orderId == currentOrder.id }
                     val latestPayment = orderPayments.maxByOrNull { it.attemptNo }
@@ -441,7 +492,7 @@ fun TrackingScreen(
                             }
                             Spacer(modifier = Modifier.height(6.dp))
 
-                            // Payment description logic per F2.8
+                            // Payment description logic using formatCustomerPaymentStatus
                             if (currentOrder.status == OrderStatus.ORD_CANC) {
                                 val refundText = when {
                                     latestRefund != null && (latestRefund.state == PaymentState.FULL_REFUND_PENDING || latestRefund.state == PaymentState.PARTIAL_REFUND_PENDING) ->
@@ -454,44 +505,37 @@ fun TrackingScreen(
                                         "No payment was taken."
                                 }
                                 Text(refundText, fontSize = 12.sp, color = Color(0xFF475569))
-                            } else if (currentOrder.paymentMethod == PaymentMethod.CASH_ON_DELIVERY) {
-                                val codText = if (latestPayment?.state == PaymentState.CASH_COLLECTED || latestPayment?.state == PaymentState.SETTLED) {
-                                    "Cash received — Finance is reconciling it."
-                                } else {
-                                    "Cash on delivery — ${formatRupees(currentOrder.totalAmountPaisa)} due at handover."
-                                }
-                                Text(codText, fontSize = 12.sp, color = Color(0xFF475569))
+                            } else if (currentOrder.status == OrderStatus.ORD_PAYPEND) {
+                                PaymentActionsRow(
+                                    order = currentOrder,
+                                    snapshot = snapshot,
+                                    store = store,
+                                    onResult = postMessage,
+                                    onOpenGateway = { showPaymentGatewayDialog = true }
+                                )
                             } else {
-                                // Online payment
-                                when {
-                                    latestPayment?.state == PaymentState.SETTLED -> {
-                                        Text("Paid.", fontSize = 12.sp, color = Color(0xFF16A34A), fontWeight = FontWeight.Medium)
-                                    }
-                                    latestPayment?.state == PaymentState.INITIAL_AMOUNT_CAPTURED || latestPayment?.state == PaymentState.PREAUTHORIZED -> {
-                                        Text("Paid online.", fontSize = 12.sp, color = Color(0xFF16A34A), fontWeight = FontWeight.Medium)
-                                    }
-                                    currentOrder.status == OrderStatus.ORD_PAYPEND -> {
-                                        PaymentActionsRow(
-                                            order = currentOrder,
-                                            snapshot = snapshot,
-                                            store = store,
-                                            onResult = postMessage,
-                                            onOpenGateway = { showPaymentGatewayDialog = true }
-                                        )
-                                    }
-                                    latestPayment?.state == PaymentState.PAYMENT_FAILED_CLOSED || latestPayment?.state == PaymentState.AUTHORIZATION_FAILED || latestPayment?.state == PaymentState.PAYMENT_TIMEOUT -> {
-                                        Text("Your last payment attempt didn't go through.", fontSize = 12.sp, color = Color(0xFFDC2626))
-                                    }
-                                    else -> {
-                                        Text("Online payment: ${latestPayment?.state?.name ?: "Pending"}", fontSize = 12.sp, color = Color(0xFF475569))
-                                    }
+                                val statusText = formatCustomerPaymentStatus(
+                                    method = currentOrder.paymentMethod,
+                                    state = latestPayment?.state,
+                                    formattedTotal = formatRupees(currentOrder.totalAmountPaisa)
+                                )
+                                val textColor = when {
+                                    statusText.startsWith("Paid") -> Color(0xFF16A34A)
+                                    statusText.contains("didn't go through", ignoreCase = true) -> Color(0xFFDC2626)
+                                    else -> Color(0xFF475569)
                                 }
+                                Text(
+                                    text = statusText,
+                                    fontSize = 12.sp,
+                                    color = textColor,
+                                    fontWeight = if (statusText.startsWith("Paid")) FontWeight.Medium else FontWeight.Normal
+                                )
                             }
                         }
                     }
                 }
 
-                // F2.2 SECTION 3: Customer Handover Verification PIN
+                // Section 3: Secure Handover Verification PIN Card
                 val showPinStatuses = setOf(
                     OrderStatus.ORD_DISP,
                     OrderStatus.ORD_RDYPU,
@@ -549,7 +593,7 @@ fun TrackingScreen(
                     }
                 }
 
-                // F2.3 Pickup Orders: Depot Card & Arrival Button
+                // Pickup Orders: Depot Information & Arrival Notification Button
                 if (currentOrder.fulfilmentMode == FulfilmentMode.PICKUP) {
                     item {
                         Card(
@@ -610,7 +654,7 @@ fun TrackingScreen(
                         }
                     }
                 } else {
-                    // F2.4 Delivery Orders: Live Tracking Map
+                    // Delivery Orders: Live Tracking Map with Moving Rider Marker
                     item {
                         Card(
                             colors = CardDefaults.cardColors(containerColor = Color.White),
@@ -725,7 +769,7 @@ fun TrackingScreen(
                                         }
                                     }
 
-                                    // F2.4 Plain Status Pill
+                                    // Delivery status badge on map
                                     val mapPillText = when (currentOrder.status) {
                                         OrderStatus.ORD_DISP -> "On the way"
                                         OrderStatus.ORD_ATHO -> "At your door"
@@ -760,7 +804,7 @@ fun TrackingScreen(
                                     }
                                 }
 
-                                // Route Telemetry Footer
+                                // Route details footer
                                 Row(
                                     modifier = Modifier
                                         .fillMaxWidth()
@@ -789,7 +833,7 @@ fun TrackingScreen(
                         }
                     }
 
-                    // F2.5 Rider Card (from ORD_DISP onward)
+                    // Assigned Delivery Rider Details Card
                     val showRiderFromDisp = setOf(
                         OrderStatus.ORD_DISP,
                         OrderStatus.ORD_ATHO,
@@ -865,7 +909,7 @@ fun TrackingScreen(
                     }
                 }
 
-                // F2.6 "Your cylinder" Card
+                // Allocated Cylinder Serial & Hardware Card
                 item {
                     Card(
                         colors = CardDefaults.cardColors(containerColor = Color(0xFFF8FAFC)),
@@ -922,7 +966,7 @@ fun TrackingScreen(
                     }
                 }
 
-                // F2.7 Stepper
+                // Stepper displaying order lifecycle progression
                 item {
                     Card(
                         colors = CardDefaults.cardColors(containerColor = Color.White),
@@ -932,7 +976,7 @@ fun TrackingScreen(
                     ) {
                         Column(modifier = Modifier.padding(12.dp)) {
                             Text(
-                                text = "Order Lifecycle Progression",
+                                text = "Order progress",
                                 fontWeight = FontWeight.Bold,
                                 fontSize = 13.sp,
                                 color = BlueGasDark
@@ -1045,8 +1089,8 @@ fun TrackingScreen(
                                     else -> currentOrder.status.displayName
                                 }
                                 val terminalDesc = when (currentOrder.status) {
-                                    OrderStatus.ORD_EXC -> currentOrder.exceptionReason?.description ?: "Operations review"
-                                    OrderStatus.ORD_CANC -> currentOrder.exceptionDetails ?: "Order was cancelled"
+                                    OrderStatus.ORD_EXC -> formatCustomerExceptionMessage(currentOrder.exceptionReason)
+                                    OrderStatus.ORD_CANC -> currentOrder.cancelReason ?: "This order was cancelled."
                                     else -> "Order terminated"
                                 }
 
@@ -1087,7 +1131,7 @@ fun TrackingScreen(
                     }
                 }
 
-                // F2.10 Completed Order Actions: View Receipt & Rate Delivery
+                // Completed Order Actions: View Receipt and Rate Experience
                 if (currentOrder.status == OrderStatus.ORD_COMP) {
                     item {
                         Card(
@@ -1141,7 +1185,7 @@ fun TrackingScreen(
                     }
                 }
 
-                // F2.9 Cancel Order CTA if order is in a cancellable status
+                // Order Cancellation Call-to-Action for eligible pre-dispatch statuses
                 val isCancellableInTracking = currentOrder.status in setOf(
                     OrderStatus.ORD_DRAFT,
                     OrderStatus.ORD_VALPEND,
@@ -1201,17 +1245,18 @@ fun TrackingScreen(
         }
     }
 
-    // F1.2 Payment Dialog
+    // Online Payment Dialog
     if (showPaymentGatewayDialog && currentOrder != null) {
         DemoPaymentDialog(
             orderId = currentOrder.id,
+            payableLabel = formatRupees(currentOrder.totalAmountPaisa),
             store = store,
             onResult = postMessage,
             onDismiss = { showPaymentGatewayDialog = false }
         )
     }
 
-    // F1.3 Receipt Dialog
+    // Itemized Electronic Order Receipt Dialog
     if (showReceiptDialog && currentOrder != null) {
         ReceiptDialog(
             order = currentOrder,
@@ -1220,7 +1265,7 @@ fun TrackingScreen(
         )
     }
 
-    // F1.4 Rate Order Dialog
+    // Post-Delivery Feedback and Rating Dialog
     if (showRateDialog && currentOrder != null) {
         RateOrderDialog(
             orderId = currentOrder.id,
@@ -1230,7 +1275,7 @@ fun TrackingScreen(
         )
     }
 
-    // F2.9 Cancel Order Dialog
+    // Customer Order Cancellation Confirmation Dialog
     if (showCancelDialog && currentOrder != null) {
         val cancelReasons = listOf(
             "Changed my mind",

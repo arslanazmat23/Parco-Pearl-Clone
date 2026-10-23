@@ -1,3 +1,13 @@
+/**
+ * Main application shell and top-level navigation container for the BLUE GAS Customer App.
+ *
+ * Coordinates navigation across the four primary customer tabs (Home, Orders, Tracking, Profile),
+ * hosts the unified auto-dismissing banner system, manages cross-tab state preservation using
+ * [rememberSaveableStateHolder], and isolates reorder prefill intents per customer identity.
+ *
+ * Reads: [SharedAppState.customerTab], [SharedAppState.activeCustomer], [SharedAppState.addresses], [SharedAppState.orders]
+ * Writes: [BlueGasStore.setCustomerTab]
+ */
 package com.example.bluegas.ui.customer
 
 import androidx.compose.animation.AnimatedVisibility
@@ -12,6 +22,7 @@ import androidx.compose.material.icons.automirrored.filled.ReceiptLong
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -21,13 +32,20 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import com.example.bluegas.data.*
+import com.example.bluegas.data.BlueGasStore
 import com.example.bluegas.model.AppSurface
 import com.example.bluegas.model.OrderStatus
 import com.example.ui.theme.BlueGasDark
 import com.example.ui.theme.BlueGasPrimary
 import kotlinx.coroutines.delay
 
+/**
+ * Top-level navigation destinations available within the customer experience.
+ *
+ * @property label User-facing display text in bottom navigation.
+ * @property icon Navigation item vector icon.
+ * @property testTag Automated UI test identifier for selection.
+ */
 enum class CustomerTab(val label: String, val icon: androidx.compose.ui.graphics.vector.ImageVector, val testTag: String) {
     HOME("Home", Icons.Default.Home, "customer_tab_home"),
     ORDERS("Orders", Icons.AutoMirrored.Filled.ReceiptLong, "customer_tab_orders"),
@@ -35,7 +53,16 @@ enum class CustomerTab(val label: String, val icon: androidx.compose.ui.graphics
     PROFILE("Profile", Icons.Default.Person, "customer_tab_profile")
 }
 
-// F3 CustomerAppScreen
+/**
+ * Root composable for the BLUE GAS Customer App.
+ *
+ * Hosts top bar branding and active delivery zone indicator, displays global feedback messages,
+ * renders bottom navigation with active order count badges, and switches between feature panes.
+ * Uses [rememberSaveableStateHolder] to preserve form inputs across tab transitions.
+ *
+ * @param store The single source of truth application store.
+ * @param modifier Optional layout modifier.
+ */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun CustomerAppScreen(store: BlueGasStore, modifier: Modifier = Modifier) {
@@ -48,7 +75,7 @@ fun CustomerAppScreen(store: BlueGasStore, modifier: Modifier = Modifier) {
     }
     var selectedTrackingOrderId by remember { mutableStateOf<String?>(null) }
 
-    // F3.1 Global banner for whole customer app
+    // Unified customer notification banner with auto-dismiss
     var banner by remember { mutableStateOf<BannerMsg?>(null) }
     LaunchedEffect(banner) {
         if (banner != null) {
@@ -60,7 +87,7 @@ fun CustomerAppScreen(store: BlueGasStore, modifier: Modifier = Modifier) {
         banner = BannerMsg(text, isError)
     }
 
-    // F3.2 Reorder prefill object keyed on active customer
+    // Reorder prefill state holder; cleared when customer identity changes
     var reorderPrefill by remember { mutableStateOf<ReorderPrefill?>(null) }
     val activeCustomer = snapshot.activeCustomer
 
@@ -73,46 +100,36 @@ fun CustomerAppScreen(store: BlueGasStore, modifier: Modifier = Modifier) {
         ?: snapshot.addresses.firstOrNull()
 
     val customerOrders = snapshot.orders.filter { it.customerId == activeCustomer?.id }
-    val activeOrdersCount = customerOrders.count { !it.status.isTerminal }
-    val inTransitOrder = customerOrders.find {
-        it.status == OrderStatus.ORD_DISP || it.status == OrderStatus.ORD_ATHO || it.status == OrderStatus.ORD_PREP
+    val activeOrdersCount = customerOrders.count {
+        it.status != OrderStatus.ORD_COMP &&
+            it.status != OrderStatus.ORD_CANC &&
+            it.status != OrderStatus.ORD_FCLO &&
+            it.status != OrderStatus.ORD_SUPS
     }
 
-    // Default tracking order to latest active order or most recent order
-    LaunchedEffect(customerOrders.size, currentTab) {
-        if (selectedTrackingOrderId == null || snapshot.orders.none { it.id == selectedTrackingOrderId }) {
-            selectedTrackingOrderId = inTransitOrder?.id
-                ?: customerOrders.firstOrNull { !it.status.isTerminal }?.id
-                ?: customerOrders.firstOrNull()?.id
-        }
-    }
+    // Retain form states when navigating away from tabs and returning
+    val saveableHolder = rememberSaveableStateHolder()
 
-    // Phone canvas mockup layout
-    Box(
-        modifier = modifier
-            .fillMaxSize()
-            .background(Color(0xFFE2E8F0)),
-        contentAlignment = Alignment.TopCenter
+    Surface(
+        modifier = modifier.fillMaxSize().testTag("customer_app_root"),
+        color = MaterialTheme.colorScheme.background
     ) {
-        Card(
-            modifier = Modifier
-                .widthIn(max = 480.dp)
-                .fillMaxHeight()
-                .padding(vertical = 4.dp),
-            shape = RoundedCornerShape(20.dp),
-            colors = CardDefaults.cardColors(containerColor = Color(0xFFF8FAFC)),
-            elevation = CardDefaults.cardElevation(defaultElevation = 6.dp)
-        ) {
+        BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
+            val isExpanded = maxWidth >= 600.dp
+
             Scaffold(
-                modifier = Modifier.fillMaxSize(),
-                containerColor = Color(0xFFF8FAFC),
                 topBar = {
                     Surface(
                         color = BlueGasDark,
-                        shadowElevation = 3.dp,
-                        modifier = Modifier.fillMaxWidth()
+                        shadowElevation = 4.dp,
+                        modifier = Modifier.fillMaxWidth().testTag("customer_top_bar")
                     ) {
-                        Column(modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp)) {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .statusBarsPadding()
+                                .padding(horizontal = 16.dp, vertical = 10.dp)
+                        ) {
                             Row(
                                 modifier = Modifier.fillMaxWidth(),
                                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -121,25 +138,25 @@ fun CustomerAppScreen(store: BlueGasStore, modifier: Modifier = Modifier) {
                                 Row(verticalAlignment = Alignment.CenterVertically) {
                                     Box(
                                         modifier = Modifier
-                                            .size(34.dp)
+                                            .size(36.dp)
                                             .clip(CircleShape)
                                             .background(BlueGasPrimary),
                                         contentAlignment = Alignment.Center
                                     ) {
                                         Icon(
-                                            imageVector = Icons.Default.LocalFireDepartment,
-                                            contentDescription = "BlueGas Logo",
+                                            Icons.Default.LocalFireDepartment,
+                                            contentDescription = "Blue Gas Logo",
                                             tint = Color.White,
-                                            modifier = Modifier.size(20.dp)
+                                            modifier = Modifier.size(22.dp)
                                         )
                                     }
                                     Spacer(modifier = Modifier.width(10.dp))
                                     Column {
                                         Text(
-                                            text = "BLUE GAS CONSUMER",
-                                            fontSize = 10.sp,
-                                            color = Color(0xFF93C5FD),
-                                            fontWeight = FontWeight.Bold,
+                                            text = "BLUE GAS",
+                                            fontSize = 18.sp,
+                                            fontWeight = FontWeight.Black,
+                                            color = Color.White,
                                             letterSpacing = 1.sp
                                         )
                                         Text(
@@ -163,11 +180,11 @@ fun CustomerAppScreen(store: BlueGasStore, modifier: Modifier = Modifier) {
                                             modifier = Modifier
                                                 .size(6.dp)
                                                 .clip(CircleShape)
-                                                .background(if (activeAddress?.isServiceable == true) Color(0xFF86EFAC) else Color(0xFFFCA5A5))
+                                                .background(if (activeAddress?.isServiceable == true) Color(0xFF4ADE80) else Color(0xFFF87171))
                                         )
-                                        Spacer(modifier = Modifier.width(4.dp))
+                                        Spacer(modifier = Modifier.width(5.dp))
                                         Text(
-                                            text = activeAddress?.city ?: "Pilot Area",
+                                            text = if (activeAddress?.isServiceable == true) "Lahore Pilot" else "Restricted",
                                             fontSize = 10.sp,
                                             color = Color.White,
                                             fontWeight = FontWeight.SemiBold
@@ -179,23 +196,23 @@ fun CustomerAppScreen(store: BlueGasStore, modifier: Modifier = Modifier) {
                             if (activeAddress != null) {
                                 Spacer(modifier = Modifier.height(6.dp))
                                 Surface(
-                                    color = Color(0xFF1E293B),
-                                    shape = RoundedCornerShape(8.dp),
+                                    color = Color(0x22FFFFFF),
+                                    shape = RoundedCornerShape(6.dp),
                                     modifier = Modifier.fillMaxWidth()
                                 ) {
                                     Row(
-                                        verticalAlignment = Alignment.CenterVertically,
-                                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 5.dp)
+                                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                                        verticalAlignment = Alignment.CenterVertically
                                     ) {
                                         Icon(
-                                            imageVector = Icons.Default.Place,
+                                            Icons.Default.LocationOn,
                                             contentDescription = null,
-                                            tint = if (activeAddress.isServiceable) Color(0xFF60A5FA) else Color(0xFFF87171),
+                                            tint = BlueGasPrimary,
                                             modifier = Modifier.size(14.dp)
                                         )
-                                        Spacer(modifier = Modifier.width(6.dp))
+                                        Spacer(modifier = Modifier.width(4.dp))
                                         Text(
-                                            text = "Deliver to: ${activeAddress.label} • ${activeAddress.area}, ${activeAddress.city}",
+                                            text = "${activeAddress.label}: ${activeAddress.street}, ${activeAddress.area}, ${activeAddress.city}",
                                             fontSize = 11.sp,
                                             color = Color(0xFFE2E8F0),
                                             maxLines = 1,
@@ -210,7 +227,7 @@ fun CustomerAppScreen(store: BlueGasStore, modifier: Modifier = Modifier) {
                                             )
                                         } else {
                                             Text(
-                                                text = "Non-Serviceable",
+                                                text = "Outside delivery area",
                                                 fontSize = 9.sp,
                                                 color = Color(0xFFFCA5A5),
                                                 fontWeight = FontWeight.Bold
@@ -249,18 +266,23 @@ fun CustomerAppScreen(store: BlueGasStore, modifier: Modifier = Modifier) {
                                                     }
                                                 }
                                                 CustomerTab.TRACKING -> {
-                                                    if (inTransitOrder != null) {
+                                                    val hasLiveOrder = customerOrders.any {
+                                                        it.status == OrderStatus.ORD_DISP ||
+                                                            it.status == OrderStatus.ORD_ATHO ||
+                                                            it.status == OrderStatus.ORD_PREP
+                                                    }
+                                                    if (hasLiveOrder) {
                                                         Badge(
                                                             containerColor = Color(0xFF16A34A),
                                                             contentColor = Color.White
                                                         ) {
-                                                            Text("LIVE")
+                                                            Text("•")
                                                         }
                                                     }
                                                 }
                                                 CustomerTab.PROFILE -> {
                                                     val unreadCount = snapshot.notifications.count {
-                                                        !it.isRead && it.surface == AppSurface.CUSTOMER
+                                                        it.surface == AppSurface.CUSTOMER && !it.isRead
                                                     }
                                                     if (unreadCount > 0) {
                                                         Badge(
@@ -275,7 +297,10 @@ fun CustomerAppScreen(store: BlueGasStore, modifier: Modifier = Modifier) {
                                             }
                                         }
                                     ) {
-                                        Icon(imageVector = tab.icon, contentDescription = tab.label)
+                                        Icon(
+                                            imageVector = tab.icon,
+                                            contentDescription = tab.label
+                                        )
                                     }
                                 },
                                 label = {
@@ -302,7 +327,7 @@ fun CustomerAppScreen(store: BlueGasStore, modifier: Modifier = Modifier) {
                         .fillMaxSize()
                         .padding(innerPadding)
                 ) {
-                    // F3.1 Global action / notification banner
+                    // Global action / notification banner
                     AnimatedVisibility(
                         visible = banner != null,
                         enter = fadeIn(),
@@ -346,74 +371,76 @@ fun CustomerAppScreen(store: BlueGasStore, modifier: Modifier = Modifier) {
                         }
                     }
 
-                    // Main screen body router
+                    // Main screen body router with SaveableStateProvider preserving screen form state
                     Box(modifier = Modifier.fillMaxSize()) {
-                        when (currentTab) {
-                            CustomerTab.HOME -> {
-                                HomeScreen(
-                                    store = store,
-                                    onOrderCreated = { newOrder ->
-                                        selectedTrackingOrderId = newOrder.id
-                                    },
-                                    onNavigateToOrders = {
-                                        store.setCustomerTab("ORDERS")
-                                    },
-                                    onTrackOrder = { orderId ->
-                                        selectedTrackingOrderId = orderId
-                                        store.setCustomerTab("TRACKING")
-                                    },
-                                    onActionMessage = onActionMessage,
-                                    prefill = reorderPrefill,
-                                    onPrefillConsumed = { reorderPrefill = null }
-                                )
-                            }
-                            CustomerTab.ORDERS -> {
-                                OrdersScreen(
-                                    store = store,
-                                    onTrackOrder = { orderId ->
-                                        selectedTrackingOrderId = orderId
-                                        store.setCustomerTab("TRACKING")
-                                    },
-                                    onActionMessage = onActionMessage,
-                                    onReorder = { order ->
-                                        val gasItem = order.items.firstOrNull { it.lineType == "GAS" } ?: order.items.firstOrNull()
-                                        val hasAccessory = order.items.any { it.lineType == "ACCESSORY" }
-                                        reorderPrefill = ReorderPrefill(
-                                            sku = gasItem?.sku ?: "SKU-LPG-11-8",
-                                            quantity = gasItem?.quantity ?: 1,
-                                            orderType = order.orderType,
-                                            addressId = order.addressId,
-                                            mode = order.fulfilmentMode,
-                                            paymentMethod = order.paymentMethod,
-                                            pickupPointId = order.pickupPointId ?: order.fulfilmentPointId,
-                                            addAccessory = hasAccessory,
-                                            nonce = System.currentTimeMillis()
-                                        )
-                                        store.setCustomerTab("HOME")
-                                    },
-                                    onNavigateToHome = {
-                                        store.setCustomerTab("HOME")
-                                    }
-                                )
-                            }
-                            CustomerTab.TRACKING -> {
-                                TrackingScreen(
-                                    store = store,
-                                    initialOrderId = selectedTrackingOrderId,
-                                    onSelectOrderToTrack = { orderId ->
-                                        selectedTrackingOrderId = orderId
-                                    },
-                                    onBackToOrders = {
-                                        store.setCustomerTab("ORDERS")
-                                    },
-                                    onActionMessage = onActionMessage
-                                )
-                            }
-                            CustomerTab.PROFILE -> {
-                                ProfileScreen(
-                                    store = store,
-                                    onActionMessage = onActionMessage
-                                )
+                        saveableHolder.SaveableStateProvider(currentTab.name) {
+                            when (currentTab) {
+                                CustomerTab.HOME -> {
+                                    HomeScreen(
+                                        store = store,
+                                        onOrderCreated = { newOrder ->
+                                            selectedTrackingOrderId = newOrder.id
+                                        },
+                                        onNavigateToOrders = {
+                                            store.setCustomerTab("ORDERS")
+                                        },
+                                        onTrackOrder = { orderId ->
+                                            selectedTrackingOrderId = orderId
+                                            store.setCustomerTab("TRACKING")
+                                        },
+                                        onActionMessage = onActionMessage,
+                                        prefill = reorderPrefill,
+                                        onPrefillConsumed = { reorderPrefill = null }
+                                    )
+                                }
+                                CustomerTab.ORDERS -> {
+                                    OrdersScreen(
+                                        store = store,
+                                        onTrackOrder = { orderId ->
+                                            selectedTrackingOrderId = orderId
+                                            store.setCustomerTab("TRACKING")
+                                        },
+                                        onActionMessage = onActionMessage,
+                                        onReorder = { order ->
+                                            val gasItem = order.items.firstOrNull { it.lineType == "GAS" } ?: order.items.firstOrNull()
+                                            val hasAccessory = order.items.any { it.lineType == "ACCESSORY" }
+                                            reorderPrefill = ReorderPrefill(
+                                                sku = gasItem?.sku ?: "SKU-LPG-11-8",
+                                                quantity = gasItem?.quantity ?: 1,
+                                                orderType = order.orderType,
+                                                addressId = order.addressId,
+                                                mode = order.fulfilmentMode,
+                                                paymentMethod = order.paymentMethod,
+                                                pickupPointId = order.pickupPointId ?: order.fulfilmentPointId,
+                                                addAccessory = hasAccessory,
+                                                nonce = System.currentTimeMillis()
+                                            )
+                                            store.setCustomerTab("HOME")
+                                        },
+                                        onNavigateToHome = {
+                                            store.setCustomerTab("HOME")
+                                        }
+                                    )
+                                }
+                                CustomerTab.TRACKING -> {
+                                    TrackingScreen(
+                                        store = store,
+                                        initialOrderId = selectedTrackingOrderId,
+                                        onSelectOrderToTrack = { orderId ->
+                                            selectedTrackingOrderId = orderId
+                                        },
+                                        onBackToOrders = {
+                                            store.setCustomerTab("ORDERS")
+                                        },
+                                        onActionMessage = onActionMessage
+                                    )
+                                }
+                                CustomerTab.PROFILE -> {
+                                    ProfileScreen(
+                                        store = store,
+                                        onActionMessage = onActionMessage
+                                    )
+                                }
                             }
                         }
                     }

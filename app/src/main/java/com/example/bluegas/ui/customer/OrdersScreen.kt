@@ -1,3 +1,18 @@
+/**
+ * Order history, lifecycle status review, and post-order interactions for the customer.
+ *
+ * Implements:
+ * - Filtered order lists (All, Active non-terminal orders, Completed, and Cancelled/Terminated)
+ * - In-place online payment actions with reservation countdowns ([PaymentActionsRow])
+ * - Reorder trigger to prefill checkout form for fast repurchase
+ * - Detailed formal receipt viewing with breakdown verification ([ReceiptDialog])
+ * - Order cancellation with state validation and finance refund notices
+ * - Structured complaint filing with emergency 1122 dispatch integration
+ * - Delivery rating and customer satisfaction feedback ([RateOrderDialog])
+ *
+ * Reads: [SharedAppState.orders], [SharedAppState.payments], [SharedAppState.activeCustomer]
+ * Calls: [BlueGasStore.cancelOrder], [BlueGasStore.raiseComplaint]
+ */
 package com.example.bluegas.ui.customer
 
 import android.content.Intent
@@ -31,6 +46,11 @@ import com.example.bluegas.ui.components.CanonicalStatusChip
 import com.example.ui.theme.BlueGasDark
 import com.example.ui.theme.BlueGasPrimary
 
+/**
+ * Filter categories dividing orders into logical stages based on their terminal status.
+ *
+ * @property label User-facing tab title.
+ */
 enum class OrdersFilterTab(val label: String) {
     ALL("All"),
     ACTIVE("Active"),
@@ -38,7 +58,19 @@ enum class OrdersFilterTab(val label: String) {
     CANCELLED("Cancelled")
 }
 
-// F4 OrdersScreen
+/**
+ * Screen displaying the customer's historical and ongoing LPG cylinder orders.
+ *
+ * Allows filtering by status, search by order ID, viewing tracking details,
+ * launching demo payment gateways, downloading receipts, and lodging formal complaints.
+ *
+ * @param store Application data store reference.
+ * @param onTrackOrder Navigates to the live tracking view for a specific order.
+ * @param onActionMessage Customer banner callback receiving (message: String, isError: Boolean).
+ * @param onReorder Populates the checkout form with the items and fulfilment mode of an existing order.
+ * @param onNavigateToHome Switches active tab to the Home ordering screen.
+ * @param modifier Optional layout modifier.
+ */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun OrdersScreen(
@@ -67,7 +99,7 @@ fun OrdersScreen(
     val activeCustomer = snapshot.activeCustomer ?: return
     val allCustomerOrders = snapshot.orders.filter { it.customerId == activeCustomer.id }.sortedByDescending { it.createdAt }
 
-    // F4.3 Tabs logic
+    // Filter orders by search text and status tab
     val filteredOrders = allCustomerOrders.filter { order ->
         val matchesSearch = searchQuery.isBlank() ||
                 order.id.contains(searchQuery, ignoreCase = true) ||
@@ -175,7 +207,7 @@ fun OrdersScreen(
 
         Spacer(modifier = Modifier.height(10.dp))
 
-        // F4.4 Empty state
+        // Empty state illustration when no orders match current filter
         if (filteredOrders.isEmpty()) {
             Box(
                 modifier = Modifier.fillMaxSize().padding(vertical = 40.dp),
@@ -246,20 +278,22 @@ fun OrdersScreen(
         }
     }
 
-    // F1.2 Payment Dialog
+    // Online Payment Dialog
     if (selectedOrderIdForPayment != null) {
+        val ord = snapshot.orders.find { it.id == selectedOrderIdForPayment }
         DemoPaymentDialog(
             orderId = selectedOrderIdForPayment!!,
+            payableLabel = formatRupees(ord?.totalAmountPaisa ?: 0L),
             store = store,
-            onResult = { msg, ok ->
-                onActionMessage(msg, !ok)
+            onResult = { msg, isError ->
+                onActionMessage(msg, isError)
                 selectedOrderIdForPayment = null
             },
             onDismiss = { selectedOrderIdForPayment = null }
         )
     }
 
-    // F1.3 Receipt Dialog
+    // Receipt Dialog
     if (showReceiptOrderId != null) {
         val ord = snapshot.orders.find { it.id == showReceiptOrderId }
         if (ord != null) {
@@ -271,24 +305,24 @@ fun OrdersScreen(
         }
     }
 
-    // F1.4 Rate Order Dialog
+    // Delivery Feedback & Rating Dialog
     if (showRateOrderId != null) {
         RateOrderDialog(
             orderId = showRateOrderId!!,
             store = store,
-            onResult = { msg, ok ->
-                onActionMessage(msg, !ok)
+            onResult = { msg, isError ->
+                onActionMessage(msg, isError)
                 showRateOrderId = null
             },
             onDismiss = { showRateOrderId = null }
         )
     }
 
-    // F4.6 Report a Problem Dialog
+    // Support Complaint Dialog
     if (showComplaintOrderId != null) {
         val complaintTypes = listOf(
             "LEAKAGE_SAFETY" to "Cylinder Leakage / Safety Concern",
-            "DAMAGED_SEAL" to "Damaged or Tampered Valve Seal",
+            "CYLINDER_CONDITION" to "Cylinder condition problem",
             "DELAYED_DELIVERY" to "Unacceptable Delivery Delay",
             "WRONG_CYLINDER_SIZE" to "Incorrect Cylinder Size Delivered",
             "PAYMENT_DISPUTE" to "Payment Discrepancy",
@@ -315,7 +349,6 @@ fun OrdersScreen(
                     )
                     Spacer(modifier = Modifier.height(8.dp))
 
-                    // F4.6 Exact safety block for leakage/safety
                     if (complaintType == "LEAKAGE_SAFETY") {
                         Surface(
                             color = Color(0xFFFEF2F2),
@@ -374,7 +407,12 @@ fun OrdersScreen(
             confirmButton = {
                 Button(
                     onClick = {
-                        val (ok, msg) = store.raiseComplaint(showComplaintOrderId ?: "", complaintType, complaintDetails)
+                        val finalDesc = if (complaintDetails.isBlank()) {
+                            complaintTypes.find { it.first == complaintType }?.second ?: complaintType
+                        } else {
+                            complaintDetails.trim()
+                        }
+                        val (ok, msg) = store.raiseComplaint(showComplaintOrderId ?: "", complaintType, finalDesc)
                         onActionMessage(msg, !ok)
                         showComplaintOrderId = null
                     },
@@ -390,7 +428,7 @@ fun OrdersScreen(
         )
     }
 
-    // F4.8 Cancel Order Dialog
+    // Modal dialog for customer-initiated order cancellation
     if (showCancelOrderId != null) {
         val ord = snapshot.orders.find { it.id == showCancelOrderId }
         val cancelReasons = listOf(
@@ -458,6 +496,13 @@ fun OrdersScreen(
     }
 }
 
+/**
+ * Visual card representing a single order in the customer's history list.
+ *
+ * Displays order ID, date, status chip, item summaries, total amount due or paid,
+ * bound cylinder serial if allocated, in-place payment actions, and context-dependent
+ * action buttons (Track, Receipt, Cancel, Rate, Report a problem, Reorder).
+ */
 @Composable
 private fun CustomerOrderCard(
     order: Order,
@@ -525,7 +570,7 @@ private fun CustomerOrderCard(
 
             Spacer(modifier = Modifier.height(4.dp))
 
-            // F4.4 Pricing & Payment Method
+            // Price summary and payment method badge
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -554,7 +599,7 @@ private fun CustomerOrderCard(
                 }
             }
 
-            // F4.4 Cylinder ID Badge if allocated
+            // Hardware serial badge for allocated cylinder
             if (order.allocatedSerial != null) {
                 Spacer(modifier = Modifier.height(6.dp))
                 Surface(
@@ -585,7 +630,7 @@ private fun CustomerOrderCard(
                 }
             }
 
-            // F4.1 PaymentActionsRow for ORD_PAYPEND
+            // Contextual actions row when payment is pending
             if (order.status == OrderStatus.ORD_PAYPEND) {
                 Spacer(modifier = Modifier.height(8.dp))
                 PaymentActionsRow(

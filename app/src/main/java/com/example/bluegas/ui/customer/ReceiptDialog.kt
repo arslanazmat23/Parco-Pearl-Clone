@@ -1,3 +1,15 @@
+/**
+ * Formal order delivery receipt view and breakdown generator for the customer application.
+ *
+ * Implements a compliant financial receipt display:
+ * - Order and customer identifiers, dates, and delivery address or depot pickup location
+ * - Itemized line breakdown (Gas refill, security deposit, platform fee, delivery charge, GST, discounts)
+ * - Factual cylinder serial tracking and doorstep installation record
+ * - Arithmetic footing check ensuring sub-lines and taxes reconcile with the total charge
+ * - Native Android share intent export ([Intent.ACTION_SEND])
+ *
+ * Reads: [SharedAppState.customers], [SharedAppState.addresses], [SharedAppState.nodes], [SharedAppState.payments]
+ */
 package com.example.bluegas.ui.customer
 
 import android.content.Intent
@@ -23,22 +35,37 @@ import com.example.bluegas.data.SharedAppState
 import com.example.bluegas.model.*
 import com.example.ui.theme.BlueGasPrimary
 
-// F1.3
+/**
+ * Single item row in the itemized delivery receipt table.
+ *
+ * @property label Field description or charge item name.
+ * @property value Formatted financial amount or descriptive string.
+ * @property emphasis True if the row represents a total or summary requiring visual prominence.
+ */
 data class ReceiptRow(
     val label: String,
     val value: String,
     val emphasis: Boolean = false
 )
 
-// F1.3
+/**
+ * Builds the ordered sequence of key-value receipt rows for an order.
+ *
+ * Reconciles items, pricing list versions, regulatory taxes, and allocated hardware identifiers.
+ * Performs an internal arithmetic footing verification to ensure displayed lines sum to the total.
+ *
+ * @param order Order entity being summarized.
+ * @param snapshot Reactive snapshot containing related node, customer, and payment records.
+ * @return Ordered list of [ReceiptRow] entries.
+ */
 fun buildReceiptRows(order: Order, snapshot: SharedAppState): List<ReceiptRow> {
     val rows = mutableListOf<ReceiptRow>()
 
-    // Order, date
+    // Order identification and creation timestamp
     rows.add(ReceiptRow("Order ID", order.id))
     rows.add(ReceiptRow("Date", formatTimestamp(order.createdAt)))
 
-    // Customer, address or depot
+    // Customer name and destination details
     val customer = snapshot.customers.find { it.id == order.customerId }
     if (customer != null) {
         rows.add(ReceiptRow("Customer", customer.name))
@@ -56,82 +83,87 @@ fun buildReceiptRows(order: Order, snapshot: SharedAppState): List<ReceiptRow> {
         }
     }
 
-    // Fulfilment: Delivery / Depot pickup + fulfilment point name
+    // Fulfilment node servicing the order
     val pointName = snapshot.nodes.find { it.id == order.fulfilmentPointId }?.name ?: order.fulfilmentPointId ?: "Depot"
-    val fulfilmentText = if (order.fulfilmentMode == FulfilmentMode.DELIVERY) "Delivery — $pointName" else "Depot pickup — $pointName"
-    rows.add(ReceiptRow("Fulfilment", fulfilmentText))
+    val modeLabel = if (order.fulfilmentMode == FulfilmentMode.DELIVERY) "Doorstep delivery" else "Depot pickup"
+    rows.add(ReceiptRow("Fulfilment", "$modeLabel · $pointName"))
 
-    // Each quote line as charged: for GAS, CYLINDER, ACCESSORY lines: "${qty}x ${productName}" -> formatRupees(subtotalPaisa). Skip DEPOSIT line itself (subtotal is 0).
+    // Itemized lines
     var linesSum = 0L
-    order.items.forEach { line ->
-        if (line.lineType != "DEPOSIT") {
-            rows.add(ReceiptRow("${line.quantity}x ${line.productName}", formatRupees(line.subtotalPaisa)))
-            linesSum += line.subtotalPaisa
-        }
+    order.items.forEach { item ->
+        val desc = "${item.quantity}x ${item.productName}"
+        val lineTotal = item.unitPricePaisa * item.quantity
+        linesSum += lineTotal
+        rows.add(ReceiptRow(desc, formatRupees(lineTotal)))
     }
 
-    // Security deposit: one row from depositTotalPaisa when > 0, labelled "Security deposit (held; does not transfer ownership)"
-    if (order.depositTotalPaisa > 0L) {
-        rows.add(ReceiptRow("Security deposit (held; does not transfer ownership)", formatRupees(order.depositTotalPaisa)))
+    // Deposit: cylinder security deposit if present
+    if (order.depositTotalPaisa > 0) {
+        rows.add(ReceiptRow("Cylinder security deposit", formatRupees(order.depositTotalPaisa)))
     }
 
-    // Platform fee: platformFeePaisa
-    if (order.platformFeePaisa > 0L) {
+    // Platform fee if non-zero
+    if (order.platformFeePaisa > 0) {
         rows.add(ReceiptRow("Platform fee", formatRupees(order.platformFeePaisa)))
     }
 
-    // Delivery fee: deliveryFeePaisa
-    if (order.deliveryFeePaisa > 0L) {
+    // Delivery fee if delivery mode and non-zero
+    if (order.deliveryFeePaisa > 0) {
         rows.add(ReceiptRow("Delivery fee", formatRupees(order.deliveryFeePaisa)))
     }
 
-    // Discount: - + discountPaisa when > 0
-    if (order.discountPaisa > 0L) {
+    // Discount if any
+    if (order.discountPaisa > 0) {
         rows.add(ReceiptRow("Discount", "-${formatRupees(order.discountPaisa)}"))
     }
 
-    // GST: gstPaisa, and "Further tax" when furtherTaxPaisa > 0
-    if (order.gstPaisa > 0L) {
+    // GST / Tax if non-zero
+    if (order.gstPaisa > 0) {
         rows.add(ReceiptRow("GST", formatRupees(order.gstPaisa)))
     }
-    if (order.furtherTaxPaisa > 0L) {
+    if (order.furtherTaxPaisa > 0) {
         rows.add(ReceiptRow("Further tax", formatRupees(order.furtherTaxPaisa)))
     }
 
-    // Total: totalAmountPaisa (label "Total paid" only for a settled/paid order, else "Total")
+    // Total: Total paid for settled/completed orders, or Total for pending
     val isPaidOrSettled = order.status == OrderStatus.ORD_COMP || order.status == OrderStatus.ORD_HOC ||
         (order.paymentMethod == PaymentMethod.ONLINE_HOSTED && order.status != OrderStatus.ORD_PAYPEND && order.status != OrderStatus.ORD_DRAFT && order.status != OrderStatus.ORD_VALPEND && order.status != OrderStatus.ORD_CANC && order.status != OrderStatus.ORD_FCLO)
     val totalLabel = if (isPaidOrSettled) "Total paid" else "Total"
     rows.add(ReceiptRow(totalLabel, formatRupees(order.totalAmountPaisa), emphasis = true))
 
-    // Price list: "Price list v${priceListVersion}" and, when reference118PricePaisa != null, "11.8 kg reference ${formatRupees(...)}"
+    // Pricing schedule reference
     val priceListRef = if (order.reference118PricePaisa != null) " · 11.8 kg reference ${formatRupees(order.reference118PricePaisa)}" else ""
     rows.add(ReceiptRow("Price list", "v${order.priceListVersion}$priceListRef"))
 
-    // Payment: method in plain words (Online payment / Cash on delivery) and status in plain words
+    // Payment method and status in customer language (Settled becomes Paid, PREAUTHORIZED becomes Authorised)
     val methodWords = when (order.paymentMethod) {
         PaymentMethod.ONLINE_HOSTED -> "Online payment"
         PaymentMethod.CASH_ON_DELIVERY -> "Cash on delivery"
     }
     val paymentObj = snapshot.payments.filter { it.orderId == order.id }.maxByOrNull { it.attemptNo }
     val paymentStatusWords = when {
-        paymentObj?.state == PaymentState.SETTLED -> "Settled"
+        paymentObj?.state == PaymentState.SETTLED -> "Paid"
         paymentObj?.state == PaymentState.CASH_COLLECTED -> "Cash collected"
-        paymentObj?.state == PaymentState.INITIAL_AMOUNT_CAPTURED -> "Paid"
-        paymentObj?.state == PaymentState.PREAUTHORIZED -> "Authorized"
+        paymentObj?.state == PaymentState.INITIAL_AMOUNT_CAPTURED ||
+            paymentObj?.state == PaymentState.CAPTURED ||
+            paymentObj?.state == PaymentState.FINAL_AMOUNT_DETERMINED ||
+            paymentObj?.state == PaymentState.NO_ADJUSTMENT ||
+            paymentObj?.state == PaymentState.ADDITIONAL_COLLECTION_COMPLETED ||
+            paymentObj?.state == PaymentState.PARTIAL_REFUND_COMPLETED -> "Paid online"
+        paymentObj?.state == PaymentState.PREAUTHORIZED -> "Authorised"
         paymentObj?.state == PaymentState.COD_PENDING -> "Due at handover"
         paymentObj?.state == PaymentState.PAYMENT_PENDING -> "Pending"
         paymentObj?.state == PaymentState.PAYMENT_FAILED_CLOSED -> "Failed"
-        else -> order.status.displayName
+        else -> paymentObj?.state?.displayName ?: order.status.displayName
     }
     rows.add(ReceiptRow("Payment", "$methodWords · $paymentStatusWords"))
 
-    // Cylinder ID: allocatedSerial only if non-null
+    // Allocated cylinder hardware identifier
     if (order.allocatedSerial != null) {
         rows.add(ReceiptRow("Cylinder ID", order.allocatedSerial ?: ""))
     }
 
-    // Installation: from installationResult / installationNotDoneReason if present
+    // Doorstep installation outcome
     val installRes = order.installationResult
     if (installRes != null) {
         val installText = when (installRes) {
@@ -142,12 +174,12 @@ fun buildReceiptRows(order: Order, snapshot: SharedAppState): List<ReceiptRow> {
         rows.add(ReceiptRow("Installation", installText))
     }
 
-    // Proof of delivery: podReference only if non-null
+    // Proof of delivery reference if captured
     if (order.podReference != null) {
         rows.add(ReceiptRow("Proof of delivery", order.podReference ?: ""))
     }
 
-    // Footing check
+    // Footing verification: confirm lines and taxes add up exactly to the total charge
     val calculatedSum = linesSum + order.depositTotalPaisa + order.platformFeePaisa + order.deliveryFeePaisa - order.discountPaisa + order.gstPaisa + order.furtherTaxPaisa
     if (calculatedSum != order.totalAmountPaisa) {
         Log.w("Receipt", "Receipt line sum mismatch: lines=$linesSum deposit=${order.depositTotalPaisa} plat=${order.platformFeePaisa} del=${order.deliveryFeePaisa} disc=${order.discountPaisa} gst=${order.gstPaisa} furtherTax=${order.furtherTaxPaisa} sum=$calculatedSum vs total=${order.totalAmountPaisa}")
@@ -156,7 +188,15 @@ fun buildReceiptRows(order: Order, snapshot: SharedAppState): List<ReceiptRow> {
     return rows
 }
 
-// F1.3
+/**
+ * Modal dialog displaying the detailed formal receipt for a completed or active order.
+ *
+ * Provides a button to share the plaintext receipt via the standard system share sheet.
+ *
+ * @param order Order to generate the receipt for.
+ * @param snapshot Reactive application state containing node and customer information.
+ * @param onDismiss Invoked when the dialog is dismissed.
+ */
 @Composable
 fun ReceiptDialog(
     order: Order,
