@@ -63,15 +63,14 @@ object I18n {
 
         // Labels
         "lbl_active_user" to "Active Identity:",
-        "lbl_deposit_note" to "Refundable Security Deposit (Liability item; does NOT transfer cylinder ownership)",
         "lbl_open_decision" to "Open Sequencing Decision (Under Technical Review)",
         "lbl_accountable_role" to "Accountable Role:",
         "lbl_hold_timer" to "Stock Hold Expires In:",
-        "lbl_currency" to "PKR",
+        "lbl_currency" to "Rs.",
         "lbl_cylinder_serial" to "Physical Cylinder Serial",
         "lbl_ownership" to "Ownership State",
         "lbl_custody" to "Physical Custody",
-        "lbl_paisa_disclaimer" to "Configurable pricing values in Paisa (1 PKR = 100 Paisa)",
+        "lbl_paisa_disclaimer" to "Configurable pricing values in Paisa (1 Rupee = 100 Paisa)",
         "lbl_ai_copilot" to "Blue Gas AI Advisor (gemini-4-argon with High Thinking)"
     )
 

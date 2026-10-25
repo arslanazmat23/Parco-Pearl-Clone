@@ -466,7 +466,7 @@ data class OrderLine(
     val unitDepositPaisa: Long,
     val subtotalPaisa: Long,
     val depositTotalPaisa: Long,
-    val lineType: String = "GAS", // "GAS", "CYLINDER", "ACCESSORY"
+    val lineType: String = "GAS", // "GAS", "CYLINDER", "ACCESSORY", "DEPOSIT", "LOAN"
     val unitPriceExactPaisa: Long = unitPricePaisa
 )
 

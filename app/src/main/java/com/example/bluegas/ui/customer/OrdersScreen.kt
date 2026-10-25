@@ -21,6 +21,8 @@ import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -105,6 +107,8 @@ fun OrdersScreen(
                 order.id.contains(searchQuery, ignoreCase = true) ||
                 (order.allocatedSerial?.contains(searchQuery, ignoreCase = true) == true)
 
+        // Filter tab partitioning: CANCELLED includes customer/staff cancelled (ORD_CANC),
+        // failed closed after payment failure or expiration (ORD_FCLO), and superseded attempts (ORD_SUPS).
         val matchesTab = when (selectedFilter) {
             OrdersFilterTab.ALL -> true
             OrdersFilterTab.ACTIVE -> !order.status.isTerminal
@@ -171,7 +175,7 @@ fun OrdersScreen(
             },
             singleLine = true,
             shape = RoundedCornerShape(10.dp),
-            modifier = Modifier.fillMaxWidth().height(48.dp).testTag("orders_search_input")
+            modifier = Modifier.fillMaxWidth().testTag("orders_search_input")
         )
 
         Spacer(modifier = Modifier.height(10.dp))
@@ -339,7 +343,7 @@ fun OrdersScreen(
                 }
             },
             text = {
-                Column {
+                Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
                     Text("Order: $showComplaintOrderId", fontWeight = FontWeight.Bold, fontSize = 12.sp, color = Color(0xFF0F172A))
                     Spacer(modifier = Modifier.height(4.dp))
                     Text(
@@ -449,7 +453,7 @@ fun OrdersScreen(
                 }
             },
             text = {
-                Column {
+                Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
                     Text("Order ID: ${ord?.id}", fontWeight = FontWeight.Bold, fontSize = 13.sp)
                     Spacer(modifier = Modifier.height(4.dp))
                     Text(
@@ -559,7 +563,7 @@ private fun CustomerOrderCard(
             Spacer(modifier = Modifier.height(6.dp))
 
             // Items Summary
-            order.items.forEach { itm ->
+            order.customerVisibleItems().forEach { itm ->
                 Text(
                     text = "${itm.quantity}x ${itm.productName}",
                     fontSize = 12.sp,
@@ -725,7 +729,9 @@ private fun CustomerOrderCard(
                     }
                 }
 
-                // Cancel button for active orders prior to final dispatch
+                // Cancellation eligibility: mirrors OrderStateMachine allowed transitions. Customers may
+                // cancel pre-dispatch orders (draft through prep and recoverable exceptions), but not after
+                // physical dispatch, vehicle transit, or handover execution has begun.
                 val isCancellable = order.status in setOf(
                     OrderStatus.ORD_DRAFT,
                     OrderStatus.ORD_VALPEND,

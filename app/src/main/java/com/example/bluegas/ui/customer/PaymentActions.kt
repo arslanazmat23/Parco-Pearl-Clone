@@ -1,3 +1,13 @@
+/**
+ * Shared payment interaction components and simulated gateway flows for pending customer orders.
+ *
+ * Implements:
+ * - PaymentActionsRow: Contextual actions row offering "Pay now", "Retry payment", or "Pay by cash instead"
+ * - DemoPaymentDialog: Simulated hosted payment gateway modal (Approved, Declined, Connection lost)
+ *
+ * Reads: [SharedAppState.payments], [Order.holdExpiresAt], [Order.status]
+ * Calls: [BlueGasStore.retryPayment], [BlueGasStore.confirmPaymentAndAdvance]
+ */
 package com.example.bluegas.ui.customer
 
 import androidx.compose.foundation.layout.*
@@ -198,9 +208,10 @@ fun PaymentActionsRow(
                         onResult(msg, !ok)
                     },
                     enabled = !isExpired,
-                    modifier = Modifier.weight(1f).testTag("payment_actions_retry_button")
+                    contentPadding = PaddingValues(horizontal = 8.dp),
+                    modifier = Modifier.weight(1f).height(40.dp).testTag("payment_actions_retry_button")
                 ) {
-                    Text("Retry payment", fontSize = 12.sp)
+                    Text("Retry payment", fontSize = 12.sp, maxLines = 1)
                 }
                 OutlinedButton(
                     onClick = {
@@ -208,9 +219,10 @@ fun PaymentActionsRow(
                         onResult(msg, !ok)
                     },
                     enabled = !isExpired,
-                    modifier = Modifier.weight(1f).testTag("payment_actions_cod_button")
+                    contentPadding = PaddingValues(horizontal = 8.dp),
+                    modifier = Modifier.weight(1f).height(40.dp).testTag("payment_actions_cod_button")
                 ) {
-                    Text("Pay cash on delivery instead", fontSize = 11.sp)
+                    Text("Pay by cash instead", fontSize = 12.sp, maxLines = 1)
                 }
             }
         }

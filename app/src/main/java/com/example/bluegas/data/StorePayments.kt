@@ -203,7 +203,7 @@ fun BlueGasStore.confirmCod(orderId: String): Pair<Boolean, String> {
     addNotification(
         surface = AppSurface.CUSTOMER,
         title = "Order Confirmed",
-        message = "Your COD order ${order.id} is confirmed. Rs ${order.totalAmountPaisa / 100} payable at delivery.",
+        message = "Your COD order ${order.id} is confirmed. ${formatRupees(order.totalAmountPaisa)} payable at delivery.",
         canonicalStatus = order.status.canonicalLabel,
         orderId = order.id,
         code = "NTF-01"

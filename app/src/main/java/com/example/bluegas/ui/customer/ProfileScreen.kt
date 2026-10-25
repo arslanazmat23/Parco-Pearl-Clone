@@ -22,6 +22,8 @@ import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
@@ -54,6 +56,9 @@ import com.example.ui.theme.BlueGasPrimary
 
 /**
  * Masks the middle digits of a 13-digit Pakistani CNIC to preserve customer privacy in the UI.
+ *
+ * Privacy masking rule: exposes the initial 7 characters (division/district/tehsil code)
+ * and the final checksum gender digit while obscuring the 5-digit family tree serial with 'XXXXX'.
  *
  * @param cnic The raw 13-digit CNIC string.
  * @return Formatted CNIC with the middle 5 digits replaced with 'XXXXX'.
@@ -103,6 +108,10 @@ fun ProfileScreen(
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
         // Customer Header Card with Switcher
+        // Displays active verified persona, masked CNIC, and overall account metrics.
+        // Account switcher is provided for pilot testing and administrative role evaluation,
+        // simulating real-world customer profiles across various zones and cylinder holdings.
+        // Switching customer profiles updates the active session without restarting the app.
         item {
             Card(
                 colors = CardDefaults.cardColors(containerColor = Color.White),
@@ -166,6 +175,9 @@ fun ProfileScreen(
                                 Text("Switch", fontSize = 11.sp)
                                 Icon(Icons.Default.ArrowDropDown, contentDescription = null, modifier = Modifier.size(16.dp))
                             }
+                            // Persona switching: in pilot and testing mode, persona switching is executed through
+                            // store.setActiveCustomer to allow evaluating customer-specific addresses, holdings, and
+                            // active orders without requiring a complete app restart or mock session resets.
                             DropdownMenu(
                                 expanded = showCustomerSwitchMenu,
                                 onDismissRequest = { showCustomerSwitchMenu = false }
@@ -214,7 +226,11 @@ fun ProfileScreen(
             }
         }
 
-        // Cylinder Holdings & Deposit Liabilities
+        // Cylinder holdings & deposit liabilities: tracks physical custody of cylinders held by the customer.
+        // Under the deposit model (Q03), holding a cylinder against a security deposit does NOT transfer ownership
+        // to the customer; the cylinder remains an asset of BLUE GAS and a deposit liability on the ledger.
+        // Each unit records the cylinder serial number, physical gas capacity in kg, and custody status.
+        // Serialized custody enables traceability through testing cycles, safety recertification, and asset returns.
         item {
             Card(
                 colors = CardDefaults.cardColors(containerColor = Color(0xFFFFFBEB)),
@@ -354,6 +370,11 @@ fun ProfileScreen(
         }
 
         // Delivery Addresses Card
+        // Saved delivery addresses: maps customer premises to geographical delivery zones.
+        // Each address maintains a serviceability status reflecting whether it falls inside the active pilot delivery zone.
+        // Customers can save multiple residential, commercial, or depot delivery locations with custom labels.
+        // Selecting a default address sets the default destination for quotation pricing and order dispatch.
+        // Addresses outside the coverage zone automatically guide customers toward depot pickup options.
         item {
             Card(
                 colors = CardDefaults.cardColors(containerColor = Color.White),
@@ -454,6 +475,10 @@ fun ProfileScreen(
         }
 
         // Order Ratings Section (using shared RateOrderDialog)
+        // Lists recently fulfilled orders and lets customers submit star ratings
+        // and delivery feedback comments. Each order is restricted to a single submission.
+        // Ratings provide closed-loop quality assurance on rider conduct, delivery promptness, and cylinder condition.
+        // Customer ratings and comments are permanently bound to the order record in the operations store.
         val completedOrders = customerOrders.filter { it.status == OrderStatus.ORD_COMP }
         if (completedOrders.isNotEmpty()) {
             item {
@@ -525,6 +550,8 @@ fun ProfileScreen(
         }
 
         // Support Cases History
+        // Support cases & operational notifications: tracks customer-initiated disputes and automated alerts.
+        // Notifications can be acknowledged and marked as read directly by the customer.
         item {
             Card(
                 colors = CardDefaults.cardColors(containerColor = Color.White),
@@ -615,6 +642,10 @@ fun ProfileScreen(
         }
 
         // Notifications section
+        // Presents real-time customer-facing milestone alerts (payment receipts, dispatch notices, handover PINs).
+        // Tapping any notification automatically marks it as acknowledged in the store state.
+        // Surface filtering restricts display strictly to customer-directed alerts (AppSurface.CUSTOMER),
+        // preventing internal courier dispatch or plant operational status updates from leaking to the customer view.
         val customerNotifications = snapshot.notifications
             .filter { it.surface == AppSurface.CUSTOMER }
             .sortedByDescending { it.timestamp }
@@ -668,7 +699,8 @@ fun ProfileScreen(
             }
         }
 
-        // Contact Support Card (F6.8)
+        // Customer care support hotline and assistance card
+        // Provides direct telephone contact with support operations while WhatsApp remains designated for Phase 3.
         item {
             Card(
                 colors = CardDefaults.cardColors(containerColor = Color(0xFFF0F9FF)),
@@ -715,7 +747,12 @@ fun ProfileScreen(
             }
         }
 
-        // Safety & Emergencies Card (F6.4)
+        // Emergency response and safety reporting card
+        // Direct integration with Rescue 1122 emergency services and BLUE GAS internal safety reporting.
+        // Safety concerns reported by customers trigger immediate dual escalation:
+        // 1. A customer support ticket is opened to keep the customer informed of status and resolution.
+        // 2. An HSE safety incident is filed in the operations ledger to alert depot safety supervisors.
+        // If linked to an order, custody records identify the cylinder serial number and driver for immediate field triage.
         item {
             Card(
                 colors = CardDefaults.cardColors(containerColor = Color(0xFFFEF2F2)),
@@ -781,7 +818,11 @@ fun ProfileScreen(
         }
     }
 
-    // Add New Address Dialog (F6.6)
+    // Add new delivery address entry dialog
+    // Address serviceability: the chosen geographical zone directly controls whether doorstep delivery is allowed.
+    // Customers outside delivery zones are guided to depot pickup fulfillment.
+    // Address entry validation: validates street address, area name, city selection, and serviceability zone.
+    // Also manages the toggle for setting this newly created address as the primary account default.
     if (showAddAddressDialog) {
         var labelInput by remember { mutableStateOf("Home") }
         var streetInput by remember { mutableStateOf("") }
@@ -811,6 +852,7 @@ fun ProfileScreen(
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
+                        .verticalScroll(rememberScrollState())
                         .imePadding(),
                     verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
@@ -929,6 +971,9 @@ fun ProfileScreen(
                 }
             },
             confirmButton = {
+                // Address persistence: commits the new customer premises record to the shared store.
+                // Flags whether the selected zone qualifies for active doorstep courier delivery or requires depot self-pickup.
+                // If set as default, becomes the immediate destination for all future quotation sessions.
                 Button(
                     onClick = {
                         if (streetInput.isBlank()) {
@@ -969,7 +1014,11 @@ fun ProfileScreen(
         )
     }
 
-    // Report a Safety Concern Dialog (F6.4)
+    // Emergency safety hazard reporting dialog
+    // Dual escalation pipeline: reporting a safety concern logs a customer-facing support case ticket
+    // and simultaneously activates a Level 7 HSE emergency incident for internal safety triage.
+    // Safety concern submission: validates description text and optionally associates the concern with
+    // an existing order to link physical cylinder custody records and incident tracking.
     if (showSafetyConcernDialog) {
         var selectedConcernOrderId by remember { mutableStateOf<String?>(null) }
         var concernDescription by remember { mutableStateOf("") }
@@ -987,7 +1036,10 @@ fun ProfileScreen(
             },
             text = {
                 Column(
-                    modifier = Modifier.fillMaxWidth().imePadding(),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .verticalScroll(rememberScrollState())
+                        .imePadding(),
                     verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
                     Text(
@@ -1053,6 +1105,8 @@ fun ProfileScreen(
                 }
             },
             confirmButton = {
+                // Safety incident escalation: dispatches safety report to customer support tickets and HSE triage simultaneously.
+                // Links order custody and serial numbers when provided to isolate compromised equipment in the field.
                 Button(
                     onClick = {
                         if (concernDescription.isBlank()) {
@@ -1084,7 +1138,7 @@ fun ProfileScreen(
         )
     }
 
-    // Shared RateOrderDialog (F6.7 / F1.4)
+    // Delivery feedback and rating modal dialog
     if (ratingOrderId != null) {
         RateOrderDialog(
             orderId = ratingOrderId ?: "",

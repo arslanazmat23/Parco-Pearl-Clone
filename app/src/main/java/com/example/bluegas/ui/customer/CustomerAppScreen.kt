@@ -75,7 +75,9 @@ fun CustomerAppScreen(store: BlueGasStore, modifier: Modifier = Modifier) {
     }
     var selectedTrackingOrderId by remember { mutableStateOf<String?>(null) }
 
-    // Unified customer notification banner with auto-dismiss
+    // Unified customer notification banner with auto-dismiss.
+    // Automatically clears transient action confirmations and errors after 5 seconds to preserve viewport space.
+    // Any subsequent message emission cancels the previous timer and resets the 5-second window.
     var banner by remember { mutableStateOf<BannerMsg?>(null) }
     LaunchedEffect(banner) {
         if (banner != null) {
@@ -95,10 +97,15 @@ fun CustomerAppScreen(store: BlueGasStore, modifier: Modifier = Modifier) {
         reorderPrefill = null
     }
 
-    val activeAddress = snapshot.addresses.find { it.customerId == activeCustomer?.id && it.isServiceable }
-        ?: snapshot.addresses.find { it.customerId == activeCustomer?.id }
-        ?: snapshot.addresses.firstOrNull()
+    // Address resolution: prioritizes customer's default address, then any serviceable address in the zone.
+    // When no serviceable address is found, header indicator informs the customer of depot pickup availability.
+    val customerAddresses = snapshot.addresses.filter { it.customerId == activeCustomer?.id }
+    val activeAddress = customerAddresses.find { it.isDefault }
+        ?: customerAddresses.find { it.isServiceable }
+        ?: customerAddresses.firstOrNull()
 
+    // Active order counter drives notification badges on bottom navigation destinations.
+    // Excludes terminal and suspended lifecycle states (Completed, Cancelled, Closed, or Suspended).
     val customerOrders = snapshot.orders.filter { it.customerId == activeCustomer?.id }
     val activeOrdersCount = customerOrders.count {
         it.status != OrderStatus.ORD_COMP &&
@@ -114,9 +121,7 @@ fun CustomerAppScreen(store: BlueGasStore, modifier: Modifier = Modifier) {
         modifier = modifier.fillMaxSize().testTag("customer_app_root"),
         color = MaterialTheme.colorScheme.background
     ) {
-        BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
-            val isExpanded = maxWidth >= 600.dp
-
+        Box(modifier = Modifier.fillMaxSize()) {
             Scaffold(
                 topBar = {
                     Surface(
@@ -184,7 +189,7 @@ fun CustomerAppScreen(store: BlueGasStore, modifier: Modifier = Modifier) {
                                         )
                                         Spacer(modifier = Modifier.width(5.dp))
                                         Text(
-                                            text = if (activeAddress?.isServiceable == true) "Lahore Pilot" else "Restricted",
+                                            text = if (activeAddress?.isServiceable == true) "Lahore Pilot" else "Pickup only",
                                             fontSize = 10.sp,
                                             color = Color.White,
                                             fontWeight = FontWeight.SemiBold

@@ -21,6 +21,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.bluegas.model.FulfilmentMode
+import com.example.bluegas.model.Order
+import com.example.bluegas.model.OrderLine
 import com.example.bluegas.model.OrderType
 import com.example.bluegas.model.PaymentMethod
 import com.example.bluegas.model.PaymentState
@@ -174,3 +176,7 @@ fun formatCustomerPaymentStatus(
         }
     }
 }
+
+/** Order lines a customer should see as items. The DEPOSIT line is excluded because the deposit is shown on its own labelled row. */
+fun Order.customerVisibleItems(): List<OrderLine> = items.filter { it.lineType != "DEPOSIT" }
+

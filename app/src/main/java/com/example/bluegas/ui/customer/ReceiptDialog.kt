@@ -90,7 +90,7 @@ fun buildReceiptRows(order: Order, snapshot: SharedAppState): List<ReceiptRow> {
 
     // Itemized lines
     var linesSum = 0L
-    order.items.forEach { item ->
+    order.customerVisibleItems().forEach { item ->
         val desc = "${item.quantity}x ${item.productName}"
         val lineTotal = item.unitPricePaisa * item.quantity
         linesSum += lineTotal

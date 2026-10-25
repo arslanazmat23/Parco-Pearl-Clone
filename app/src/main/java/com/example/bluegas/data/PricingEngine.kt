@@ -134,7 +134,7 @@ object PricingEngine {
                     lines.add(
                         OrderLine(
                             sku = "$sku-DEP",
-                            productName = "Security Deposit (Refundable per policy · Q03)",
+                            productName = "Cylinder Security Deposit",
                             quantity = quantity,
                             unitPricePaisa = 0L,
                             unitDepositPaisa = depPrice,

@@ -30,6 +30,8 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -108,6 +110,8 @@ fun TrackingScreen(
     val activeCustomer = snapshot.activeCustomer ?: return
     val customerOrders = snapshot.orders.filter { it.customerId == activeCustomer.id }.sortedByDescending { it.createdAt }
 
+    // Order selection priority: prefers the requested order from navigation, then the most recent active non-terminal order.
+    // Terminal states (Completed, Cancelled, Closed) fall back to the newest order in history.
     var selectedOrderId by remember(initialOrderId, customerOrders.size) {
         mutableStateOf(
             if (initialOrderId != null && customerOrders.any { it.id == initialOrderId }) initialOrderId
@@ -115,6 +119,7 @@ fun TrackingScreen(
         )
     }
 
+    // Resolves assigned delivery rider, dispatch node facility, and active delivery transit records.
     val currentOrder = customerOrders.find { it.id == selectedOrderId }
     val assignedRider = snapshot.riders.find { it.id == currentOrder?.assignedRiderId }
     val depotNode = snapshot.nodes.find { it.id == (currentOrder?.pickupPointId ?: currentOrder?.fulfilmentPointId ?: assignedRider?.nodeId) }
@@ -298,6 +303,8 @@ fun TrackingScreen(
                     val remainingMs = (currentOrder.holdExpiresAt ?: 0L) - nowMillis
                     val countdownStr = formatCountdown(remainingMs)
 
+                    // Hero banner mapping: maps each status to plain customer language.
+                    // Internal operational diagnostics and staff exception details are never exposed to customers.
                     val (tintColor, accentColor, iconVec, titleText, subtitleText) = when (currentOrder.status) {
                         OrderStatus.ORD_DRAFT, OrderStatus.ORD_VALPEND -> HeroBannerConfig(
                             tint = Color(0xFFEFF6FF),
@@ -514,6 +521,8 @@ fun TrackingScreen(
                                     onOpenGateway = { showPaymentGatewayDialog = true }
                                 )
                             } else {
+                                // Payment card wording delegates to formatCustomerPaymentStatus.
+                                // Note that pre-authorized payments are confirmed but not captured until physical delivery handover.
                                 val statusText = formatCustomerPaymentStatus(
                                     method = currentOrder.paymentMethod,
                                     state = latestPayment?.state,
@@ -536,6 +545,8 @@ fun TrackingScreen(
                 }
 
                 // Section 3: Secure Handover Verification PIN Card
+                // Handover PIN verification: prevents mistaken cylinder deliveries and ensures custody
+                // transfers only when the authorized customer physically shares their 4-digit token with the rider.
                 val showPinStatuses = setOf(
                     OrderStatus.ORD_DISP,
                     OrderStatus.ORD_RDYPU,
@@ -594,6 +605,8 @@ fun TrackingScreen(
                 }
 
                 // Pickup Orders: Depot Information & Arrival Notification Button
+                // Depot pickup guide: displays operating hours and contact details for the customer's chosen
+                // pickup node, enabling arrival notifications so depot staff can stage the cylinder for counter pickup.
                 if (currentOrder.fulfilmentMode == FulfilmentMode.PICKUP) {
                     item {
                         Card(
@@ -712,7 +725,9 @@ fun TrackingScreen(
                                         }
                                     }
 
-                                    // Rider Animated Pin per F2.4
+                                    // Animated rider pin: progress is simulated (advancing smoothly over ~60 s from dispatch timestamp).
+                                    // Live rider location coordinates synchronize with the dedicated Rider application; upon reaching the customer door
+                                    // the pin automatically parks at 88% along the route.
                                     val orderHistory = snapshot.orderStatusHistory.filter { it.orderId == currentOrder.id }
                                     val dispatchedTimestamp = orderHistory.find { it.toStatus == OrderStatus.ORD_DISP }?.timestamp ?: currentOrder.createdAt
                                     val elapsedSinceDispatch = (nowMillis - dispatchedTimestamp).coerceAtLeast(0L)
@@ -910,6 +925,8 @@ fun TrackingScreen(
                 }
 
                 // Allocated Cylinder Serial & Hardware Card
+                // Allocated cylinder hardware badge: displays the physical tracked serial number once assigned
+                // by the fulfillment node, ensuring transparency and cylinder authenticity prior to handover.
                 item {
                     Card(
                         colors = CardDefaults.cardColors(containerColor = Color(0xFFF8FAFC)),
@@ -1132,6 +1149,8 @@ fun TrackingScreen(
                 }
 
                 // Completed Order Actions: View Receipt and Rate Experience
+                // Post-fulfillment actions: provides access to the formal itemized electronic receipt and
+                // allows submitting delivery satisfaction ratings to improve logistics service quality.
                 if (currentOrder.status == OrderStatus.ORD_COMP) {
                     item {
                         Card(
@@ -1295,7 +1314,7 @@ fun TrackingScreen(
                 }
             },
             text = {
-                Column {
+                Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
                     Text(
                         "Your reserved cylinder will be released. If you already paid online, the refund is handled by our Finance team.",
                         fontSize = 11.sp,
@@ -1340,6 +1359,12 @@ fun TrackingScreen(
     }
 }
 
+/**
+ * Visual styling and text payload for the status hero banner card.
+ *
+ * Encapsulates background tint, accent highlight colors, representative iconography,
+ * and customer-friendly plain-language status title and subtitle.
+ */
 private data class HeroBannerConfig(
     val tint: Color,
     val accent: Color,
@@ -1348,11 +1373,30 @@ private data class HeroBannerConfig(
     val subtitle: String
 )
 
+/**
+ * Single progression milestone definition for the visual lifecycle stepper.
+ *
+ * @property status Canonical order status represented by this stepper milestone.
+ * @property label Customer-facing text label describing the stage.
+ */
 private data class StepperStep(
     val status: OrderStatus,
     val label: String
 )
 
+/**
+ * Determines whether a target lifecycle milestone has already been completed.
+ *
+ * Implements linear progression ranking with domain-specific milestone equivalence:
+ * - Completed orders (ORD_COMP) mark every historical milestone done because the handover is fully satisfied.
+ * - ORD_CONF and ORD_RSVD share rank 3 because inventory reservation occurs immediately and synchronously upon confirmation.
+ * - ORD_DISP and ORD_RDYPU share rank 7 as parallel fulfillment transit milestones for delivery and depot pickup respectively.
+ * - Inspection and adjustment sub-states (ORD_INSP, ORD_ADJ) share rank 9 prior to handover completion.
+ *
+ * @param current Current lifecycle status of the order.
+ * @param target Milestone status to evaluate.
+ * @return True if the current status strictly outranks the target status.
+ */
 private fun isStepCompleted(current: OrderStatus, target: OrderStatus): Boolean {
     if (current == OrderStatus.ORD_COMP) return true
     val rank = mapOf(
@@ -1377,6 +1421,20 @@ private fun isStepCompleted(current: OrderStatus, target: OrderStatus): Boolean 
     return curRank > tarRank
 }
 
+/**
+ * Evaluates whether an order is actively progressing within a given stepper milestone stage.
+ *
+ * Groups closely related operational substates under their parent customer milestone:
+ * - Confirmation milestone (ORD_CONF) encompasses validation, payment pending, confirmation, and reservation.
+ * - Partner assignment milestone (ORD_ACPT) groups distributor assignment and acceptance.
+ * - In-transit milestone encompasses road dispatch (ORD_DISP) or ready for customer pickup (ORD_RDYPU).
+ * - Doorstep arrival milestone encompasses doorstep arrival, inspection, and price adjustments.
+ * - Completed milestone encompasses final handover completion and terminal closure.
+ *
+ * @param current Current lifecycle status of the order.
+ * @param target Stepper milestone being rendered.
+ * @return True if the order is currently inside this milestone phase.
+ */
 private fun isStepCurrent(current: OrderStatus, target: OrderStatus): Boolean {
     return when (target) {
         OrderStatus.ORD_CONF -> current == OrderStatus.ORD_CONF || current == OrderStatus.ORD_RSVD || current == OrderStatus.ORD_PAYPEND || current == OrderStatus.ORD_VALPEND

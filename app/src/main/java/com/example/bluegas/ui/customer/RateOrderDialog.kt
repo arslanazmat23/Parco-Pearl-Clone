@@ -1,3 +1,13 @@
+/**
+ * Delivery experience feedback and rating modal dialog for completed customer orders.
+ *
+ * Implements:
+ * - 5-star interactive rating selector and optional customer review notes
+ * - Submission handling and duplicate rating prevention
+ *
+ * Reads: [Order.ratingStars], [Order.ratingFeedback]
+ * Calls: [BlueGasStore.rateOrder]
+ */
 package com.example.bluegas.ui.customer
 
 import androidx.compose.foundation.layout.*

@@ -142,12 +142,13 @@ fun HomeScreen(
         if (p.mode == FulfilmentMode.PICKUP && p.pickupPointId != null && depotsInCity.any { it.id == p.pickupPointId }) {
             selectedPickupNodeId = p.pickupPointId
         }
+        // Reorder prefill handling: consumes order parameters passed from the Orders screen and populates
+        // SKU, quantity, accessories, and pickup depot choices for rapid one-tap repurchases.
         onPrefillConsumed()
     }
 
-    val activeAddress = snapshot.addresses.find { it.id == selectedAddressId }
+    val activeAddress = customerAddresses.find { it.id == selectedAddressId }
         ?: customerAddresses.firstOrNull()
-        ?: snapshot.addresses.firstOrNull()
         ?: Address(
             id = "",
             customerId = activeCustomer.id,
@@ -159,7 +160,9 @@ fun HomeScreen(
             isServiceable = false
         )
 
-    // Depot pickup nodes restricted to the chosen delivery address's city
+    // Depot pickup nodes restricted to the chosen delivery address's city.
+    // Automated depot resolution: queries nodes for pickup-enabled facilities located within the city of the active address.
+    // When an address is outside the serviceable delivery area, this ensures customers have valid local pickup options.
     val cityPickupNodes = snapshot.nodes.filter {
         it.pickupEnabled && it.type != FulfilmentPointType.PLANT && it.city.equals(activeAddress.city, ignoreCase = true)
     }
@@ -180,7 +183,11 @@ fun HomeScreen(
         PricingEngine.roundToRupees(it, snapshot.currentPriceList.roundingRule)
     }
 
-    // Compute preview price quote with exact item breakdown
+    // Pure deterministic pricing quote calculation adhering to company pricing tiers and rounding rules.
+    // Automatically evaluates base fuel tariffs, cylinder security deposits for new packages, delivery surcharges, and statutory sales tax.
+    // Footing invariant: sum of item line subtotals + delivery surcharge + sales tax + security deposit - discounts exactly equals totalAmountPaisa.
+    // Quote calculation: recomputed only when pricing parameters change via remember keys.
+    // Minimizes unnecessary recomposition overhead during UI text inputs or dialog toggles.
     val accessoriesList = if (addAccessory) listOf("SKU-REG-HOSE" to 1) else emptyList()
     val quote = remember(
         selectedSku,
@@ -239,7 +246,7 @@ fun HomeScreen(
                         )
                         Spacer(modifier = Modifier.height(4.dp))
                         Text(
-                            text = "Licensed LPG doorstep supply in Lahore pilot zone.",
+                            text = "Order LPG for doorstep delivery or depot pickup.",
                             fontSize = 11.sp,
                             color = Color(0xFF94A3B8)
                         )
@@ -263,6 +270,8 @@ fun HomeScreen(
         }
 
         // Active Order Quick-Track Card
+        // Surfaces ongoing deliveries on the home landing page to prevent duplicate order placements.
+        // Provides immediate 1-tap navigation directly to live route tracking and rider status.
         val inFlightOrders = snapshot.orders.filter {
             it.customerId == activeCustomer.id &&
                 (it.status == OrderStatus.ORD_DISP || it.status == OrderStatus.ORD_ATHO || it.status == OrderStatus.ORD_PREP)
@@ -320,6 +329,9 @@ fun HomeScreen(
         }
 
         // Section 1: Order Requirement
+        // Distinguishes between standard empty cylinder refill exchange and new cylinder acquisition.
+        // Refill exchange requires handing over an approved empty cylinder at doorstep or depot.
+        // New cylinder acquisition adds a security deposit liability line item without transferring asset ownership.
         item {
             Card(
                 colors = CardDefaults.cardColors(containerColor = Color.White),
@@ -413,6 +425,7 @@ fun HomeScreen(
         }
 
         // Section 1B: Cylinder Size Selection (Filtered to household cylinders)
+        // Presents residential-approved LPG cylinder sizes with real-time base gas price and deposit liability.
         item {
             Card(
                 colors = CardDefaults.cardColors(containerColor = Color.White),
@@ -429,6 +442,8 @@ fun HomeScreen(
                     )
                     Spacer(modifier = Modifier.height(10.dp))
 
+                    // Household SKU gating: customers can only select cylinders approved for residential use.
+                    // Commercial cylinders (e.g. 45.4 kg bulk) require commercial trade accounts and are hidden from retail.
                     val cylinderVariants = snapshot.productVariants.filter { it.isCylinder && it.isHouseholdApproved }
 
                     cylinderVariants.forEach { pv ->
@@ -525,7 +540,8 @@ fun HomeScreen(
             }
         }
 
-        // Optional Accessory Add-on (regulator & hose)
+        // Accessory add-on: low-pressure safety regulator and reinforced LPG hose bundle.
+        // Rendered only when active price list specifies valid pricing for SKU-REG-HOSE.
         if (accessoryPricePaisa != null) {
             item {
                 Card(
@@ -567,6 +583,8 @@ fun HomeScreen(
         }
 
         // Section 2: Fulfilment Mode
+        // Doorstep Delivery requires the active address to reside within an active delivery zone.
+        // Addresses outside delivery areas automatically force depot pickup to ensure reliable fulfillment.
         item {
             Column {
                 Text(
@@ -692,7 +710,8 @@ fun HomeScreen(
                     }
                 }
             } else {
-                // Depot Pickup choice card
+                // Depot pickup choice: restricts selectable depot locations to those situated within the
+                // same municipality/city as the selected delivery address to prevent cross-city fulfillment errors.
                 Card(
                     colors = CardDefaults.cardColors(containerColor = Color.White),
                     shape = RoundedCornerShape(12.dp),
@@ -755,6 +774,8 @@ fun HomeScreen(
         }
 
         // Section 3: Payment Method
+        // Cash on Delivery confirms the order immediately with payment collected at doorstep handover.
+        // Online Hosted Gateway places order in ORD_PAYPEND with a 15-minute stock reservation hold window.
         item {
             Card(
                 colors = CardDefaults.cardColors(containerColor = Color.White),
@@ -805,7 +826,7 @@ fun HomeScreen(
                     Spacer(modifier = Modifier.height(6.dp))
                     Text(
                         text = if (paymentMethodChoice == PaymentMethod.ONLINE_HOSTED) {
-                            "Hold expires in 15 mins if unpaid. Simulated pilot gateway."
+                            "Hold expires in ${snapshot.settings.holdTtlMinutes} mins if unpaid. Simulated pilot gateway."
                         } else {
                             "Pay in cash directly to rider at doorstep upon delivery."
                         },
@@ -817,6 +838,8 @@ fun HomeScreen(
         }
 
         // Section 4: Price Summary & Breakdown
+        // Aggregates published unit prices, optional accessories, delivery logistics fees,
+        // statutory sales tax (GST), and security deposits following strict arithmetic footing rules.
         item {
             Card(
                 colors = CardDefaults.cardColors(containerColor = Color.White),
@@ -833,15 +856,11 @@ fun HomeScreen(
                     )
                     Spacer(modifier = Modifier.height(8.dp))
 
-                    QuoteLineRow(
-                        label = "LPG Refill Gas (${quantity}x)",
-                        value = formatRupees(quote.subtotalPaisa)
-                    )
-
-                    if (addAccessory && accessoryPricePaisa != null) {
+                    // Footing rule: item rows + fees + tax + deposit − discount = total
+                    quote.lines.filter { it.lineType != "DEPOSIT" }.forEach { line ->
                         QuoteLineRow(
-                            label = "Regulator & Hose Add-on",
-                            value = formatRupees(accessoryPricePaisa)
+                            label = "${line.quantity}x ${line.productName}",
+                            value = formatRupees(line.subtotalPaisa)
                         )
                     }
 
@@ -922,6 +941,8 @@ fun HomeScreen(
         }
 
         // Section 5: Place Order Button with double-tap protection
+        // Validates checkout eligibility based on delivery zone serviceability or depot selection.
+        // Disables the place order action while payment gateway modal is active to prevent duplicate orders.
         item {
             val isPickupValid = selectedMode == FulfilmentMode.PICKUP && cityPickupNodes.isNotEmpty() && selectedPickupNodeId.isNotEmpty()
             val isCheckoutAllowed = (selectedMode == FulfilmentMode.DELIVERY && activeAddress.isServiceable) || isPickupValid
@@ -935,6 +956,9 @@ fun HomeScreen(
                             fulfilmentMode = selectedMode,
                             sku = selectedSku,
                             quantity = quantity,
+                            // Note: includeDeposit = false is passed because cylinder deposits are governed
+                            // directly by orderType (NEW_CYLINDER) and platform settings (DEPOSIT vs SOLD),
+                            // rather than by a client-side boolean flag.
                             includeDeposit = false,
                             paymentMethod = paymentMethodChoice,
                             orderType = orderType,
@@ -1000,7 +1024,7 @@ fun HomeScreen(
     if (showPaymentGatewayDialog && createdOrderIdForPayment != null) {
         DemoPaymentDialog(
             orderId = createdOrderIdForPayment!!,
-            payableLabel = formatRupees(quote.totalAmountPaisa),
+            payableLabel = formatRupees(snapshot.orders.find { it.id == createdOrderIdForPayment }?.totalAmountPaisa ?: quote.totalAmountPaisa),
             store = store,
             onResult = { msg, isError ->
                 onActionMessage(msg, isError)

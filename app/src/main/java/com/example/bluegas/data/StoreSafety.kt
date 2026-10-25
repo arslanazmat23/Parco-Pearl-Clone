@@ -66,10 +66,21 @@ fun BlueGasStore.raiseIncident(
     )
     safetyIncidents.add(0, incident)
 
+    val staffAlertMessage = if (!targetCyl.isNullOrBlank()) {
+        "Safety alert from $source: $description. Cylinder $targetCyl on HSE hold."
+    } else {
+        "Safety alert from $source: $description."
+    }
+    val returnMessage = if (!targetCyl.isNullOrBlank()) {
+        "Incident $id raised. Cylinder placed on HSE hold."
+    } else {
+        "Incident $id raised."
+    }
+
     addNotification(
         surface = AppSurface.STAFF,
         title = "Safety Incident Raised ($id)",
-        message = "Safety alert from $source: $description. Cylinder $targetCyl on HSE hold.",
+        message = staffAlertMessage,
         canonicalStatus = "INCIDENT_RAISED",
         orderId = orderId,
         code = "NTF-09",
@@ -87,7 +98,7 @@ fun BlueGasStore.raiseIncident(
 
     logAudit("SafetyIncident", id, "RAISE_INCIDENT", actor, AccountableRole.HSE, description)
     notifyChanged()
-    return Pair(true, "Incident $id raised. Cylinder placed on HSE hold.")
+    return Pair(true, returnMessage)
 }
 
 fun BlueGasStore.moveIncident(

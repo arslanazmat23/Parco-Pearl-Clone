@@ -246,7 +246,8 @@ fun BlueGasStore.raiseSafetyConcern(
     raiseIncident(
         source = "CUSTOMER_REPORT",
         description = description,
-        orderId = orderId
+        orderId = orderId,
+        actor = customers.find { it.id == customerId }?.name ?: customerId
     )
     notifyChanged()
     return Pair(true, "Safety concern registered. Ticket: $caseId. Our safety team has been alerted.")
