@@ -455,6 +455,7 @@ fun BlueGasStore.riderReportIssue(
     orderId: String,
     reason: ExceptionReason,
     details: String,
+    safetyConcern: Boolean = false,
     isReplay: Boolean = false
 ): Pair<Boolean, String> {
     val order = orders.find { it.id == orderId } ?: return Pair(false, "Order not found.")
@@ -466,7 +467,8 @@ fun BlueGasStore.riderReportIssue(
             orderId = orderId,
             action = "REPORT_ISSUE",
             reasonCode = reason.name,
-            payloadNotes = details
+            payloadNotes = details,
+            handoverPayload = if (safetyConcern) mapOf("safetyConcern" to "true") else null
         )
         riderOutbox.add(event)
         notifyChanged()
@@ -474,7 +476,7 @@ fun BlueGasStore.riderReportIssue(
     }
 
     // Safety incident escalation (v0.4 §16.1 & EXC-10)
-    if (details.contains("unsafe", ignoreCase = true) || details.contains("leak", ignoreCase = true) || details.contains("smell", ignoreCase = true) || reason == ExceptionReason.DELIVERY_FAILURE_OR_CUSTOMER_UNAVAILABLE && (details.contains("gas", ignoreCase = true) || details.contains("hazard", ignoreCase = true))) {
+    if (safetyConcern || details.contains("unsafe", ignoreCase = true) || details.contains("leak", ignoreCase = true) || details.contains("smell", ignoreCase = true) || (reason == ExceptionReason.DELIVERY_FAILURE_OR_CUSTOMER_UNAVAILABLE && (details.contains("gas", ignoreCase = true) || details.contains("hazard", ignoreCase = true)))) {
         raiseIncident(
             source = "DELIVERY",
             description = "Doorstep safety alert: $details",
@@ -490,16 +492,37 @@ fun BlueGasStore.riderReportIssue(
     return raiseException(orderId, reason, details, actor = getActiveRider()?.name ?: "Rider")
 }
 
+/**
+ * Compares customer-provided handover PIN against the assigned PIN on the order.
+ *
+ * @param orderId Identifier of the order being delivered.
+ * @param enteredPin The 4-digit code provided by the customer at the doorstep.
+ * @return True if the code matches order.handoverPin exactly, false otherwise.
+ */
+fun BlueGasStore.verifyHandoverPin(orderId: String, enteredPin: String): Boolean {
+    val order = orders.find { it.id == orderId } ?: return false
+    val expected = order.handoverPin ?: return false
+    return expected.trim() == enteredPin.trim()
+}
+
+/**
+ * Completes final doorstep delivery, validates handover proof, records physical cylinder custody,
+ * updates COD / online payment lifecycle, and posts financial ledger transactions.
+ *
+ * Per BRD L3, Cash on Delivery payments transition to CASH_COLLECTED (not SETTLED),
+ * and settle only when Finance reconciles cash via [reconcileCashHandover].
+ */
 fun BlueGasStore.completeHandover(
     orderId: String,
     checklistAnswers: Map<String, Boolean> = emptyMap(),
     installationResult: InstallationResult = InstallationResult.INSTALLED,
     notInstalledReason: String? = null,
-    pinVerified: Boolean = true,
-    photoCaptured: Boolean = true,
-    signatureCaptured: Boolean = true,
+    pinVerified: Boolean = false,
+    pinNotVerifiedReason: String? = null,
+    photoCaptured: Boolean = false,
+    signatureCaptured: Boolean = false,
     signatureUnavailableReason: String? = null,
-    evidenceConsent: Boolean = true,
+    evidenceConsent: Boolean = false,
     signerName: String? = "Customer",
     amountReceivedPaisa: Long? = null,
     changeReturnedPaisa: Long? = null,
@@ -509,10 +532,10 @@ fun BlueGasStore.completeHandover(
     emptySize: String? = null,
     emptySerial: String? = null,
     isReplay: Boolean = false,
-    nonTechInstallationPassed: Boolean = true,
     proofOfDeliveryNote: String? = null,
-    collectedCashPaisa: Long? = null,
     actor: String? = null,
+    nonTechInstallationPassed: Boolean = false,
+    collectedCashPaisa: Long? = null,
     customerSignature: String? = null,
     photoEvidenceCaptured: Boolean = false,
     emptyCylinderCollected: Boolean = false,
@@ -520,7 +543,36 @@ fun BlueGasStore.completeHandover(
 ): Pair<Boolean, String> {
     val order = orders.find { it.id == orderId } ?: return Pair(false, "Order not found.")
 
+    if (!pinVerified && pinNotVerifiedReason.isNullOrBlank()) {
+        return Pair(false, "A reason is needed when the handover code was not checked.")
+    }
+    if (installationResult == InstallationResult.NOT_INSTALLED && notInstalledReason.isNullOrBlank()) {
+        return Pair(false, "A reason is needed when installation is marked Not installed.")
+    }
+
     if (isRiderOffline && !isReplay) {
+        val checklistJoined = checklistAnswers.entries.joinToString(";") { "${it.key}=${it.value}" }
+        val payloadMap = mutableMapOf<String, String>(
+            "pinVerified" to pinVerified.toString(),
+            "installationResult" to installationResult.name,
+            "photoCaptured" to photoCaptured.toString(),
+            "evidenceConsent" to evidenceConsent.toString(),
+            "signatureCaptured" to signatureCaptured.toString(),
+            "emptyCollected" to emptyCollected.toString()
+        )
+        pinNotVerifiedReason?.let { payloadMap["pinReason"] = it }
+        notInstalledReason?.let { payloadMap["notInstalledReason"] = it }
+        if (checklistJoined.isNotEmpty()) {
+            payloadMap["checklist"] = checklistJoined
+        }
+        emptyBrand?.let { payloadMap["emptyBrand"] = it }
+        emptySerial?.let { payloadMap["emptySerial"] = it }
+        amountReceivedPaisa?.let { payloadMap["amountReceivedPaisa"] = it.toString() }
+        changeReturnedPaisa?.let { payloadMap["changeReturnedPaisa"] = it.toString() }
+        cashDifferenceReason?.let { payloadMap["cashDifferenceReason"] = it }
+        signatureUnavailableReason?.let { payloadMap["signatureUnavailableReason"] = it }
+        signerName?.let { payloadMap["signerName"] = it }
+
         val event = OfflineOutboxEvent(
             sequenceNumber = outboxSequenceCounter++,
             idempotencyKey = "IDEMP-OFF-" + UUID.randomUUID().toString().take(8),
@@ -528,7 +580,8 @@ fun BlueGasStore.completeHandover(
             action = "COMPLETE_HANDOVER",
             fromStatus = order.status,
             toStatus = OrderStatus.ORD_COMP,
-            scannedSerial = order.allocatedSerial
+            scannedSerial = order.allocatedSerial,
+            handoverPayload = payloadMap
         )
         riderOutbox.add(event)
         notifyChanged()
@@ -563,10 +616,13 @@ fun BlueGasStore.completeHandover(
         riderId = order.assignedRiderId ?: "RIDER-001"
     )
     val delIdx = deliveries.indexOf(delivery)
+    val installationPassed = installationResult == InstallationResult.INSTALLED &&
+            (if (checklistAnswers.isNotEmpty()) checklistAnswers.values.all { it } else nonTechInstallationPassed)
+
     val updatedDelivery = delivery.copy(
         completedAt = System.currentTimeMillis(),
-        nonTechnicalInstallationPassed = nonTechInstallationPassed && (installationResult == InstallationResult.INSTALLED),
-        proofOfDeliveryNote = proofOfDeliveryNote ?: "Handover complete. Installation: $installationResult",
+        nonTechnicalInstallationPassed = installationPassed,
+        proofOfDeliveryNote = proofOfDeliveryNote ?: "Delivered. Installation: ${installationResult.displayName}.",
         podReference = order.podReference,
         customerSignatureCaptured = actualSignatureCaptured,
         signatureUnavailableReason = signatureUnavailableReason,
@@ -577,6 +633,7 @@ fun BlueGasStore.completeHandover(
         installationResult = installationResult,
         notInstalledReason = notInstalledReason,
         pinVerified = pinVerified,
+        pinNotVerifiedReason = pinNotVerifiedReason,
         evidenceConsent = evidenceConsent
     )
     if (delIdx != -1) deliveries[delIdx] = updatedDelivery else deliveries.add(updatedDelivery)
@@ -586,7 +643,7 @@ fun BlueGasStore.completeHandover(
         val brand = emptyBrand ?: "BLUE GAS"
         if (settings.approvedEmptyBrands.contains(brand)) {
             order.emptyCollectedBrand = brand
-            order.emptyCollectedCylinderId = emptySerial
+            order.emptyCollectedCylinderId = actualEmptySerial
             val targetSku = order.items.firstOrNull { it.lineType == "GAS" }?.sku ?: order.items.firstOrNull()?.sku
             if (targetSku != null) {
                 val stock = stockBalances.find { it.pointId == order.fulfilmentPointId && it.skuId == targetSku }
@@ -610,10 +667,8 @@ fun BlueGasStore.completeHandover(
             PaymentStateMachine.transition(payment, PaymentState.FINAL_AMOUNT_DETERMINED, actualActor, "Final COD amount determined", paymentHistory)
             PaymentStateMachine.transition(payment, PaymentState.CASH_COLLECTION_PENDING, actualActor, "Cash collection pending", paymentHistory)
             PaymentStateMachine.transition(payment, PaymentState.CASH_COLLECTED, actualActor, "Cash collected by rider", paymentHistory)
-            PaymentStateMachine.transition(payment, PaymentState.SETTLED, actualActor, "Cash collected at doorstep handover", paymentHistory)
+            // Per BRD L3: COD payments stop at CASH_COLLECTED. Settle only when Finance reconciles cash.
             payment.capturedAmountPaisa = rec
-            payment.settledAmountPaisa = rec
-            postLedger(orderId, "COD_COLLECTION", debitPaisa = rec, description = "Cash collected by rider — settled")
 
             codCollections.add(
                 CodCollection(
@@ -625,13 +680,13 @@ fun BlueGasStore.completeHandover(
                 )
             )
 
-            // Short collection creates EXC-21 (UAT-24)
+            // Short/difference collection creates EXC-21 (UAT-24)
             if (rec != order.totalAmountPaisa) {
                 reconExceptions.add(
                     ReconciliationException(
                         id = "EXC21-" + UUID.randomUUID().toString().take(6),
                         code = "EXC-21",
-                        description = "Cash difference on order $orderId: Expected ${formatRupees(order.totalAmountPaisa)}, Collected ${formatRupees(rec)}. Reason: ${cashDifferenceReason ?: "Short cash"}",
+                        description = "Cash difference on order $orderId: Expected ${formatRupees(order.totalAmountPaisa)}, Collected ${formatRupees(rec)}. Reason: ${cashDifferenceReason ?: "Cash received differs from the amount due"}",
                         ownerRole = AccountableRole.FINANCE
                     )
                 )
@@ -707,7 +762,12 @@ fun BlueGasStore.completeHandover(
     return Pair(true, "Handover completed successfully.")
 }
 
-fun BlueGasStore.riderSubmitCashHandover(riderId: String, recipient: String, declaredPaisa: Long): Pair<Boolean, String> {
+fun BlueGasStore.riderSubmitCashHandover(
+    riderId: String,
+    recipient: String,
+    declaredPaisa: Long,
+    reason: String? = null
+): Pair<Boolean, String> {
     val unhandedOrders = orders.filter {
         it.assignedRiderId == riderId && it.paymentMethod == PaymentMethod.CASH_ON_DELIVERY &&
                 it.status == OrderStatus.ORD_COMP &&
@@ -727,19 +787,20 @@ fun BlueGasStore.riderSubmitCashHandover(riderId: String, recipient: String, dec
             recipient = recipient,
             orderIds = unhandedOrders.map { it.id },
             expectedPaisa = expected,
-            declaredPaisa = declaredPaisa
+            declaredPaisa = declaredPaisa,
+            reason = reason
         )
     )
     addNotification(
         surface = AppSurface.STAFF,
         title = "Cash hand-over submitted",
-        message = "Cash hand-over $id (${formatPaisaToPkr(declaredPaisa)}) submitted by rider $riderId.",
+        message = "Cash hand-over $id (${formatRupees(declaredPaisa)}) submitted by rider $riderId.",
         canonicalStatus = "SUBMITTED",
         orderId = unhandedOrders.firstOrNull()?.id,
         code = "NTF-15",
         staffRole = StaffSubRole.FINANCE
     )
-    logAudit("CashHandover", id, "SUBMIT_CASH_HANDOVER", riderId, AccountableRole.DISTRIBUTOR, "Submitted cash handover of ${formatPaisaToPkr(declaredPaisa)} for ${unhandedOrders.size} orders")
+    logAudit("CashHandover", id, "SUBMIT_CASH_HANDOVER", riderId, AccountableRole.DISTRIBUTOR, "Submitted cash handover of ${formatRupees(declaredPaisa)} for ${unhandedOrders.size} orders")
     notifyChanged()
     return Pair(true, "Cash handover $id submitted for reconciliation.")
 }
@@ -772,15 +833,91 @@ fun BlueGasStore.depotSubmitCashHandover(distributorId: String, declaredPaisa: L
     addNotification(
         surface = AppSurface.STAFF,
         title = "Cash hand-over submitted",
-        message = "Depot counter cash hand-over $id (${formatPaisaToPkr(declaredPaisa)}) submitted for $distributorId.",
+        message = "Depot counter cash hand-over $id (${formatRupees(declaredPaisa)}) submitted for $distributorId.",
         canonicalStatus = "SUBMITTED",
         orderId = unhandedOrders.firstOrNull()?.id,
         code = "NTF-15",
         staffRole = StaffSubRole.FINANCE
     )
-    logAudit("CashHandover", id, "SUBMIT_CASH_HANDOVER", distributorId, AccountableRole.DISTRIBUTOR, "Submitted depot cash handover of ${formatPaisaToPkr(declaredPaisa)} for ${unhandedOrders.size} orders")
+    logAudit("CashHandover", id, "SUBMIT_CASH_HANDOVER", distributorId, AccountableRole.DISTRIBUTOR, "Submitted depot cash handover of ${formatRupees(declaredPaisa)} for ${unhandedOrders.size} orders")
     notifyChanged()
     return Pair(true, "Depot cash handover $id submitted to Finance.")
+}
+
+/**
+ * Structured representation of offline handover completion inputs stored in [OfflineOutboxEvent.handoverPayload].
+ */
+data class ParsedHandoverData(
+    val pinVerified: Boolean,
+    val pinReason: String?,
+    val installationResult: InstallationResult,
+    val notInstalledReason: String?,
+    val checklistAnswers: Map<String, Boolean>,
+    val emptyCollected: Boolean,
+    val emptyBrand: String?,
+    val emptySerial: String?,
+    val amountReceivedPaisa: Long?,
+    val changeReturnedPaisa: Long?,
+    val cashDifferenceReason: String?,
+    val photoCaptured: Boolean,
+    val evidenceConsent: Boolean,
+    val signatureCaptured: Boolean,
+    val signatureUnavailableReason: String?,
+    val signerName: String?
+)
+
+/**
+ * Parses raw key-value string map from an offline handover outbox payload into typed fields.
+ *
+ * @param payload Key-value pairs captured during offline doorstep delivery.
+ * @return Parsed handover parameters with safe defaults.
+ */
+fun parseHandoverPayload(payload: Map<String, String>?): ParsedHandoverData {
+    val p = payload ?: emptyMap()
+    val pinVerified = p["pinVerified"]?.toBooleanStrictOrNull() ?: false
+    val pinReason = p["pinReason"]
+    val instResult = runCatching { InstallationResult.valueOf(p["installationResult"] ?: "INSTALLED") }
+        .getOrDefault(InstallationResult.INSTALLED)
+    val notInstalledReason = p["notInstalledReason"]
+
+    val checklistAnswers = mutableMapOf<String, Boolean>()
+    p["checklist"]?.split(";")?.forEach { pair ->
+        val parts = pair.split("=")
+        if (parts.size == 2) {
+            checklistAnswers[parts[0]] = parts[1].toBooleanStrictOrNull() ?: false
+        }
+    }
+
+    val emptyCollected = p["emptyCollected"]?.toBooleanStrictOrNull() ?: false
+    val emptyBrand = p["emptyBrand"]
+    val emptySerial = p["emptySerial"]
+    val amountReceivedPaisa = p["amountReceivedPaisa"]?.toLongOrNull()
+    val changeReturnedPaisa = p["changeReturnedPaisa"]?.toLongOrNull()
+    val cashDifferenceReason = p["cashDifferenceReason"]
+    val photoCaptured = p["photoCaptured"]?.toBooleanStrictOrNull() ?: false
+    val evidenceConsent = p["evidenceConsent"]?.toBooleanStrictOrNull() ?: false
+    val signatureCaptured = p["signatureCaptured"]?.toBooleanStrictOrNull() ?: false
+    val signatureUnavailableReason = p["signatureUnavailableReason"]
+    val signerName = p["signerName"]
+
+    return ParsedHandoverData(
+        pinVerified = pinVerified,
+        pinReason = pinReason,
+        installationResult = instResult,
+        notInstalledReason = notInstalledReason,
+        checklistAnswers = checklistAnswers,
+        emptyCollected = emptyCollected,
+        emptyBrand = emptyBrand,
+        emptySerial = emptySerial,
+        amountReceivedPaisa = amountReceivedPaisa,
+        changeReturnedPaisa = changeReturnedPaisa,
+        cashDifferenceReason = cashDifferenceReason,
+        photoCaptured = photoCaptured,
+        evidenceConsent = evidenceConsent,
+        signatureCaptured = signatureCaptured,
+        signatureUnavailableReason = signatureUnavailableReason,
+        signerName = signerName
+    )
 }
 
 fun BlueGasStore.replayRiderOutbox(): String {
@@ -818,7 +955,8 @@ fun BlueGasStore.replayRiderOutbox(): String {
             }
             "REPORT_ISSUE" -> {
                 val reason = try { ExceptionReason.valueOf(event.reasonCode ?: "DELIVERY_FAILURE_OR_CUSTOMER_UNAVAILABLE") } catch (_: Exception) { ExceptionReason.DELIVERY_FAILURE_OR_CUSTOMER_UNAVAILABLE }
-                val (ok, _) = riderReportIssue(event.orderId, reason, event.payloadNotes ?: "Offline report", isReplay = true)
+                val safetyConcern = event.handoverPayload?.get("safetyConcern") == "true"
+                val (ok, _) = riderReportIssue(event.orderId, reason, event.payloadNotes ?: "Offline report", safetyConcern = safetyConcern, isReplay = true)
                 event.syncStatus = if (ok) "APPLIED" else "REJECTED"
                 if (ok) applied++ else rejected++
             }
@@ -847,7 +985,27 @@ fun BlueGasStore.replayRiderOutbox(): String {
                     )
                     conflicts++
                 } else {
-                    val (ok, _) = completeHandover(event.orderId, isReplay = true)
+                    val parsed = parseHandoverPayload(event.handoverPayload)
+                    val (ok, _) = completeHandover(
+                        orderId = event.orderId,
+                        checklistAnswers = parsed.checklistAnswers,
+                        installationResult = parsed.installationResult,
+                        notInstalledReason = parsed.notInstalledReason,
+                        pinVerified = parsed.pinVerified,
+                        pinNotVerifiedReason = parsed.pinReason,
+                        photoCaptured = parsed.photoCaptured,
+                        signatureCaptured = parsed.signatureCaptured,
+                        signatureUnavailableReason = parsed.signatureUnavailableReason,
+                        evidenceConsent = parsed.evidenceConsent,
+                        signerName = parsed.signerName,
+                        amountReceivedPaisa = parsed.amountReceivedPaisa,
+                        changeReturnedPaisa = parsed.changeReturnedPaisa,
+                        cashDifferenceReason = parsed.cashDifferenceReason,
+                        emptyCollected = parsed.emptyCollected,
+                        emptyBrand = parsed.emptyBrand,
+                        emptySerial = parsed.emptySerial,
+                        isReplay = true
+                    )
                     event.syncStatus = if (ok) "APPLIED" else "REJECTED"
                     if (ok) applied++ else rejected++
                 }
@@ -860,11 +1018,16 @@ fun BlueGasStore.replayRiderOutbox(): String {
 }
 
 fun BlueGasStore.simulateSerialConflict(): String {
-    val serial = "BG-LHR-118-002"
+    val targetOrder = orders.find { it.id == "ORD-SEED-105" }
+    val serial = targetOrder?.allocatedSerial ?: "BG-LHR-118-002"
+    val cyl = cylinders.find { it.serialNumber == serial }
+    if (targetOrder == null || cyl == null) {
+        return "Demo order not found."
+    }
     val event = OfflineOutboxEvent(
         sequenceNumber = outboxSequenceCounter++,
         idempotencyKey = "IDEMP-OFF-" + UUID.randomUUID().toString().take(8),
-        orderId = "ORD-SEED-105",
+        orderId = targetOrder.id,
         action = "COMPLETE_HANDOVER",
         scannedSerial = serial
     )

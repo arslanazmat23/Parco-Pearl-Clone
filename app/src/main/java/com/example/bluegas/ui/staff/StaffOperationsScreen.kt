@@ -447,8 +447,7 @@ fun StaffOperationsScreen(
                     .fillMaxWidth()
                     .padding(vertical = 4.dp)
                     .clickable {
-                        store.selectedOrderIdForDrawer = ord.id
-                        store.notifyChanged()
+                        store.selectOrderForDevDrawer(ord.id)
                         onSelectOrder(ord)
                     }
             ) {

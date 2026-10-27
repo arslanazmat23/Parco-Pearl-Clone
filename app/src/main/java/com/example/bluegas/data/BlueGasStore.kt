@@ -204,6 +204,22 @@ class BlueGasStore {
         notifyChanged()
     }
 
+    fun setSurface(surface: AppSurface) {
+        activeSurface = surface
+        notifyChanged()
+    }
+
+    @JvmName("updateRiderOffline")
+    fun setRiderOffline(offline: Boolean) {
+        isRiderOffline = offline
+        notifyChanged()
+    }
+
+    fun selectOrderForDevDrawer(orderId: String?) {
+        selectedOrderIdForDrawer = orderId
+        notifyChanged()
+    }
+
     fun markNotificationsRead(surface: AppSurface, role: StaffSubRole? = null) {
         notifications.forEach { item ->
             if (item.surface == surface && (surface != AppSurface.STAFF || role == null || item.staffRole == null || item.staffRole == role)) {

@@ -1,136 +1,212 @@
+/**
+ * Primary delivery console and task management dashboard for BLUE GAS riders.
+ *
+ * Implements:
+ * - Real-time task feeds partitioned into Pending, Active, and Completed tabs
+ * - Strict state preservation across surface switches using rememberSaveable
+ * - Honest acceptance countdown with timeout enforcement (no fake timestamps)
+ * - Depot-constrained cylinder serial binding and safe doorstep handover
+ * - Full offline operation with idempotency-keyed outbox replay
+ * - Cash on Delivery custody tracking and formal handover to depot/finance
+ *
+ * Reads: [SharedAppState.orders], [SharedAppState.riders], [SharedAppState.cylinders], [SharedAppState.settings]
+ * Calls: [BlueGasStore.riderAcceptOrder], [BlueGasStore.riderDeclineOrder], [BlueGasStore.riderStartPreparing],
+ *        [BlueGasStore.riderSelectAndBindSerial], [BlueGasStore.riderStartDeliveryOrStagePickup],
+ *        [BlueGasStore.arriveAtHandover], [BlueGasStore.riderReportIssue], [BlueGasStore.riderSubmitCashHandover],
+ *        [BlueGasStore.replayRiderOutbox], [BlueGasStore.simulateSerialConflict], [BlueGasStore.setRiderOffline]
+ */
 package com.example.bluegas.ui.rider
 
+import android.content.Intent
+import android.net.Uri
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.bluegas.data.*
 import com.example.bluegas.model.*
-import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import com.example.bluegas.ui.components.CanonicalStatusChip
+import com.example.bluegas.ui.components.*
+import com.example.bluegas.ui.customer.DemoValuePill
+import com.example.bluegas.ui.customer.ReceiptDialog
+import com.example.bluegas.ui.customer.customerVisibleItems
 import com.example.ui.theme.BlueGasDark
 import com.example.ui.theme.BlueGasPrimary
 import kotlinx.coroutines.delay
 
+/**
+ * Filter tabs partitioning rider orders into distinct operational stages.
+ */
 enum class RiderTab {
     PENDING,
     ACTIVE,
     COMPLETED
 }
 
+/**
+ * Invariant: Every order assigned to this rider belongs to exactly one of the three tab lists
+ * (Pending + Active + Completed == total assigned orders).
+ */
+private fun isPendingForRider(order: Order, riderId: String): Boolean {
+    return order.assignedRiderId == riderId &&
+            order.status == OrderStatus.ORD_ASGN &&
+            order.riderTaskStatus != RiderTaskStatus.ACCEPTED
+}
+
+private fun isActiveForRider(order: Order, riderId: String): Boolean {
+    return order.assignedRiderId == riderId &&
+            !order.status.isTerminal &&
+            order.status != OrderStatus.ORD_ASGN &&
+            order.status != OrderStatus.ORD_COMP
+}
+
+private fun isCompletedForRider(order: Order, riderId: String): Boolean {
+    return order.assignedRiderId == riderId && order.status == OrderStatus.ORD_COMP
+}
+
+/**
+ * Root rider application console displaying task lists, status banners, and offline outbox controls.
+ *
+ * @param store Application data store reference.
+ */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun RiderAppScreen(store: BlueGasStore) {
+    val context = LocalContext.current
     val appState by store.appState.collectAsStateWithLifecycle()
-    var selectedTab by remember { mutableStateOf(RiderTab.PENDING) }
+
+    var selectedTabName by rememberSaveable { mutableStateOf(RiderTab.PENDING.name) }
+    val selectedTab = remember(selectedTabName) {
+        runCatching { RiderTab.valueOf(selectedTabName) }.getOrDefault(RiderTab.PENDING)
+    }
+
     var actionBanner by remember { mutableStateOf<String?>(null) }
     var isErrorBanner by remember { mutableStateOf(false) }
 
-    // Dialogs
-    var showDeclineDialog by remember { mutableStateOf(false) }
-    var orderToDeclineId by remember { mutableStateOf<String?>(null) }
-    var declineReason by remember { mutableStateOf("Vehicle breakdown / maintenance issue") }
+    // Auto-dismiss banner after 4 seconds
+    LaunchedEffect(actionBanner) {
+        if (actionBanner != null) {
+            delay(4000L)
+            actionBanner = null
+        }
+    }
 
-    var showSerialPicker by remember { mutableStateOf(false) }
-    var orderForSerialId by remember { mutableStateOf<String?>(null) }
-
-    var showIssueDialog by remember { mutableStateOf(false) }
-    var orderForIssueId by remember { mutableStateOf<String?>(null) }
-    var issueReason by remember { mutableStateOf(ExceptionReason.DELIVERY_FAILURE_OR_CUSTOMER_UNAVAILABLE) }
-    var issueDetailText by remember { mutableStateOf("Customer unavailable after 3 call attempts.") }
-
-    var showPodDialog by remember { mutableStateOf(false) }
-    var orderForPodId by remember { mutableStateOf<String?>(null) }
-
+    // Dialog states
+    var showDeclineOrderId by remember { mutableStateOf<String?>(null) }
+    var showSerialPickerOrderId by remember { mutableStateOf<String?>(null) }
+    var showIssueOrderId by remember { mutableStateOf<String?>(null) }
+    var showPodOrderId by remember { mutableStateOf<String?>(null) }
     var showOutboxDialog by remember { mutableStateOf(false) }
+    var showCashHandoverDialog by remember { mutableStateOf(false) }
     var showReceiptOrderId by remember { mutableStateOf<String?>(null) }
+    var showDemoControls by rememberSaveable { mutableStateOf(false) }
 
-    val activeRider = store.getActiveRider() ?: store.riders.firstOrNull()
+    val activeRider = appState.riders.find { it.id == appState.activeRiderId } ?: appState.riders.firstOrNull()
     if (activeRider == null) {
         Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-            Text("No riders configured. Please contact admin.", fontWeight = FontWeight.Bold)
+            Text("No riders configured in the system.", fontWeight = FontWeight.Bold)
         }
         return
     }
 
-    // Filter orders: Rider sees ONLY orders assigned to them, reaching ORD_ASGN or beyond
-    val riderOrders = appState.orders.filter {
-        it.assignedRiderId == activeRider.id && it.status.ordinal >= OrderStatus.ORD_ASGN.ordinal
+    // Partition orders for this rider
+    val pendingOrders = remember(appState.orders, activeRider.id) {
+        appState.orders.filter { isPendingForRider(it, activeRider.id) }
+            .sortedByDescending { it.createdAt }
     }
 
-    val pendingOrders = riderOrders.filter { it.status == OrderStatus.ORD_ASGN }
-    val activeOrders = riderOrders.filter {
-        it.status in listOf(
-            OrderStatus.ORD_ACPT,
-            OrderStatus.ORD_PREP,
-            OrderStatus.ORD_DISP,
-            OrderStatus.ORD_RDYPU,
-            OrderStatus.ORD_ATHO,
-            OrderStatus.ORD_HOC
-        )
-    }.sortedWith(compareByDescending { ord ->
-        when (ord.status) {
-            OrderStatus.ORD_HOC -> 5
-            OrderStatus.ORD_ATHO -> 4
-            OrderStatus.ORD_DISP, OrderStatus.ORD_RDYPU -> 3
-            OrderStatus.ORD_PREP -> 2
-            OrderStatus.ORD_ACPT -> 1
-            else -> 0
+    val activeOrders = remember(appState.orders, activeRider.id) {
+        appState.orders.filter { isActiveForRider(it, activeRider.id) }
+            .sortedWith(compareByDescending { ord ->
+                when (ord.status) {
+                    OrderStatus.ORD_EXC -> 6
+                    OrderStatus.ORD_HOC -> 5
+                    OrderStatus.ORD_ATHO -> 4
+                    OrderStatus.ORD_DISP, OrderStatus.ORD_RDYPU -> 3
+                    OrderStatus.ORD_PREP -> 2
+                    OrderStatus.ORD_ACPT -> 1
+                    else -> 0
+                }
+            })
+    }
+
+    val completedOrders = remember(appState.orders, activeRider.id) {
+        appState.orders.filter { isCompletedForRider(it, activeRider.id) }
+            .sortedByDescending { it.completedAt ?: it.createdAt }
+    }
+
+    // Calculate pending COD cash to hand over
+    val pendingCashPaisa = remember(appState.orders, appState.cashHandovers, activeRider.id) {
+        val completedCodOrders = appState.orders.filter {
+            it.assignedRiderId == activeRider.id &&
+                    it.paymentMethod == PaymentMethod.CASH_ON_DELIVERY &&
+                    it.status == OrderStatus.ORD_COMP &&
+                    appState.payments.find { p -> p.orderId == it.id }?.state == PaymentState.CASH_COLLECTED &&
+                    appState.cashHandovers.none { ch -> ch.orderIds.contains(it.id) }
         }
-    })
-    val completedOrders = riderOrders.filter { it.status == OrderStatus.ORD_COMP }
+        completedCodOrders.sumOf { it.amountReceivedPaisa ?: it.totalAmountPaisa }
+    }
 
-    // Today's stats calculation
-    val todayEarningsPaisa = completedOrders.size * 25000L
+    // Count orders delivered on today's calendar date
+    val deliveredTodayCount = remember(completedOrders) {
+        completedOrders.count { it.completedAt != null && isToday(it.completedAt!!) }
+    }
 
-    // Phone frame centered container (390x844 format)
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .background(Color(0xFFE2E8F0)),
+            .background(Color(0xFFF1F5F9)),
         contentAlignment = Alignment.TopCenter
     ) {
         Card(
             modifier = Modifier
-                .widthIn(max = 420.dp)
-                .fillMaxHeight()
-                .padding(vertical = 8.dp),
-            shape = RoundedCornerShape(20.dp),
-            colors = CardDefaults.cardColors(containerColor = Color.White),
-            elevation = CardDefaults.cardElevation(defaultElevation = 8.dp)
+                .widthIn(max = 600.dp)
+                .fillMaxSize(),
+            shape = RoundedCornerShape(0.dp),
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.background)
         ) {
             Column(modifier = Modifier.fillMaxSize()) {
 
-                // 1. HEADER WITH OFFLINE TOGGLE & PROFILE SWITCHER
+                // 1. TOP BAR: RIDER IDENTITY & OFFLINE TOGGLE
                 Surface(
                     color = if (appState.isRiderOffline) Color(0xFF7F1D1D) else BlueGasDark,
                     modifier = Modifier.fillMaxWidth()
                 ) {
-                    Column(modifier = Modifier.padding(12.dp)) {
+                    Column(modifier = Modifier.padding(14.dp)) {
                         Row(
                             modifier = Modifier.fillMaxWidth(),
                             horizontalArrangement = Arrangement.SpaceBetween,
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             Column(modifier = Modifier.weight(1f)) {
-                                Text("RIDER DELIVERY CONSOLE", fontSize = 10.sp, color = Color(0xFF93C5FD), fontWeight = FontWeight.Bold)
+                                Text(
+                                    text = "RIDER CONSOLE",
+                                    fontSize = 10.sp,
+                                    color = Color(0xFF93C5FD),
+                                    fontWeight = FontWeight.Bold
+                                )
 
-                                // Profile Switcher Dropdown
                                 var profileDropdownExpanded by remember { mutableStateOf(false) }
                                 Box {
                                     Row(
@@ -143,11 +219,13 @@ fun RiderAppScreen(store: BlueGasStore) {
                                             text = activeRider.name,
                                             fontSize = 16.sp,
                                             color = Color.White,
-                                            fontWeight = FontWeight.Bold
+                                            fontWeight = FontWeight.Bold,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
                                         )
                                         Icon(
                                             Icons.Default.ArrowDropDown,
-                                            contentDescription = "Switch Rider Profile",
+                                            contentDescription = "Switch profile",
                                             tint = Color.White,
                                             modifier = Modifier.size(20.dp)
                                         )
@@ -157,12 +235,16 @@ fun RiderAppScreen(store: BlueGasStore) {
                                         expanded = profileDropdownExpanded,
                                         onDismissRequest = { profileDropdownExpanded = false }
                                     ) {
-                                        store.riders.forEach { r ->
+                                        appState.riders.forEach { r ->
                                             DropdownMenuItem(
                                                 text = {
                                                     Column {
                                                         Text(r.name, fontWeight = FontWeight.Bold, fontSize = 13.sp)
-                                                        Text("${r.zoneName} • ${r.status}", fontSize = 11.sp, color = Color.Gray)
+                                                        Text(
+                                                            "${r.zoneName} · ${if (r.status == "ACTIVE") "On shift" else "Off shift"}",
+                                                            fontSize = 11.sp,
+                                                            color = Color.Gray
+                                                        )
                                                     }
                                                 },
                                                 onClick = {
@@ -175,8 +257,8 @@ fun RiderAppScreen(store: BlueGasStore) {
                                 }
 
                                 Text(
-                                    "${activeRider.vehicleNumber} • ${activeRider.zoneName}",
-                                    fontSize = 10.sp,
+                                    text = "${activeRider.zoneName} · ${if (activeRider.status == "ACTIVE") "On shift" else "Off shift"}",
+                                    fontSize = 11.sp,
                                     color = Color(0xFFCBD5E1)
                                 )
                             }
@@ -198,7 +280,7 @@ fun RiderAppScreen(store: BlueGasStore) {
                                     )
                                     Spacer(modifier = Modifier.width(4.dp))
                                     Text(
-                                        if (appState.isRiderOffline) "OFFLINE" else "ONLINE",
+                                        text = if (appState.isRiderOffline) "Offline" else "Online",
                                         fontSize = 11.sp,
                                         fontWeight = FontWeight.Bold,
                                         color = Color.White
@@ -206,192 +288,236 @@ fun RiderAppScreen(store: BlueGasStore) {
                                     Spacer(modifier = Modifier.width(6.dp))
                                     Switch(
                                         checked = appState.isRiderOffline,
-                                        onCheckedChange = {
-                                            store.isRiderOffline = it
-                                            store.notifyChanged()
-                                        },
+                                        onCheckedChange = { store.setRiderOffline(it) },
                                         colors = SwitchDefaults.colors(
                                             checkedThumbColor = Color.White,
                                             checkedTrackColor = Color(0xFFB91C1C)
                                         ),
-                                        modifier = Modifier.height(20.dp)
+                                        modifier = Modifier.height(24.dp)
                                     )
                                 }
                             }
                         }
 
-                        // Offline status warning banner
+                        // Offline Banner
                         if (appState.isRiderOffline) {
-                            Spacer(modifier = Modifier.height(6.dp))
+                            Spacer(modifier = Modifier.height(8.dp))
                             Surface(
                                 color = Color(0xFF991B1B),
-                                shape = RoundedCornerShape(4.dp),
+                                shape = RoundedCornerShape(6.dp),
                                 modifier = Modifier.fillMaxWidth()
                             ) {
                                 Text(
-                                    "⚠️ Offline Mode: Actions queued to Local Outbox with idempotency keys. Replay on reconnect.",
-                                    fontSize = 10.sp,
+                                    text = "You are offline. Actions are saved on this phone and sent when you are back online.",
+                                    fontSize = 11.sp,
                                     color = Color(0xFFFEF2F2),
-                                    modifier = Modifier.padding(6.dp)
+                                    modifier = Modifier.padding(8.dp)
                                 )
                             }
                         }
 
-                        Spacer(modifier = Modifier.height(8.dp))
+                        Spacer(modifier = Modifier.height(10.dp))
 
-                        // Today's Stats Bar
-                        Surface(
-                            color = Color(0xFF1E293B),
-                            shape = RoundedCornerShape(8.dp),
-                            modifier = Modifier.fillMaxWidth()
+                        // Stats Tiles Bar
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
-                            Row(
+                            // Tile 1: Cash to hand over (clickable to open hand-over dialog)
+                            Surface(
+                                color = Color(0xFF1E293B),
+                                shape = RoundedCornerShape(8.dp),
                                 modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(horizontal = 10.dp, vertical = 6.dp),
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                                verticalAlignment = Alignment.CenterVertically
+                                    .weight(1f)
+                                    .clickable { showCashHandoverDialog = true }
                             ) {
-                                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                                    Text("Delivered Today", fontSize = 9.sp, color = Color(0xFF94A3B8))
-                                    Text("${completedOrders.size} Orders", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = Color.White)
+                                Column(
+                                    modifier = Modifier.padding(8.dp),
+                                    horizontalAlignment = Alignment.CenterHorizontally
+                                ) {
+                                    Text("Cash to hand over", fontSize = 10.sp, color = Color(0xFF94A3B8))
+                                    Text(
+                                        text = formatRupees(pendingCashPaisa),
+                                        fontSize = 13.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        color = if (pendingCashPaisa > 0) Color(0xFF38BDF8) else Color.White
+                                    )
                                 }
-                                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                                    Text("Rider Earnings", fontSize = 9.sp, color = Color(0xFF94A3B8))
-                                    Text(formatPaisaToPkr(todayEarningsPaisa), fontSize = 12.sp, fontWeight = FontWeight.Bold, color = Color(0xFF38BDF8))
+                            }
+
+                            // Tile 2: Delivered Today
+                            Surface(
+                                color = Color(0xFF1E293B),
+                                shape = RoundedCornerShape(8.dp),
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                Column(
+                                    modifier = Modifier.padding(8.dp),
+                                    horizontalAlignment = Alignment.CenterHorizontally
+                                ) {
+                                    Text("Delivered Today", fontSize = 10.sp, color = Color(0xFF94A3B8))
+                                    Text(
+                                        text = "$deliveredTodayCount",
+                                        fontSize = 13.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        color = Color.White
+                                    )
                                 }
-                                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                                    Text("Shift Status", fontSize = 9.sp, color = Color(0xFF94A3B8))
-                                    Surface(
-                                        color = if (activeRider.status == "ACTIVE") Color(0xFF166534) else Color(0xFF7F1D1D),
-                                        shape = RoundedCornerShape(4.dp),
-                                        modifier = Modifier.clickable {
-                                            store.toggleRiderShiftStatus(activeRider.id)
-                                        }
-                                    ) {
-                                        Text(
-                                            if (activeRider.status == "ACTIVE") "ON SHIFT" else "OFF DUTY",
-                                            fontSize = 9.sp,
-                                            fontWeight = FontWeight.Bold,
-                                            color = Color.White,
-                                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
-                                        )
-                                    }
+                            }
+
+                            // Tile 3: Shift Status Toggle
+                            Surface(
+                                color = if (activeRider.status == "ACTIVE") Color(0xFF166534) else Color(0xFF991B1B),
+                                shape = RoundedCornerShape(8.dp),
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .clickable { store.toggleRiderShiftStatus(activeRider.id) }
+                            ) {
+                                Column(
+                                    modifier = Modifier.padding(8.dp),
+                                    horizontalAlignment = Alignment.CenterHorizontally
+                                ) {
+                                    Text("Shift", fontSize = 10.sp, color = Color(0xFFE2E8F0))
+                                    Text(
+                                        text = if (activeRider.status == "ACTIVE") "On Shift" else "Off Duty",
+                                        fontSize = 12.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        color = Color.White
+                                    )
                                 }
                             }
                         }
                     }
                 }
 
-                // 2. DEMO CONTROLS BAR: Simulate Conflict & Outbox Sync
-                Surface(
-                    color = Color(0xFFF1F5F9),
+                // 2. DEMO CONTROLS (Collapsible, explicitly labelled)
+                Card(
+                    colors = CardDefaults.cardColors(containerColor = Color(0xFFF8FAFC)),
+                    shape = RoundedCornerShape(0.dp),
                     modifier = Modifier.fillMaxWidth()
                 ) {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 10.dp, vertical = 6.dp),
-                        horizontalArrangement = Arrangement.spacedBy(6.dp)
-                    ) {
-                        Button(
-                            onClick = {
-                                val msg = store.simulateSerialConflict()
-                                actionBanner = msg
-                                isErrorBanner = false
-                            },
-                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFD97706)),
-                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
+                    Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)) {
+                        Row(
                             modifier = Modifier
-                                .weight(1.1f)
-                                .height(32.dp)
+                                .fillMaxWidth()
+                                .clickable { showDemoControls = !showDemoControls },
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Icon(Icons.Default.ElectricBolt, contentDescription = null, modifier = Modifier.size(13.dp))
-                            Spacer(modifier = Modifier.width(3.dp))
-                            Text("Demo Conflict", fontSize = 10.sp)
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                DemoValuePill("Demo only")
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text(
+                                    text = "Demo & Outbox Controls",
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = Color(0xFF475569)
+                                )
+                            }
+                            Icon(
+                                imageVector = if (showDemoControls) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
+                                contentDescription = null,
+                                modifier = Modifier.size(18.dp),
+                                tint = Color(0xFF64748B)
+                            )
                         }
 
-                        Button(
-                            onClick = {
-                                val report = store.replayRiderOutbox()
-                                actionBanner = report
-                                isErrorBanner = false
-                            },
-                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF0F766E)),
-                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
-                            modifier = Modifier
-                                .weight(1f)
-                                .height(32.dp),
-                            enabled = appState.riderOutbox.isNotEmpty() && !appState.isRiderOffline
-                        ) {
-                            Icon(Icons.Default.Sync, contentDescription = null, modifier = Modifier.size(13.dp))
-                            Spacer(modifier = Modifier.width(3.dp))
-                            Text("Sync (${appState.riderOutbox.size})", fontSize = 10.sp)
-                        }
+                        if (showDemoControls) {
+                            Spacer(modifier = Modifier.height(8.dp))
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                Button(
+                                    onClick = {
+                                        val msg = store.simulateSerialConflict()
+                                        actionBanner = msg
+                                        isErrorBanner = false
+                                    },
+                                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFD97706)),
+                                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
+                                    modifier = Modifier
+                                        .weight(1.1f)
+                                        .height(34.dp)
+                                ) {
+                                    Icon(Icons.Default.ElectricBolt, contentDescription = null, modifier = Modifier.size(13.dp))
+                                    Spacer(modifier = Modifier.width(3.dp))
+                                    Text("Demo Conflict", fontSize = 10.sp)
+                                }
 
-                        OutlinedButton(
-                            onClick = { showOutboxDialog = true },
-                            contentPadding = PaddingValues(horizontal = 6.dp, vertical = 4.dp),
-                            modifier = Modifier
-                                .weight(0.9f)
-                                .height(32.dp)
-                        ) {
-                            Icon(Icons.Default.Inbox, contentDescription = null, modifier = Modifier.size(13.dp))
-                            Spacer(modifier = Modifier.width(3.dp))
-                            Text("Outbox (${appState.riderOutbox.size})", fontSize = 10.sp)
+                                Button(
+                                    onClick = {
+                                        val report = store.replayRiderOutbox()
+                                        actionBanner = report
+                                        isErrorBanner = false
+                                    },
+                                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF0F766E)),
+                                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .height(34.dp),
+                                    enabled = appState.riderOutbox.isNotEmpty() && !appState.isRiderOffline
+                                ) {
+                                    Icon(Icons.Default.Sync, contentDescription = null, modifier = Modifier.size(13.dp))
+                                    Spacer(modifier = Modifier.width(3.dp))
+                                    Text("Sync Now (${appState.riderOutbox.size})", fontSize = 10.sp)
+                                }
+
+                                OutlinedButton(
+                                    onClick = { showOutboxDialog = true },
+                                    contentPadding = PaddingValues(horizontal = 6.dp, vertical = 4.dp),
+                                    modifier = Modifier
+                                        .weight(0.9f)
+                                        .height(34.dp)
+                                ) {
+                                    Icon(Icons.Default.Inbox, contentDescription = null, modifier = Modifier.size(13.dp))
+                                    Spacer(modifier = Modifier.width(3.dp))
+                                    Text("Outbox (${appState.riderOutbox.size})", fontSize = 10.sp)
+                                }
+                            }
+                            if (appState.riderOutbox.isEmpty()) {
+                                Spacer(modifier = Modifier.height(4.dp))
+                                Text(
+                                    text = "Offline outbox is currently empty. Actions taken while offline will appear here.",
+                                    fontSize = 10.sp,
+                                    color = Color(0xFF94A3B8)
+                                )
+                            }
                         }
                     }
                 }
 
-                // 3. ACTION / ERROR BANNER
+                // 3. AUTO-DISMISSING ACTION BANNER (Green=success, Amber=error)
                 if (actionBanner != null) {
                     Surface(
-                        color = if (isErrorBanner) Color(0xFFFEE2E2) else Color(0xFFFEF3C7),
+                        color = if (isErrorBanner) Color(0xFFFEF3C7) else Color(0xFFDCFCE7),
                         modifier = Modifier.fillMaxWidth()
                     ) {
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
-                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
+                            modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp)
                         ) {
+                            Icon(
+                                imageVector = if (isErrorBanner) Icons.Default.WarningAmber else Icons.Default.CheckCircle,
+                                contentDescription = null,
+                                tint = if (isErrorBanner) Color(0xFF92400E) else Color(0xFF166534),
+                                modifier = Modifier.size(18.dp)
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
                             Text(
-                                actionBanner ?: "",
-                                fontSize = 11.sp,
-                                color = if (isErrorBanner) Color(0xFF991B1B) else Color(0xFF78350F),
+                                text = actionBanner ?: "",
+                                fontSize = 12.sp,
+                                color = if (isErrorBanner) Color(0xFF92400E) else Color(0xFF166534),
+                                fontWeight = FontWeight.Medium,
                                 modifier = Modifier.weight(1f)
                             )
-                            IconButton(onClick = { actionBanner = null }, modifier = Modifier.size(20.dp)) {
-                                Icon(Icons.Default.Close, contentDescription = null, modifier = Modifier.size(12.dp))
-                            }
-                        }
-                    }
-                }
-
-                // If Rider is inactive, show inactive notice
-                if (activeRider.status != "ACTIVE") {
-                    Surface(
-                        color = Color(0xFFFEF2F2),
-                        border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFFFCA5A5)),
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(8.dp),
-                        shape = RoundedCornerShape(8.dp)
-                    ) {
-                        Row(
-                            modifier = Modifier.padding(10.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.SpaceBetween
-                        ) {
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text("Rider Off-Duty", fontWeight = FontWeight.Bold, color = Color(0xFFB91C1C), fontSize = 12.sp)
-                                Text("${activeRider.name} is currently off-duty. Start shift to begin receiving deliveries.", fontSize = 10.sp, color = Color(0xFF7F1D1D))
-                            }
-                            Button(
-                                onClick = { store.toggleRiderShiftStatus(activeRider.id) },
-                                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF16A34A)),
-                                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
-                                modifier = Modifier.height(30.dp)
-                            ) {
-                                Text("Start Shift", fontSize = 10.sp)
+                            IconButton(onClick = { actionBanner = null }, modifier = Modifier.size(24.dp)) {
+                                Icon(
+                                    Icons.Default.Close,
+                                    contentDescription = "Dismiss banner",
+                                    modifier = Modifier.size(14.dp),
+                                    tint = if (isErrorBanner) Color(0xFF92400E) else Color(0xFF166534)
+                                )
                             }
                         }
                     }
@@ -400,16 +526,16 @@ fun RiderAppScreen(store: BlueGasStore) {
                 // 4. THREE DASHBOARD TABS: Pending, Active, Completed
                 TabRow(
                     selectedTabIndex = selectedTab.ordinal,
-                    containerColor = Color.White,
+                    containerColor = MaterialTheme.colorScheme.surface,
                     contentColor = BlueGasPrimary
                 ) {
                     Tab(
                         selected = selectedTab == RiderTab.PENDING,
-                        onClick = { selectedTab = RiderTab.PENDING },
+                        onClick = { selectedTabName = RiderTab.PENDING.name },
                         text = {
                             Row(verticalAlignment = Alignment.CenterVertically) {
-                                Text("Pending", fontSize = 12.sp)
-                                Spacer(modifier = Modifier.width(4.dp))
+                                Text("Pending", fontSize = 13.sp)
+                                Spacer(modifier = Modifier.width(6.dp))
                                 Badge(containerColor = if (pendingOrders.isNotEmpty()) Color(0xFFDC2626) else Color(0xFF94A3B8)) {
                                     Text("${pendingOrders.size}", color = Color.White, fontSize = 10.sp)
                                 }
@@ -418,12 +544,12 @@ fun RiderAppScreen(store: BlueGasStore) {
                     )
                     Tab(
                         selected = selectedTab == RiderTab.ACTIVE,
-                        onClick = { selectedTab = RiderTab.ACTIVE },
+                        onClick = { selectedTabName = RiderTab.ACTIVE.name },
                         text = {
                             Row(verticalAlignment = Alignment.CenterVertically) {
-                                Text("Active", fontSize = 12.sp)
-                                Spacer(modifier = Modifier.width(4.dp))
-                                Badge(containerColor = if (activeOrders.isNotEmpty()) Color(0xFF0284C7) else Color(0xFF94A3B8)) {
+                                Text("Active", fontSize = 13.sp)
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Badge(containerColor = if (activeOrders.isNotEmpty()) BlueGasPrimary else Color(0xFF94A3B8)) {
                                     Text("${activeOrders.size}", color = Color.White, fontSize = 10.sp)
                                 }
                             }
@@ -431,12 +557,12 @@ fun RiderAppScreen(store: BlueGasStore) {
                     )
                     Tab(
                         selected = selectedTab == RiderTab.COMPLETED,
-                        onClick = { selectedTab = RiderTab.COMPLETED },
+                        onClick = { selectedTabName = RiderTab.COMPLETED.name },
                         text = {
                             Row(verticalAlignment = Alignment.CenterVertically) {
-                                Text("Completed", fontSize = 12.sp)
-                                Spacer(modifier = Modifier.width(4.dp))
-                                Badge(containerColor = Color(0xFF16A34A)) {
+                                Text("Completed", fontSize = 13.sp)
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Badge(containerColor = Color(0xFF166534)) {
                                     Text("${completedOrders.size}", color = Color.White, fontSize = 10.sp)
                                 }
                             }
@@ -444,12 +570,13 @@ fun RiderAppScreen(store: BlueGasStore) {
                     )
                 }
 
-                // 5. TAB CONTENT
+                // 5. TAB CONTENT LIST
                 LazyColumn(
                     modifier = Modifier
                         .fillMaxWidth()
                         .weight(1f)
-                        .padding(10.dp)
+                        .padding(horizontal = 12.dp, vertical = 8.dp),
+                    contentPadding = PaddingValues(bottom = 64.dp)
                 ) {
                     when (selectedTab) {
                         RiderTab.PENDING -> {
@@ -458,22 +585,21 @@ fun RiderAppScreen(store: BlueGasStore) {
                                     EmptyStateView(
                                         icon = Icons.Default.AssignmentLate,
                                         title = "No Pending Orders",
-                                        subtitle = "You have no orders in ORD_ASGN awaiting acceptance."
+                                        subtitle = "No new deliveries assigned to you right now."
                                     )
                                 }
                             } else {
                                 items(pendingOrders) { ord ->
                                     PendingOrderCard(
                                         order = ord,
-                                        store = store,
+                                        snapshot = appState,
                                         onAccept = {
                                             val (ok, msg) = store.riderAcceptOrder(ord.id)
                                             actionBanner = msg
                                             isErrorBanner = !ok
                                         },
                                         onDecline = {
-                                            orderToDeclineId = ord.id
-                                            showDeclineDialog = true
+                                            showDeclineOrderId = ord.id
                                         }
                                     )
                                 }
@@ -486,22 +612,21 @@ fun RiderAppScreen(store: BlueGasStore) {
                                     EmptyStateView(
                                         icon = Icons.Default.DeliveryDining,
                                         title = "No Active Deliveries",
-                                        subtitle = "Accept pending assignments to begin preparation & dispatch."
+                                        subtitle = "No deliveries in progress."
                                     )
                                 }
                             } else {
                                 items(activeOrders) { ord ->
                                     ActiveOrderCard(
                                         order = ord,
-                                        store = store,
+                                        snapshot = appState,
                                         onStartPrep = {
                                             val (ok, msg) = store.riderStartPreparing(ord.id)
                                             actionBanner = msg
                                             isErrorBanner = !ok
                                         },
                                         onScanSerial = {
-                                            orderForSerialId = ord.id
-                                            showSerialPicker = true
+                                            showSerialPickerOrderId = ord.id
                                         },
                                         onStartDelivery = {
                                             val (ok, msg) = store.riderStartDeliveryOrStagePickup(ord.id)
@@ -514,12 +639,14 @@ fun RiderAppScreen(store: BlueGasStore) {
                                             isErrorBanner = !ok
                                         },
                                         onOpenPod = {
-                                            orderForPodId = ord.id
-                                            showPodDialog = true
+                                            showPodOrderId = ord.id
                                         },
                                         onReportIssue = {
-                                            orderForIssueId = ord.id
-                                            showIssueDialog = true
+                                            showIssueOrderId = ord.id
+                                        },
+                                        onActionMessage = { msg, isErr ->
+                                            actionBanner = msg
+                                            isErrorBanner = isErr
                                         }
                                     )
                                 }
@@ -531,15 +658,15 @@ fun RiderAppScreen(store: BlueGasStore) {
                                 item {
                                     EmptyStateView(
                                         icon = Icons.Default.CheckCircleOutline,
-                                        title = "No Completed Deliveries Today",
-                                        subtitle = "Orders with completed handover and safety verification appear here."
+                                        title = "No Completed Deliveries",
+                                        subtitle = "No completed deliveries yet."
                                     )
                                 }
                             } else {
                                 items(completedOrders) { ord ->
                                     CompletedOrderCard(
                                         order = ord,
-                                        store = store,
+                                        snapshot = appState,
                                         onViewReceipt = {
                                             showReceiptOrderId = ord.id
                                         }
@@ -553,114 +680,162 @@ fun RiderAppScreen(store: BlueGasStore) {
         }
     }
 
-    // --- DIALOG 1: DECLINE ORDER DIALOG ---
-    if (showDeclineDialog && orderToDeclineId != null) {
-        val ord = appState.orders.find { it.id == orderToDeclineId }
+    // --- DIALOG 1: DECLINE ORDER DIALOG (R2.2) ---
+    if (showDeclineOrderId != null) {
+        val ord = appState.orders.find { it.id == showDeclineOrderId }
+        var chosenReason by remember { mutableStateOf("Too far") }
+        var customReason by remember { mutableStateOf("") }
+
+        val declineOptions = listOf("Too far", "Vehicle problem", "Off shift", "Other")
+
         AlertDialog(
-            onDismissRequest = { showDeclineDialog = false },
-            title = { Text("Decline Order Assignment", fontWeight = FontWeight.Bold, fontSize = 15.sp) },
+            onDismissRequest = { showDeclineOrderId = null },
+            title = {
+                Text("Decline Delivery Task", fontWeight = FontWeight.Bold, fontSize = 16.sp)
+            },
             text = {
-                Column {
-                    Text("Order: ${ord?.id}", fontWeight = FontWeight.Bold, fontSize = 12.sp)
-                    Text("Declining moves order to ORD_EXC with reason 'no_acceptance' for Ops reassignment.", fontSize = 11.sp, color = Color(0xFFB45309))
-                    Spacer(modifier = Modifier.height(10.dp))
-                    Text("Select Reason:", fontWeight = FontWeight.SemiBold, fontSize = 11.sp)
-                    listOf(
-                        "Vehicle breakdown / maintenance issue",
-                        "Out of cargo capacity",
-                        "Outside shift operating hours",
-                        "Traffic gridlock / unreachable route"
-                    ).forEach { r ->
+                Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
+                    Text(
+                        text = "This delivery will go back to your distributor to assign to another rider.",
+                        fontSize = 12.sp,
+                        color = Color(0xFF475569),
+                        lineHeight = 16.sp
+                    )
+                    Spacer(modifier = Modifier.height(12.dp))
+                    Text("Select reason:", fontWeight = FontWeight.SemiBold, fontSize = 12.sp)
+                    Spacer(modifier = Modifier.height(6.dp))
+
+                    declineOptions.forEach { r ->
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .clickable { declineReason = r }
+                                .clickable { chosenReason = r }
+                                .padding(vertical = 4.dp)
                         ) {
-                            RadioButton(selected = declineReason == r, onClick = { declineReason = r })
-                            Text(r, fontSize = 11.sp)
+                            RadioButton(selected = chosenReason == r, onClick = { chosenReason = r })
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text(r, fontSize = 13.sp)
                         }
+                    }
+
+                    if (chosenReason == "Other") {
+                        Spacer(modifier = Modifier.height(6.dp))
+                        OutlinedTextField(
+                            value = customReason,
+                            onValueChange = { customReason = it },
+                            label = { Text("Please explain reason *") },
+                            modifier = Modifier.fillMaxWidth(),
+                            singleLine = true
+                        )
                     }
                 }
             },
             confirmButton = {
+                val effectiveReason = if (chosenReason == "Other") customReason.trim() else chosenReason
                 Button(
                     onClick = {
-                        val (ok, msg) = store.riderDeclineOrder(orderToDeclineId ?: "", declineReason)
+                        val (ok, msg) = store.riderDeclineOrder(ord?.id ?: "", effectiveReason)
                         actionBanner = msg
                         isErrorBanner = !ok
-                        showDeclineDialog = false
+                        showDeclineOrderId = null
                     },
+                    enabled = chosenReason != "Other" || customReason.trim().isNotBlank(),
                     colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFDC2626))
                 ) {
-                    Text("Confirm Decline")
+                    Text("Decline Task")
                 }
             },
             dismissButton = {
-                TextButton(onClick = { showDeclineDialog = false }) { Text("Cancel") }
+                TextButton(onClick = { showDeclineOrderId = null }) {
+                    Text("Keep Delivery")
+                }
             }
         )
     }
 
-    // --- DIALOG 2: SERIAL NUMBER SCANNER / ALLOCATION ---
-    if (showSerialPicker && orderForSerialId != null) {
-        val ord = appState.orders.find { it.id == orderForSerialId }
-        val availableCylinders = store.cylinders.filter {
-            (it.status == InventoryState.INV_AVAIL || it.allocatedOrderId == ord?.id) &&
-            it.sku == (ord?.items?.firstOrNull()?.sku ?: "SKU-LPG-11-8")
+    // --- DIALOG 2: SERIAL NUMBER PICKER (R3.3) ---
+    if (showSerialPickerOrderId != null) {
+        val ord = appState.orders.find { it.id == showSerialPickerOrderId }
+        val targetSku = ord?.items?.firstOrNull { it.lineType == "GAS" }?.sku ?: ord?.items?.firstOrNull()?.sku ?: "SKU-LPG-11-8"
+
+        // Filter: SKU, available, not on HSE hold, pointId matches order's fulfilmentPointId
+        val depotCylinders = appState.cylinders.filter {
+            it.sku == targetSku &&
+                    (it.status == InventoryState.INV_AVAIL || it.allocatedOrderId == ord?.id) &&
+                    !it.hseHold &&
+                    (ord?.fulfilmentPointId == null || it.pointId == ord.fulfilmentPointId)
         }
 
         AlertDialog(
-            onDismissRequest = { showSerialPicker = false },
+            onDismissRequest = { showSerialPickerOrderId = null },
             title = {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Icon(Icons.Default.QrCodeScanner, contentDescription = null, tint = BlueGasPrimary)
-                    Spacer(modifier = Modifier.width(6.dp))
-                    Text("Scan / Allocate Exact Serial", fontWeight = FontWeight.Bold, fontSize = 15.sp)
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("Choose the cylinder you are loading", fontWeight = FontWeight.Bold, fontSize = 15.sp)
                 }
             },
             text = {
-                Column {
+                Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
                     Text("Order: ${ord?.id}", fontWeight = FontWeight.Bold, fontSize = 12.sp)
-                    Text("Select from physical inventory at assigned terminal:", fontSize = 11.sp, color = Color.Gray)
                     Spacer(modifier = Modifier.height(8.dp))
 
-                    if (availableCylinders.isEmpty()) {
-                        Text("No hydro-tested cylinders available for this SKU in inventory!", color = Color.Red, fontSize = 11.sp)
-                    } else {
-                        LazyColumn(modifier = Modifier.heightIn(max = 240.dp)) {
-                            items(availableCylinders) { cyl ->
-                                val isSelected = ord?.allocatedSerial == cyl.serialNumber
-                                Card(
-                                    colors = CardDefaults.cardColors(
-                                        containerColor = if (isSelected) Color(0xFFEFF6FF) else Color(0xFFF8FAFC)
-                                    ),
-                                    border = androidx.compose.foundation.BorderStroke(
-                                        if (isSelected) 2.dp else 1.dp,
-                                        if (isSelected) BlueGasPrimary else Color(0xFFCBD5E1)
-                                    ),
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .padding(vertical = 3.dp)
-                                        .clickable {
-                                            val (ok, msg) = store.riderSelectAndBindSerial(ord?.id ?: "", cyl.serialNumber)
-                                            actionBanner = msg
-                                            isErrorBanner = !ok
-                                            showSerialPicker = false
-                                        }
+                    if (depotCylinders.isEmpty()) {
+                        Card(
+                            colors = CardDefaults.cardColors(containerColor = Color(0xFFFEF2F2)),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Column(modifier = Modifier.padding(12.dp)) {
+                                Text(
+                                    text = "No suitable cylinder is available at this depot. Ask Operations.",
+                                    color = Color(0xFF991B1B),
+                                    fontSize = 12.sp
+                                )
+                                Spacer(modifier = Modifier.height(10.dp))
+                                Button(
+                                    onClick = {
+                                        showSerialPickerOrderId = null
+                                        showIssueOrderId = ord?.id
+                                    },
+                                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFDC2626))
                                 ) {
-                                    Row(
-                                        modifier = Modifier.padding(8.dp),
-                                        horizontalArrangement = Arrangement.SpaceBetween,
-                                        verticalAlignment = Alignment.CenterVertically
-                                    ) {
-                                        Column {
-                                            Text(cyl.serialNumber, fontWeight = FontWeight.Bold, fontSize = 12.sp)
-                                            Text("${cyl.weightKg}kg • Hydro-test: ${cyl.lastInspectionDate}", fontSize = 10.sp, color = Color.Gray)
-                                        }
-                                        if (isSelected) {
-                                            Icon(Icons.Default.CheckCircle, contentDescription = null, tint = BlueGasPrimary, modifier = Modifier.size(18.dp))
-                                        }
+                                    Text("Report a problem", fontSize = 11.sp)
+                                }
+                            }
+                        }
+                    } else {
+                        depotCylinders.forEach { cyl ->
+                            val isSelected = ord?.allocatedSerial == cyl.serialNumber
+                            Card(
+                                colors = CardDefaults.cardColors(
+                                    containerColor = if (isSelected) Color(0xFFEFF6FF) else Color(0xFFF8FAFC)
+                                ),
+                                border = BorderStroke(
+                                    if (isSelected) 2.dp else 1.dp,
+                                    if (isSelected) BlueGasPrimary else Color(0xFFCBD5E1)
+                                ),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(vertical = 4.dp)
+                                    .clickable {
+                                        val (ok, msg) = store.riderSelectAndBindSerial(ord?.id ?: "", cyl.serialNumber)
+                                        actionBanner = msg
+                                        isErrorBanner = !ok
+                                        showSerialPickerOrderId = null
+                                    }
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(12.dp),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Column {
+                                        Text(cyl.serialNumber, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                                        Text("${cyl.weightKg} kg cylinder", fontSize = 11.sp, color = Color(0xFF64748B))
+                                    }
+                                    if (isSelected) {
+                                        Icon(Icons.Default.CheckCircle, contentDescription = null, tint = BlueGasPrimary, modifier = Modifier.size(20.dp))
                                     }
                                 }
                             }
@@ -670,139 +845,354 @@ fun RiderAppScreen(store: BlueGasStore) {
             },
             confirmButton = {},
             dismissButton = {
-                TextButton(onClick = { showSerialPicker = false }) { Text("Close") }
+                TextButton(onClick = { showSerialPickerOrderId = null }) { Text("Close") }
             }
         )
     }
 
-    // --- DIALOG 3: REPORT ISSUE / EXCEPTION ---
-    if (showIssueDialog && orderForIssueId != null) {
-        val ord = appState.orders.find { it.id == orderForIssueId }
-        AlertDialog(
-            onDismissRequest = { showIssueDialog = false },
-            title = { Text("Report Fulfilment Issue", fontWeight = FontWeight.Bold, fontSize = 15.sp) },
-            text = {
-                Column {
-                    Text("Order: ${ord?.id}", fontWeight = FontWeight.Bold, fontSize = 12.sp)
-                    Text("Reporting an issue transitions this order to ORD_EXC for Operations recovery.", fontSize = 11.sp, color = Color(0xFFB45309))
-                    Spacer(modifier = Modifier.height(10.dp))
-                    Text("Select Exception:", fontWeight = FontWeight.SemiBold, fontSize = 11.sp)
+    // --- DIALOG 3: REPORT A PROBLEM (R4) ---
+    if (showIssueOrderId != null) {
+        val ord = appState.orders.find { it.id == showIssueOrderId }
+        var issueReason by remember { mutableStateOf(ExceptionReason.DELIVERY_FAILURE_OR_CUSTOMER_UNAVAILABLE) }
+        var issueDetails by remember { mutableStateOf("") }
+        var isSafetyConcern by remember { mutableStateOf(false) }
 
-                    val reasons: List<Pair<ExceptionReason, String>> = listOf(
-                        ExceptionReason.DELIVERY_FAILURE_OR_CUSTOMER_UNAVAILABLE to "Customer Unavailable / Door Closed",
-                        ExceptionReason.VALIDATION_OUT_OF_AREA to "Wrong Address / Access Denied",
-                        ExceptionReason.UNRECOVERABLE_AFTER_RETRIES to "Customer Refused Delivery / Cancel Requested",
-                        ExceptionReason.SERIAL_UNAVAILABLE_OR_PREP_FAILURE to "Damaged Cylinder Valve / Leakage Detected"
-                    )
-                    reasons.forEach { (r, label) ->
+        val permittedReasons = listOf(
+            ExceptionReason.DELIVERY_FAILURE_OR_CUSTOMER_UNAVAILABLE,
+            ExceptionReason.SERIAL_UNAVAILABLE_OR_PREP_FAILURE,
+            ExceptionReason.VALIDATION_OUT_OF_AREA,
+            ExceptionReason.UNRECOVERABLE_AFTER_RETRIES
+        )
+
+        AlertDialog(
+            onDismissRequest = { showIssueOrderId = null },
+            title = {
+                Text("Report a problem", fontWeight = FontWeight.Bold, fontSize = 16.sp)
+            },
+            text = {
+                Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
+                    Text("Order: ${ord?.id}", fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                    Spacer(modifier = Modifier.height(10.dp))
+
+                    Text("Select reason:", fontWeight = FontWeight.SemiBold, fontSize = 12.sp)
+                    Spacer(modifier = Modifier.height(4.dp))
+
+                    permittedReasons.forEach { r ->
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .clickable { issueReason = r }
+                                .padding(vertical = 3.dp)
                         ) {
                             RadioButton(selected = issueReason == r, onClick = { issueReason = r })
-                            Text(label, fontSize = 11.sp)
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text(r.description, fontSize = 12.sp)
                         }
                     }
 
-                    Spacer(modifier = Modifier.height(6.dp))
+                    Spacer(modifier = Modifier.height(10.dp))
+
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { isSafetyConcern = !isSafetyConcern }
+                    ) {
+                        Checkbox(
+                            checked = isSafetyConcern,
+                            onCheckedChange = { isSafetyConcern = it }
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(
+                            text = "This is a safety concern (for example a smell of gas, a leak, or damage)",
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            color = Color(0xFFB91C1C)
+                        )
+                    }
+
+                    if (isSafetyConcern) {
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Card(
+                            colors = CardDefaults.cardColors(containerColor = Color(0xFFFEF2F2)),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text(
+                                text = "HSE will be alerted. Follow the approved BLUE GAS HSE procedure.",
+                                fontSize = 11.sp,
+                                color = Color(0xFF991B1B),
+                                modifier = Modifier.padding(8.dp)
+                            )
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(8.dp))
                     OutlinedTextField(
-                        value = issueDetailText,
-                        onValueChange = { issueDetailText = it },
-                        placeholder = { Text("Enter additional notes...", fontSize = 11.sp) },
+                        value = issueDetails,
+                        onValueChange = { issueDetails = it },
+                        label = { Text("Details") },
+                        placeholder = { Text("Explain what happened...") },
                         modifier = Modifier.fillMaxWidth(),
-                        maxLines = 2
+                        minLines = 2
                     )
                 }
             },
             confirmButton = {
+                val canSubmit = isSafetyConcern || issueDetails.trim().length >= 5
                 Button(
                     onClick = {
                         val (ok, msg) = store.riderReportIssue(
-                            orderId = orderForIssueId ?: "",
+                            orderId = ord?.id ?: "",
                             reason = issueReason,
-                            details = issueDetailText
+                            details = issueDetails.trim().ifBlank { "Safety concern reported at doorstep." },
+                            safetyConcern = isSafetyConcern
                         )
                         actionBanner = msg
                         isErrorBanner = !ok
-                        showIssueDialog = false
+                        showIssueOrderId = null
                     },
+                    enabled = canSubmit,
                     colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFDC2626))
                 ) {
-                    Text("Report Exception")
+                    Text("Submit Report")
                 }
             },
             dismissButton = {
-                TextButton(onClick = { showIssueDialog = false }) { Text("Cancel") }
+                TextButton(onClick = { showIssueOrderId = null }) { Text("Cancel") }
             }
         )
     }
 
-    // --- DIALOG 4: MULTI-STEP PROOF OF DELIVERY (POD) FLOW ---
-    if (showPodDialog && orderForPodId != null) {
-        val ord = appState.orders.find { it.id == orderForPodId }
+    // --- DIALOG 4: CASH HANDOVER (R5.3) ---
+    if (showCashHandoverDialog) {
+        val completedCodOrders = appState.orders.filter {
+            it.assignedRiderId == activeRider.id &&
+                    it.paymentMethod == PaymentMethod.CASH_ON_DELIVERY &&
+                    it.status == OrderStatus.ORD_COMP &&
+                    appState.payments.find { p -> p.orderId == it.id }?.state == PaymentState.CASH_COLLECTED &&
+                    appState.cashHandovers.none { ch -> ch.orderIds.contains(it.id) }
+        }
+        val expectedPaisa = completedCodOrders.sumOf { it.amountReceivedPaisa ?: it.totalAmountPaisa }
+
+        var declaredRupees by remember(expectedPaisa) {
+            mutableStateOf((expectedPaisa / 100).toString())
+        }
+        var recipient by remember { mutableStateOf("Distributor Lead") }
+        var differenceReason by remember { mutableStateOf("") }
+
+        val declaredPaisa = (declaredRupees.trim().toLongOrNull() ?: 0L) * 100L
+        val hasDifference = declaredPaisa != expectedPaisa
+        val canSubmit = completedCodOrders.isNotEmpty() && (!hasDifference || differenceReason.trim().isNotBlank())
+
+        AlertDialog(
+            onDismissRequest = { showCashHandoverDialog = false },
+            title = {
+                Text("Cash Hand-Over", fontWeight = FontWeight.Bold, fontSize = 16.sp)
+            },
+            text = {
+                Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
+                    if (completedCodOrders.isEmpty()) {
+                        Text(
+                            text = "No cash waiting to be handed over.",
+                            fontSize = 13.sp,
+                            color = Color(0xFF64748B)
+                        )
+                    } else {
+                        Text(
+                            text = "Orders in pending collection (${completedCodOrders.size}):",
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                        Spacer(modifier = Modifier.height(6.dp))
+
+                        completedCodOrders.forEach { ord ->
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(vertical = 2.dp),
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Text(ord.id, fontSize = 11.sp, fontFamily = FontFamily.Monospace)
+                                Text(
+                                    formatRupees(ord.amountReceivedPaisa ?: ord.totalAmountPaisa),
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.Medium
+                                )
+                            }
+                        }
+
+                        HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
+
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Text("Expected Total:", fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                            Text(formatRupees(expectedPaisa), fontWeight = FontWeight.Bold, fontSize = 13.sp, color = BlueGasDark)
+                        }
+
+                        Spacer(modifier = Modifier.height(10.dp))
+
+                        Text("Hand over to:", fontSize = 12.sp, fontWeight = FontWeight.Medium)
+                        Spacer(modifier = Modifier.height(4.dp))
+                        listOf("Distributor Lead", "Depot Cashier", "Finance Officer").forEach { r ->
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable { recipient = r }
+                            ) {
+                                RadioButton(selected = recipient == r, onClick = { recipient = r })
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text(r, fontSize = 12.sp)
+                            }
+                        }
+
+                        Spacer(modifier = Modifier.height(8.dp))
+
+                        OutlinedTextField(
+                            value = declaredRupees,
+                            onValueChange = { if (it.all { c -> c.isDigit() }) declaredRupees = it },
+                            label = { Text("Declared Amount (Rupees)") },
+                            modifier = Modifier.fillMaxWidth(),
+                            singleLine = true
+                        )
+
+                        if (hasDifference) {
+                            Spacer(modifier = Modifier.height(8.dp))
+                            OutlinedTextField(
+                                value = differenceReason,
+                                onValueChange = { differenceReason = it },
+                                label = { Text("Reason for amount difference *") },
+                                placeholder = { Text("Explain discrepancy") },
+                                modifier = Modifier.fillMaxWidth(),
+                                singleLine = true
+                            )
+                        }
+
+                        Spacer(modifier = Modifier.height(10.dp))
+
+                        Text(
+                            text = "Hand over your cash within ${appState.settings.cashHandoverHours} hours.",
+                            fontSize = 11.sp,
+                            color = Color(0xFF64748B)
+                        )
+                    }
+                }
+            },
+            confirmButton = {
+                if (completedCodOrders.isNotEmpty()) {
+                    Button(
+                        onClick = {
+                            val (ok, msg) = store.riderSubmitCashHandover(
+                                riderId = activeRider.id,
+                                recipient = recipient,
+                                declaredPaisa = declaredPaisa,
+                                reason = differenceReason.ifBlank { null }
+                            )
+                            actionBanner = msg
+                            isErrorBanner = !ok
+                            showCashHandoverDialog = false
+                        },
+                        enabled = canSubmit
+                    ) {
+                        Text("Submit Hand-Over")
+                    }
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showCashHandoverDialog = false }) { Text("Close") }
+            }
+        )
+    }
+
+    // --- DIALOG 5: PROOF OF DELIVERY (POD) FLOW ---
+    if (showPodOrderId != null) {
+        val ord = appState.orders.find { it.id == showPodOrderId }
         if (ord != null) {
             PodCaptureDialog(
                 order = ord,
                 store = store,
-                onDismiss = { showPodDialog = false },
+                onDismiss = { showPodOrderId = null },
                 onCompleted = { ok, msg ->
+                    showPodOrderId = null
                     actionBanner = msg
                     isErrorBanner = !ok
-                    showPodDialog = false
                 }
             )
         }
     }
 
-    // --- DIALOG 5: OUTBOX DRAWER / QUEUE VIEW ---
+    // --- DIALOG 6: OUTBOX VIEWER (R7) ---
     if (showOutboxDialog) {
         AlertDialog(
             onDismissRequest = { showOutboxDialog = false },
             title = {
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(Icons.Default.CloudQueue, contentDescription = null, tint = BlueGasPrimary)
+                    Icon(Icons.Default.Inbox, contentDescription = null, tint = BlueGasPrimary)
                     Spacer(modifier = Modifier.width(6.dp))
-                    Text("Rider Offline Outbox (${appState.riderOutbox.size} events)", fontWeight = FontWeight.Bold, fontSize = 15.sp)
+                    Text("Offline Outbox Queue", fontWeight = FontWeight.Bold, fontSize = 15.sp)
                 }
             },
             text = {
-                Column {
-                    Text("Events queue in local storage and replay in sequential order on reconnect:", fontSize = 11.sp, color = Color.Gray)
-                    Spacer(modifier = Modifier.height(8.dp))
-
+                Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
                     if (appState.riderOutbox.isEmpty()) {
-                        Text("Outbox is empty.", fontSize = 11.sp, color = Color.Gray)
+                        Text("Offline outbox is currently empty.", fontSize = 12.sp, color = Color(0xFF64748B))
                     } else {
-                        LazyColumn(modifier = Modifier.heightIn(max = 280.dp)) {
-                            items(appState.riderOutbox) { evt ->
-                                Card(
-                                    colors = CardDefaults.cardColors(containerColor = Color(0xFFFFFBEB)),
-                                    border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFFFDE68A)),
-                                    modifier = Modifier.fillMaxWidth().padding(vertical = 3.dp)
-                                ) {
-                                    Column(modifier = Modifier.padding(8.dp)) {
-                                        Row(
-                                            modifier = Modifier.fillMaxWidth(),
-                                            horizontalArrangement = Arrangement.SpaceBetween
+                        appState.riderOutbox.forEach { evt ->
+                            val humanAction = when (evt.action) {
+                                "START_TRIP" -> "Start trip"
+                                "ARRIVE_AT_DOORSTEP" -> "Arrived"
+                                "REPORT_ISSUE" -> "Report problem"
+                                "COMPLETE_HANDOVER" -> "Complete delivery"
+                                "START_PREPARING" -> "Start preparation"
+                                else -> evt.action
+                            }
+
+                            val humanStatus = when (evt.syncStatus) {
+                                "PENDING" -> "Waiting"
+                                "APPLIED" -> "Sent"
+                                "REJECTED" -> "Rejected"
+                                "CONFLICT_QUEUED" -> "Needs Operations review"
+                                "DUPLICATE_IGNORED" -> "Duplicate ignored"
+                                else -> evt.syncStatus
+                            }
+
+                            Card(
+                                colors = CardDefaults.cardColors(containerColor = Color(0xFFF8FAFC)),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(vertical = 4.dp)
+                            ) {
+                                Column(modifier = Modifier.padding(10.dp)) {
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Text(humanAction, fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                                        Surface(
+                                            color = when (evt.syncStatus) {
+                                                "APPLIED" -> Color(0xFFDCFCE7)
+                                                "REJECTED" -> Color(0xFFFEE2E2)
+                                                "CONFLICT_QUEUED" -> Color(0xFFFEF3C7)
+                                                else -> Color(0xFFE2E8F0)
+                                            },
+                                            shape = RoundedCornerShape(4.dp)
                                         ) {
-                                            Text("Seq #${evt.sequenceNumber}: ${evt.action}", fontWeight = FontWeight.Bold, fontSize = 11.sp)
-                                            Surface(
-                                                color = when (evt.syncStatus) {
-                                                    "APPLIED" -> Color(0xFFDCFCE7)
-                                                    "DUPLICATE" -> Color(0xFFE0E7FF)
-                                                    "CONFLICT_QUEUED" -> Color(0xFFFEE2E2)
-                                                    "REJECTED" -> Color(0xFFFEE2E2)
-                                                    else -> Color(0xFFFEF3C7)
-                                                },
-                                                shape = RoundedCornerShape(4.dp)
-                                            ) {
-                                                Text(evt.syncStatus, fontSize = 9.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(4.dp, 1.dp))
-                                            }
+                                            Text(
+                                                text = humanStatus,
+                                                fontSize = 9.sp,
+                                                fontWeight = FontWeight.Bold,
+                                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                            )
                                         }
-                                        Text("Order: ${evt.orderId} • Serial: ${evt.scannedSerial ?: "N/A"}", fontSize = 10.sp)
-                                        Text(evt.idempotencyKey, fontSize = 9.sp, fontFamily = FontFamily.Monospace, color = Color.Gray)
+                                    }
+                                    Spacer(modifier = Modifier.height(2.dp))
+                                    Text("Order: ${evt.orderId}", fontSize = 11.sp, fontFamily = FontFamily.Monospace)
+                                    if (evt.rejectionReason != null) {
+                                        Text("Reason: ${evt.rejectionReason}", fontSize = 10.sp, color = Color(0xFFDC2626))
                                     }
                                 }
                             }
@@ -830,279 +1220,335 @@ fun RiderAppScreen(store: BlueGasStore) {
         )
     }
 
-    // --- DIALOG 6: OFFICIAL RECEIPT MODAL ---
+    // --- DIALOG 7: OFFICIAL RECEIPT MODAL (R6 - Reuses Customer ReceiptDialog) ---
     if (showReceiptOrderId != null) {
         val ord = appState.orders.find { it.id == showReceiptOrderId }
-        val cust = store.customers.find { it.id == ord?.customerId }
-        val addr = store.addresses.find { it.id == ord?.addressId }
-
-        AlertDialog(
-            onDismissRequest = { showReceiptOrderId = null },
-            title = {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(Icons.Default.Receipt, contentDescription = null, tint = BlueGasPrimary)
-                    Spacer(modifier = Modifier.width(6.dp))
-                    Text("Official Blue Gas Delivery Receipt", fontWeight = FontWeight.Bold, fontSize = 15.sp)
-                }
-            },
-            text = {
-                Column {
-                    Text("Order ID: ${ord?.id}", fontWeight = FontWeight.Bold, fontSize = 13.sp)
-                    Text("POD Reference: ${ord?.podReference ?: "POD-VERIFIED"}", fontSize = 10.sp, color = BlueGasPrimary, fontFamily = FontFamily.Monospace)
-                    Spacer(modifier = Modifier.height(6.dp))
-                    Text("Customer: ${cust?.name} (${cust?.phone})", fontSize = 11.sp)
-                    Text("Delivered to: ${addr?.street}, ${addr?.area}, ${addr?.city}", fontSize = 10.sp, color = Color.Gray)
-                    Spacer(modifier = Modifier.height(8.dp))
-
-                    HorizontalDivider()
-                    Spacer(modifier = Modifier.height(4.dp))
-                    ord?.items?.forEach { itm ->
-                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                            Text("${itm.quantity}x ${itm.productName}", fontSize = 11.sp)
-                            Text(formatPaisaToPkr(itm.subtotalPaisa), fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
-                        }
-                    }
-                    if ((ord?.depositTotalPaisa ?: 0L) > 0) {
-                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                            Text("Security Deposit (Liability)", fontSize = 11.sp, color = Color(0xFFB45309))
-                            Text(formatPaisaToPkr(ord?.depositTotalPaisa ?: 0L), fontSize = 11.sp, color = Color(0xFFB45309), fontWeight = FontWeight.SemiBold)
-                        }
-                    }
-                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                        Text("Delivery & Facilitation", fontSize = 11.sp)
-                        Text(formatPaisaToPkr((ord?.deliveryFeePaisa ?: 0L) + (ord?.platformFeePaisa ?: 0L)), fontSize = 11.sp)
-                    }
-                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                        Text("Tax (5%)", fontSize = 11.sp)
-                        Text(formatPaisaToPkr(ord?.taxPaisa ?: 0L), fontSize = 11.sp)
-                    }
-                    HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
-                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                        Text("Total Settled:", fontWeight = FontWeight.Bold, fontSize = 12.sp)
-                        Text(formatPaisaToPkr(ord?.totalAmountPaisa ?: 0L), fontWeight = FontWeight.Bold, fontSize = 13.sp, color = BlueGasPrimary)
-                    }
-                    Text("Cylinder Serial Delivered: ${ord?.allocatedSerial ?: "N/A"}", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = Color(0xFF047857))
-                    Text("Safety status: Bubble leak test PASSED. Valve seal intact.", fontSize = 10.sp, color = Color(0xFF0F766E))
-                    val deliveryRecord = store.deliveries.find { it.orderId == ord?.id }
-                    if (deliveryRecord != null) {
-                        if (deliveryRecord.signerName != null) {
-                            Text("Received & Signed by: ${deliveryRecord.signerName}", fontSize = 10.sp, fontWeight = FontWeight.SemiBold, color = BlueGasDark)
-                        }
-                        if (deliveryRecord.photoEvidenceCaptured) {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Icon(Icons.Default.PhotoCamera, contentDescription = null, tint = Color(0xFF16A34A), modifier = Modifier.size(12.dp))
-                                Spacer(modifier = Modifier.width(4.dp))
-                                Text("OGRA Doorstep Photo Geotagged & Verified", fontSize = 9.sp, color = Color(0xFF15803D), fontWeight = FontWeight.Bold)
-                            }
-                        }
-                        if (deliveryRecord.changeReturnedPaisa != null && deliveryRecord.changeReturnedPaisa > 0) {
-                            Text("Change Returned: ${formatPaisaToPkr(deliveryRecord.changeReturnedPaisa)}", fontSize = 10.sp, color = Color(0xFF0284C7))
-                        }
-                    }
-                }
-            },
-            confirmButton = {
-                Button(onClick = { showReceiptOrderId = null }) { Text("Done") }
-            }
-        )
+        if (ord != null) {
+            ReceiptDialog(
+                order = ord,
+                snapshot = appState,
+                onDismiss = { showReceiptOrderId = null }
+            )
+        }
     }
 }
 
-// ----------------------------------------------------------------------------
-// COMPONENT: PENDING ORDER CARD (ORD_ASGN)
-// ----------------------------------------------------------------------------
+/**
+ * Card representing a newly assigned order awaiting rider acceptance or decline.
+ */
 @Composable
 private fun PendingOrderCard(
     order: Order,
-    store: BlueGasStore,
+    snapshot: SharedAppState,
     onAccept: () -> Unit,
     onDecline: () -> Unit
 ) {
-    val cust = store.customers.find { it.id == order.customerId }
-    val addr = store.addresses.find { it.id == order.addressId }
+    val cust = snapshot.customers.find { it.id == order.customerId }
+    val addr = snapshot.addresses.find { it.id == order.addressId }
 
-    // Acceptance countdown timer based on distributorAcceptanceWindowMins
+    val customerFirstName = cust?.name?.split(" ")?.firstOrNull() ?: cust?.name ?: "Customer"
+    val areaText = addr?.area ?: addr?.city ?: "Local area"
+
+    // Honest acceptance countdown
+    val nowMillis = rememberNowMillis(1000L)
     val assignedTime = order.assignedAt ?: order.createdAt
-    val windowMs = store.priceBookConfig.distributorAcceptanceWindowMins * 60 * 1000L
+    val windowMs = snapshot.settings.distributorAcceptanceWindowMins * 60 * 1000L
     val deadline = assignedTime + windowMs
-
-    var remainingSeconds by remember { mutableStateOf(((deadline - System.currentTimeMillis()) / 1000L).coerceAtLeast(0)) }
-
-    LaunchedEffect(deadline) {
-        while (remainingSeconds > 0) {
-            delay(1000L)
-            remainingSeconds = ((deadline - System.currentTimeMillis()) / 1000L).coerceAtLeast(0)
-        }
-    }
-
-    val mins = remainingSeconds / 60
-    val secs = remainingSeconds % 60
-    val isExpiringSoon = remainingSeconds < 300
+    val remainingMs = (deadline - nowMillis).coerceAtLeast(0L)
+    val isExpired = remainingMs <= 0L
+    val isExpiringSoon = remainingMs in 1L..300000L
 
     Card(
-        colors = CardDefaults.cardColors(containerColor = Color(0xFFFFFBEB)),
-        border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFFFDE68A)),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        border = BorderStroke(1.dp, Color(0xFFCBD5E1)),
+        shape = RoundedCornerShape(12.dp),
         modifier = Modifier
             .fillMaxWidth()
             .padding(vertical = 6.dp)
+            .testTag("pending_order_card_${order.id}")
     ) {
-        Column(modifier = Modifier.padding(12.dp)) {
-            // Header with status & timer
+        Column(modifier = Modifier.padding(16.dp)) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Text(order.id, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                Text(
+                    text = order.id,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 14.sp,
+                    fontFamily = FontFamily.Monospace,
+                    color = BlueGasDark
+                )
                 CanonicalStatusChip(order.status)
             }
 
-            Spacer(modifier = Modifier.height(6.dp))
+            Spacer(modifier = Modifier.height(8.dp))
 
             // Acceptance Countdown Chip
             Surface(
-                color = if (isExpiringSoon) Color(0xFFFEE2E2) else Color(0xFFFEF3C7),
-                shape = RoundedCornerShape(4.dp),
+                color = when {
+                    isExpired -> Color(0xFFFEF3C7)
+                    isExpiringSoon -> Color(0xFFFEE2E2)
+                    else -> Color(0xFFEFF6FF)
+                },
+                shape = RoundedCornerShape(6.dp),
                 modifier = Modifier.fillMaxWidth()
             ) {
                 Row(
-                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.SpaceBetween
                 ) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
+                    Row(
+                        modifier = Modifier.weight(1f),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
                         Icon(
-                            Icons.Default.Timer,
+                            imageVector = Icons.Default.Timer,
                             contentDescription = null,
-                            tint = if (isExpiringSoon) Color(0xFFDC2626) else Color(0xFFB45309),
-                            modifier = Modifier.size(14.dp)
+                            tint = if (isExpired || isExpiringSoon) Color(0xFFDC2626) else BlueGasPrimary,
+                            modifier = Modifier.size(16.dp)
                         )
-                        Spacer(modifier = Modifier.width(4.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
                         Text(
-                            text = "Acceptance Window: %02d:%02d remaining".format(mins, secs),
+                            text = if (isExpired) "Acceptance time is over" else "Acceptance Window: ${formatCountdown(remainingMs)} remaining",
                             fontSize = 11.sp,
                             fontWeight = FontWeight.Bold,
-                            color = if (isExpiringSoon) Color(0xFFDC2626) else Color(0xFFB45309)
+                            color = if (isExpired || isExpiringSoon) Color(0xFFDC2626) else BlueGasDark,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
                         )
                     }
-                    Text(
-                        text = "Assigned 5m ago",
-                        fontSize = 10.sp,
-                        color = Color.Gray
-                    )
+
+                    if (order.assignedAt != null) {
+                        Text(
+                            text = "Assigned ${formatTimeOnly(order.assignedAt!!)}",
+                            fontSize = 10.sp,
+                            color = Color(0xFF64748B)
+                        )
+                    }
                 }
             }
 
-            Spacer(modifier = Modifier.height(6.dp))
-            Text("Customer: ${cust?.name} (${cust?.phone})", fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
-            Text("Address: ${addr?.street}, ${addr?.area}, ${addr?.city}", fontSize = 10.sp, color = Color(0xFF334155))
-            Text("Zone: ${addr?.zoneId} • Mode: ${order.fulfilmentMode.name}", fontSize = 10.sp, color = Color.Gray)
-
-            Spacer(modifier = Modifier.height(4.dp))
-            order.items.forEach { itm ->
-                Text("• ${itm.quantity}x ${itm.productName}", fontSize = 11.sp)
-            }
+            Spacer(modifier = Modifier.height(10.dp))
             Text(
-                "Payment: ${order.paymentMethod.name} (${formatPaisaToPkr(order.totalAmountPaisa)})",
+                text = "$customerFirstName · $areaText",
+                fontSize = 13.sp,
+                fontWeight = FontWeight.SemiBold,
+                color = BlueGasDark
+            )
+
+            Text(
+                text = if (order.fulfilmentMode == FulfilmentMode.DELIVERY) "Home delivery" else "Depot pickup",
                 fontSize = 11.sp,
+                color = Color(0xFF64748B)
+            )
+
+            Spacer(modifier = Modifier.height(6.dp))
+            order.customerVisibleItems().forEach { itm ->
+                Text(
+                    text = "• ${itm.quantity}x ${itm.productName}",
+                    fontSize = 12.sp,
+                    color = Color(0xFF334155)
+                )
+            }
+
+            Spacer(modifier = Modifier.height(6.dp))
+            Text(
+                text = if (order.paymentMethod == PaymentMethod.CASH_ON_DELIVERY) {
+                    "Cash on delivery — collect ${formatRupees(order.totalAmountPaisa)}"
+                } else {
+                    "Paid online"
+                },
+                fontSize = 12.sp,
                 fontWeight = FontWeight.Bold,
                 color = if (order.paymentMethod == PaymentMethod.CASH_ON_DELIVERY) Color(0xFFD97706) else Color(0xFF16A34A)
             )
 
             // Buttons: Accept & Decline
+            Spacer(modifier = Modifier.height(12.dp))
             Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(top = 10.dp),
+                modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 Button(
                     onClick = onAccept,
+                    enabled = !isExpired,
                     colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF16A34A)),
-                    modifier = Modifier.weight(1f)
+                    modifier = Modifier
+                        .weight(1f)
+                        .height(48.dp)
+                        .testTag("accept_order_button")
                 ) {
                     Icon(Icons.Default.Check, contentDescription = null, modifier = Modifier.size(16.dp))
                     Spacer(modifier = Modifier.width(4.dp))
-                    Text("Accept Order", fontSize = 11.sp)
+                    Text("Accept Order", fontSize = 12.sp)
                 }
 
                 OutlinedButton(
                     onClick = onDecline,
                     colors = ButtonDefaults.outlinedButtonColors(contentColor = Color(0xFFDC2626)),
-                    border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFFDC2626)),
-                    modifier = Modifier.weight(0.9f)
+                    border = BorderStroke(1.dp, Color(0xFFDC2626)),
+                    modifier = Modifier
+                        .weight(0.9f)
+                        .height(48.dp)
+                        .testTag("decline_order_button")
                 ) {
                     Icon(Icons.Default.Close, contentDescription = null, modifier = Modifier.size(16.dp))
                     Spacer(modifier = Modifier.width(4.dp))
-                    Text("Decline", fontSize = 11.sp)
+                    Text("Decline", fontSize = 12.sp)
                 }
             }
         }
     }
 }
 
-// ----------------------------------------------------------------------------
-// COMPONENT: ACTIVE ORDER CARD (ORD_ACPT, ORD_PREP, ORD_DISP, ORD_ATHO)
-// ----------------------------------------------------------------------------
+/**
+ * Card representing an active delivery task progressing from preparation to doorstep handover.
+ */
 @Composable
 private fun ActiveOrderCard(
     order: Order,
-    store: BlueGasStore,
+    snapshot: SharedAppState,
     onStartPrep: () -> Unit,
     onScanSerial: () -> Unit,
     onStartDelivery: () -> Unit,
     onArrive: () -> Unit,
     onOpenPod: () -> Unit,
-    onReportIssue: () -> Unit
+    onReportIssue: () -> Unit,
+    onActionMessage: (String, Boolean) -> Unit
 ) {
-    val cust = store.customers.find { it.id == order.customerId }
-    val addr = store.addresses.find { it.id == order.addressId }
+    val context = LocalContext.current
+    val cust = snapshot.customers.find { it.id == order.customerId }
+    val addr = snapshot.addresses.find { it.id == order.addressId }
+    var addressExpanded by remember { mutableStateOf(false) }
 
     Card(
-        colors = CardDefaults.cardColors(containerColor = Color(0xFFF8FAFC)),
-        border = androidx.compose.foundation.BorderStroke(
-            1.dp,
-            when (order.status) {
-                OrderStatus.ORD_HOC -> Color(0xFF16A34A)
-                OrderStatus.ORD_ATHO -> Color(0xFF16A34A)
-                OrderStatus.ORD_DISP, OrderStatus.ORD_RDYPU -> Color(0xFF0284C7)
-                OrderStatus.ORD_PREP -> Color(0xFFD97706)
-                else -> Color(0xFFCBD5E1)
-            }
-        ),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        border = BorderStroke(1.dp, Color(0xFFCBD5E1)),
+        shape = RoundedCornerShape(12.dp),
         modifier = Modifier
             .fillMaxWidth()
             .padding(vertical = 6.dp)
+            .testTag("active_order_card_${order.id}")
     ) {
-        Column(modifier = Modifier.padding(12.dp)) {
+        Column(modifier = Modifier.padding(16.dp)) {
             // Header with status
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Text(order.id, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                Text(
+                    text = order.id,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 14.sp,
+                    fontFamily = FontFamily.Monospace,
+                    color = BlueGasDark
+                )
                 CanonicalStatusChip(order.status)
             }
 
-            Spacer(modifier = Modifier.height(4.dp))
-            Text("Customer: ${cust?.name} (${cust?.phone})", fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
-            Text("Address: ${addr?.street}, ${addr?.area}, ${addr?.city}", fontSize = 10.sp, color = Color(0xFF334155))
+            Spacer(modifier = Modifier.height(8.dp))
+            Text(
+                text = cust?.name ?: "Customer",
+                fontSize = 13.sp,
+                fontWeight = FontWeight.Bold,
+                color = BlueGasDark
+            )
 
-            // Serial Banner
-            Surface(
-                color = if (order.allocatedSerial != null) Color(0xFFEFF6FF) else Color(0xFFFFFBEB),
-                shape = RoundedCornerShape(4.dp),
+            // Tap-to-expand address
+            Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(vertical = 4.dp)
+                    .clickable { addressExpanded = !addressExpanded }
+                    .padding(vertical = 2.dp)
+            ) {
+                Text(
+                    text = "${addr?.area ?: ""}, ${addr?.city ?: ""}" + if (!addressExpanded) " (Tap to view full address)" else "",
+                    fontSize = 12.sp,
+                    color = Color(0xFF475569)
+                )
+                if (addressExpanded) {
+                    Text(
+                        text = "${addr?.street ?: ""}, ${addr?.area ?: ""}, ${addr?.city ?: ""}",
+                        fontSize = 11.sp,
+                        color = Color(0xFF64748B)
+                    )
+                }
+            }
+
+            // Customer Actions: Call & Navigate
+            Spacer(modifier = Modifier.height(8.dp))
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                OutlinedButton(
+                    onClick = {
+                        val phone = cust?.phone
+                        if (!phone.isNullOrBlank()) {
+                            try {
+                                val intent = Intent(Intent.ACTION_DIAL, Uri.parse("tel:$phone"))
+                                context.startActivity(intent)
+                            } catch (_: Exception) {
+                                onActionMessage("No phone dialer application available.", true)
+                            }
+                        } else {
+                            onActionMessage("Customer phone number not available.", true)
+                        }
+                    },
+                    modifier = Modifier
+                        .weight(1f)
+                        .height(48.dp)
+                ) {
+                    Icon(Icons.Default.Call, contentDescription = null, modifier = Modifier.size(16.dp))
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text("Call customer", fontSize = 12.sp)
+                }
+
+                OutlinedButton(
+                    onClick = {
+                        val addressStr = listOfNotNull(addr?.street, addr?.area, addr?.city).filter { it.isNotBlank() }.joinToString(", ")
+                        if (addressStr.isNotBlank()) {
+                            try {
+                                val uri = Uri.parse("geo:0,0?q=${Uri.encode(addressStr)}")
+                                val intent = Intent(Intent.ACTION_VIEW, uri)
+                                context.startActivity(intent)
+                            } catch (_: Exception) {
+                                onActionMessage("No map application available.", true)
+                            }
+                        } else {
+                            onActionMessage("Delivery address not available.", true)
+                        }
+                    },
+                    modifier = Modifier
+                        .weight(1f)
+                        .height(48.dp)
+                ) {
+                    Icon(Icons.Default.Navigation, contentDescription = null, modifier = Modifier.size(16.dp))
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text("Navigate", fontSize = 12.sp)
+                }
+            }
+
+            // Serial Allocation Strip
+            Spacer(modifier = Modifier.height(10.dp))
+            Surface(
+                color = if (order.allocatedSerial != null) Color(0xFFEFF6FF) else Color(0xFFFFFBEB),
+                shape = RoundedCornerShape(6.dp),
+                modifier = Modifier.fillMaxWidth()
             ) {
                 Row(
-                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 5.dp),
+                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.SpaceBetween
                 ) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
+                    Row(
+                        modifier = Modifier.weight(1f),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
                         Icon(
                             imageVector = if (order.allocatedSerial != null) Icons.Default.QrCodeScanner else Icons.Default.WarningAmber,
                             contentDescription = null,
@@ -1111,120 +1557,184 @@ private fun ActiveOrderCard(
                         )
                         Spacer(modifier = Modifier.width(6.dp))
                         Text(
-                            text = "Serial: ${order.allocatedSerial ?: "NOT ALLOCATED YET"}",
+                            text = "Serial: ${order.allocatedSerial ?: "Choose cylinder first"}",
                             fontWeight = FontWeight.Bold,
-                            fontSize = 11.sp,
-                            color = if (order.allocatedSerial != null) Color(0xFF0369A1) else Color(0xFFB45309)
+                            fontSize = 12.sp,
+                            color = if (order.allocatedSerial != null) Color(0xFF0369A1) else Color(0xFFB45309),
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
                         )
                     }
 
                     if (order.status == OrderStatus.ORD_PREP) {
                         TextButton(
                             onClick = onScanSerial,
-                            contentPadding = PaddingValues(horizontal = 6.dp, vertical = 2.dp),
-                            modifier = Modifier.height(26.dp)
+                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
+                            modifier = Modifier.height(32.dp)
                         ) {
-                            Text(if (order.allocatedSerial != null) "Change" else "Scan Serial", fontSize = 10.sp)
+                            Text(if (order.allocatedSerial != null) "Change" else "Choose", fontSize = 11.sp)
                         }
                     }
                 }
             }
 
+            Spacer(modifier = Modifier.height(8.dp))
+            order.customerVisibleItems().forEach { itm ->
+                Text("• ${itm.quantity}x ${itm.productName}", fontSize = 12.sp, color = Color(0xFF334155))
+            }
+
+            Spacer(modifier = Modifier.height(4.dp))
             Text(
-                "Payment: ${order.paymentMethod.name} (${formatPaisaToPkr(order.totalAmountPaisa)})",
-                fontSize = 11.sp,
+                text = if (order.paymentMethod == PaymentMethod.CASH_ON_DELIVERY) {
+                    "Cash on delivery — collect ${formatRupees(order.totalAmountPaisa)}"
+                } else {
+                    "Paid online"
+                },
+                fontSize = 12.sp,
                 fontWeight = FontWeight.Bold,
                 color = if (order.paymentMethod == PaymentMethod.CASH_ON_DELIVERY) Color(0xFFD97706) else Color(0xFF16A34A)
             )
 
-            // DEDICATED ACTION BUTTONS PER STATUS
-            Spacer(modifier = Modifier.height(8.dp))
+            // Handover PIN reminder (R3.1: never show the PIN itself on the rider side)
+            Spacer(modifier = Modifier.height(6.dp))
+            Text(
+                text = "Ask the customer for their 4-digit handover code.",
+                fontSize = 11.sp,
+                color = Color(0xFF64748B),
+                fontWeight = FontWeight.Medium
+            )
+
+            // ACTION CONTROLS PER STATUS (R3)
+            Spacer(modifier = Modifier.height(12.dp))
 
             when (order.status) {
+                OrderStatus.ORD_EXC -> {
+                    // Amber strip for exceptions, no action buttons
+                    Surface(
+                        color = Color(0xFFFEF3C7),
+                        shape = RoundedCornerShape(6.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(10.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(Icons.Default.WarningAmber, contentDescription = null, tint = Color(0xFFB45309))
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text(
+                                text = "Needs attention — Operations has been alerted",
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 12.sp,
+                                color = Color(0xFF92400E)
+                            )
+                        }
+                    }
+                }
+
+                OrderStatus.ORD_INSP, OrderStatus.ORD_ADJ -> {
+                    Surface(
+                        color = Color(0xFFF1F5F9),
+                        shape = RoundedCornerShape(6.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(10.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(Icons.Default.HourglassEmpty, contentDescription = null, tint = Color(0xFF475569))
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text(
+                                text = "Waiting for the inspection / price adjustment to be completed",
+                                fontSize = 12.sp,
+                                color = Color(0xFF334155)
+                            )
+                        }
+                    }
+                }
+
                 OrderStatus.ORD_ACPT -> {
                     Button(
                         onClick = onStartPrep,
-                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF0284C7)),
-                        modifier = Modifier.fillMaxWidth()
+                        colors = ButtonDefaults.buttonColors(containerColor = BlueGasPrimary),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(48.dp)
                     ) {
-                        Icon(Icons.Default.Build, contentDescription = null, modifier = Modifier.size(15.dp))
+                        Icon(Icons.Default.Build, contentDescription = null, modifier = Modifier.size(16.dp))
                         Spacer(modifier = Modifier.width(6.dp))
-                        Text("Begin Preparation & Select Serial", fontSize = 11.sp)
+                        Text("Begin Preparation & Select Serial")
                     }
                 }
 
                 OrderStatus.ORD_PREP -> {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(6.dp)
-                    ) {
-                        Button(
-                            onClick = onStartDelivery,
-                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF16A34A)),
-                            enabled = order.allocatedSerial != null,
-                            modifier = Modifier.weight(1f)
+                    Column(modifier = Modifier.fillMaxWidth()) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
-                            Icon(Icons.Default.DepartureBoard, contentDescription = null, modifier = Modifier.size(15.dp))
-                            Spacer(modifier = Modifier.width(4.dp))
-                            Text(if (order.fulfilmentMode == FulfilmentMode.DELIVERY) "Start Delivery" else "Stage for Pickup", fontSize = 11.sp)
+                            Button(
+                                onClick = onStartDelivery,
+                                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF16A34A)),
+                                enabled = order.allocatedSerial != null,
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .height(48.dp)
+                            ) {
+                                Icon(Icons.Default.DepartureBoard, contentDescription = null, modifier = Modifier.size(16.dp))
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text("Start Delivery")
+                            }
+
+                            OutlinedButton(
+                                onClick = onReportIssue,
+                                colors = ButtonDefaults.outlinedButtonColors(contentColor = Color(0xFFDC2626)),
+                                modifier = Modifier.height(48.dp)
+                            ) {
+                                Text("Report issue")
+                            }
                         }
 
-                        OutlinedButton(
-                            onClick = onReportIssue,
-                            colors = ButtonDefaults.outlinedButtonColors(contentColor = Color(0xFFDC2626)),
-                            modifier = Modifier.height(38.dp)
-                        ) {
-                            Text("Issue", fontSize = 10.sp)
+                        if (order.allocatedSerial == null) {
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Text(
+                                text = "Choose the cylinder to deliver first.",
+                                fontSize = 11.sp,
+                                color = Color(0xFF94A3B8)
+                            )
+                        } else if (snapshot.isRiderOffline) {
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Text(
+                                text = "You are offline — this will be saved and sent later.",
+                                fontSize = 11.sp,
+                                color = Color(0xFFB45309)
+                            )
                         }
                     }
                 }
 
-                OrderStatus.ORD_DISP -> {
+                OrderStatus.ORD_DISP, OrderStatus.ORD_RDYPU -> {
                     Row(
                         modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
                         Button(
                             onClick = onArrive,
-                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF0284C7)),
-                            modifier = Modifier.weight(1f)
+                            colors = ButtonDefaults.buttonColors(containerColor = BlueGasPrimary),
+                            modifier = Modifier
+                                .weight(1f)
+                                .height(48.dp)
                         ) {
-                            Icon(Icons.Default.PinDrop, contentDescription = null, modifier = Modifier.size(15.dp))
+                            Icon(Icons.Default.PinDrop, contentDescription = null, modifier = Modifier.size(16.dp))
                             Spacer(modifier = Modifier.width(4.dp))
-                            Text("Arrived at Location", fontSize = 11.sp)
+                            Text("Arrived at location")
                         }
 
                         OutlinedButton(
                             onClick = onReportIssue,
                             colors = ButtonDefaults.outlinedButtonColors(contentColor = Color(0xFFDC2626)),
-                            modifier = Modifier.height(38.dp)
+                            modifier = Modifier.height(48.dp)
                         ) {
-                            Text("Report Issue", fontSize = 10.sp)
-                        }
-                    }
-                }
-
-                OrderStatus.ORD_RDYPU -> {
-                    // Pickup mode: customer has arrived at counter
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(6.dp)
-                    ) {
-                        Button(
-                            onClick = onArrive,
-                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF0284C7)),
-                            modifier = Modifier.weight(1f)
-                        ) {
-                            Icon(Icons.Default.Storefront, contentDescription = null, modifier = Modifier.size(15.dp))
-                            Spacer(modifier = Modifier.width(4.dp))
-                            Text("Customer at Counter", fontSize = 11.sp)
-                        }
-                        OutlinedButton(
-                            onClick = onReportIssue,
-                            colors = ButtonDefaults.outlinedButtonColors(contentColor = Color(0xFFDC2626)),
-                            modifier = Modifier.height(38.dp)
-                        ) {
-                            Text("Issue", fontSize = 10.sp)
+                            Text("Report issue")
                         }
                     }
                 }
@@ -1232,45 +1742,48 @@ private fun ActiveOrderCard(
                 OrderStatus.ORD_ATHO -> {
                     Row(
                         modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
                         Button(
                             onClick = onOpenPod,
                             colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF16A34A)),
-                            modifier = Modifier.weight(1f)
+                            modifier = Modifier
+                                .weight(1f)
+                                .height(48.dp)
                         ) {
-                            Icon(Icons.Default.CheckCircle, contentDescription = null, modifier = Modifier.size(15.dp))
+                            Icon(Icons.Default.CheckCircle, contentDescription = null, modifier = Modifier.size(16.dp))
                             Spacer(modifier = Modifier.width(4.dp))
-                            Text("Safety Check & Complete POD", fontSize = 11.sp)
+                            Text("Complete delivery")
                         }
 
                         OutlinedButton(
                             onClick = onReportIssue,
                             colors = ButtonDefaults.outlinedButtonColors(contentColor = Color(0xFFDC2626)),
-                            modifier = Modifier.height(38.dp)
+                            modifier = Modifier.height(48.dp)
                         ) {
-                            Text("Refused at Door", fontSize = 10.sp)
+                            Text("Report issue")
                         }
                     }
                 }
 
                 OrderStatus.ORD_HOC -> {
-                    // Handover complete — finalizing, no more rider actions needed
                     Surface(
                         color = Color(0xFFDCFCE7),
                         shape = RoundedCornerShape(6.dp),
                         modifier = Modifier.fillMaxWidth()
                     ) {
                         Row(
-                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
+                            modifier = Modifier.padding(10.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Icon(Icons.Default.CheckCircle, contentDescription = null, tint = Color(0xFF16A34A), modifier = Modifier.size(18.dp))
+                            Icon(Icons.Default.CheckCircle, contentDescription = null, tint = Color(0xFF166534))
                             Spacer(modifier = Modifier.width(8.dp))
-                            Column {
-                                Text("Handover Complete", fontWeight = FontWeight.Bold, fontSize = 12.sp, color = Color(0xFF166534))
-                                Text("Awaiting system finalization to ORD_COMP.", fontSize = 10.sp, color = Color(0xFF15803D))
-                            }
+                            Text(
+                                text = "Delivery is being finalised.",
+                                fontWeight = FontWeight.SemiBold,
+                                fontSize = 12.sp,
+                                color = Color(0xFF166534)
+                            )
                         }
                     }
                 }
@@ -1281,72 +1794,141 @@ private fun ActiveOrderCard(
     }
 }
 
-// ----------------------------------------------------------------------------
-// COMPONENT: COMPLETED ORDER CARD (ORD_COMP)
-// ----------------------------------------------------------------------------
+/**
+ * Card representing a successfully delivered and verified order.
+ */
 @Composable
 private fun CompletedOrderCard(
     order: Order,
-    store: BlueGasStore,
+    snapshot: SharedAppState,
     onViewReceipt: () -> Unit
 ) {
-    val cust = store.customers.find { it.id == order.customerId }
+    val cust = snapshot.customers.find { it.id == order.customerId }
+    val isCod = order.paymentMethod == PaymentMethod.CASH_ON_DELIVERY
+
+    // Check cash handover reconciliation status
+    val isHandedOver = isCod && snapshot.cashHandovers.any { it.orderIds.contains(order.id) }
+    val payment = snapshot.payments.find { it.orderId == order.id }
+    val isReconciled = payment?.state == PaymentState.SETTLED
 
     Card(
-        colors = CardDefaults.cardColors(containerColor = Color(0xFFF0FDF4)),
-        border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFFBBF7D0)),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        border = BorderStroke(1.dp, Color(0xFFCBD5E1)),
+        shape = RoundedCornerShape(12.dp),
         modifier = Modifier
             .fillMaxWidth()
             .padding(vertical = 4.dp)
+            .testTag("completed_order_card_${order.id}")
     ) {
-        Column(modifier = Modifier.padding(10.dp)) {
+        Column(modifier = Modifier.padding(16.dp)) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Text(order.id, fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                Text(
+                    text = order.id,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 13.sp,
+                    fontFamily = FontFamily.Monospace,
+                    color = BlueGasDark
+                )
                 CanonicalStatusChip(order.status)
             }
 
-            Spacer(modifier = Modifier.height(4.dp))
-            Text("Customer: ${cust?.name}", fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
-            Text("Serial Delivered: ${order.allocatedSerial ?: "N/A"}", fontSize = 11.sp, color = Color(0xFF047857), fontWeight = FontWeight.Bold)
+            Spacer(modifier = Modifier.height(6.dp))
             Text(
-                "Settled: ${formatPaisaToPkr(order.totalAmountPaisa)} • ${order.paymentMethod.name}",
-                fontSize = 11.sp,
-                color = Color(0xFF166534)
+                text = cust?.name ?: "Customer",
+                fontSize = 13.sp,
+                fontWeight = FontWeight.SemiBold,
+                color = BlueGasDark
             )
 
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(top = 6.dp),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
+            if (order.completedAt != null) {
                 Text(
-                    text = "Delivered Today",
-                    fontSize = 10.sp,
-                    color = Color.Gray
+                    text = "Completed: ${formatDateTime(order.completedAt!!)}",
+                    fontSize = 11.sp,
+                    color = Color(0xFF64748B)
                 )
+            }
+
+            Spacer(modifier = Modifier.height(4.dp))
+            Text(
+                text = if (isCod) {
+                    "Cash collected: ${formatRupees(order.amountReceivedPaisa ?: order.totalAmountPaisa)}"
+                } else {
+                    "Paid online"
+                },
+                fontSize = 12.sp,
+                fontWeight = FontWeight.Bold,
+                color = if (isCod) Color(0xFFD97706) else Color(0xFF16A34A)
+            )
+
+            Text(
+                text = "Installation: ${order.installationResult?.displayName ?: "Completed"}",
+                fontSize = 11.sp,
+                color = Color(0xFF475569)
+            )
+
+            if (order.podReference != null) {
+                Text(
+                    text = "POD: ${order.podReference}",
+                    fontSize = 11.sp,
+                    fontFamily = FontFamily.Monospace,
+                    color = Color(0xFF64748B)
+                )
+            }
+
+            if (isCod) {
+                Spacer(modifier = Modifier.height(4.dp))
+                Surface(
+                    color = when {
+                        isReconciled -> Color(0xFFDCFCE7)
+                        isHandedOver -> Color(0xFFEFF6FF)
+                        else -> Color(0xFFFEF3C7)
+                    },
+                    shape = RoundedCornerShape(4.dp)
+                ) {
+                    Text(
+                        text = when {
+                            isReconciled -> "Payment reconciled by Finance"
+                            isHandedOver -> "Cash handed over — awaiting Finance"
+                            else -> "Cash not yet handed over"
+                        },
+                        fontSize = 10.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        color = when {
+                            isReconciled -> Color(0xFF166534)
+                            isHandedOver -> Color(0xFF1D4ED8)
+                            else -> Color(0xFF92400E)
+                        },
+                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.height(10.dp))
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.End
+            ) {
                 TextButton(
                     onClick = onViewReceipt,
-                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
-                    modifier = Modifier.height(28.dp)
+                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
+                    modifier = Modifier.height(48.dp)
                 ) {
-                    Icon(Icons.Default.Receipt, contentDescription = null, modifier = Modifier.size(13.dp))
-                    Spacer(modifier = Modifier.width(3.dp))
-                    Text("View Receipt", fontSize = 10.sp)
+                    Icon(Icons.Default.Receipt, contentDescription = null, modifier = Modifier.size(16.dp))
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text("View receipt", fontSize = 12.sp)
                 }
             }
         }
     }
 }
 
-// ----------------------------------------------------------------------------
-// COMPONENT: EMPTY STATE
-// ----------------------------------------------------------------------------
+/**
+ * Standard empty state presentation for tabs with no active orders.
+ */
 @Composable
 private fun EmptyStateView(
     icon: androidx.compose.ui.graphics.vector.ImageVector,
@@ -1356,13 +1938,18 @@ private fun EmptyStateView(
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(vertical = 36.dp, horizontal = 16.dp),
+            .padding(vertical = 48.dp, horizontal = 16.dp),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
         Icon(icon, contentDescription = null, tint = Color(0xFF94A3B8), modifier = Modifier.size(48.dp))
-        Spacer(modifier = Modifier.height(10.dp))
-        Text(title, fontWeight = FontWeight.Bold, fontSize = 14.sp, color = Color(0xFF475569))
+        Spacer(modifier = Modifier.height(12.dp))
+        Text(title, fontWeight = FontWeight.Bold, fontSize = 15.sp, color = Color(0xFF475569))
         Spacer(modifier = Modifier.height(4.dp))
-        Text(subtitle, fontSize = 11.sp, color = Color(0xFF64748B), textAlign = androidx.compose.ui.text.style.TextAlign.Center)
+        Text(
+            text = subtitle,
+            fontSize = 12.sp,
+            color = Color(0xFF64748B),
+            textAlign = androidx.compose.ui.text.style.TextAlign.Center
+        )
     }
 }

@@ -112,7 +112,8 @@ fun PersistentTopBar(
     isRiderOffline: Boolean,
     onOpenDevDrawer: () -> Unit,
     onOpenNotifications: () -> Unit,
-    onOpenAiAdvisor: () -> Unit
+    onOpenAiAdvisor: () -> Unit,
+    onSwitchSurface: (AppSurface) -> Unit = { store.setSurface(it) }
 ) {
     val unreadCount = store.notifications.count { !it.isRead }
 
@@ -242,8 +243,7 @@ fun PersistentTopBar(
                     selected = activeSurface == AppSurface.CUSTOMER,
                     icon = Icons.Default.PhoneAndroid,
                     onClick = {
-                        store.activeSurface = AppSurface.CUSTOMER
-                        store.notifyChanged()
+                        onSwitchSurface(AppSurface.CUSTOMER)
                     },
                     modifier = Modifier.weight(1f)
                 )
@@ -252,8 +252,7 @@ fun PersistentTopBar(
                     selected = activeSurface == AppSurface.RIDER,
                     icon = Icons.Default.TwoWheeler,
                     onClick = {
-                        store.activeSurface = AppSurface.RIDER
-                        store.notifyChanged()
+                        onSwitchSurface(AppSurface.RIDER)
                     },
                     modifier = Modifier.weight(1f)
                 )
@@ -262,8 +261,7 @@ fun PersistentTopBar(
                     selected = activeSurface == AppSurface.STAFF,
                     icon = Icons.Default.Dashboard,
                     onClick = {
-                        store.activeSurface = AppSurface.STAFF
-                        store.notifyChanged()
+                        onSwitchSurface(AppSurface.STAFF)
                     },
                     modifier = Modifier.weight(1f)
                 )
@@ -373,8 +371,7 @@ fun DevInspectorDialog(store: BlueGasStore, onDismiss: () -> Unit) {
                         store.orders.take(5).forEach { ord ->
                             OutlinedButton(
                                 onClick = {
-                                    store.selectedOrderIdForDrawer = ord.id
-                                    store.notifyChanged()
+                                    store.selectOrderForDevDrawer(ord.id)
                                 },
                                 colors = ButtonDefaults.outlinedButtonColors(
                                     containerColor = if (ord.id == selectedOrder?.id) Color(0xFFDBEAFE) else Color.Transparent
@@ -406,11 +403,11 @@ fun DevInspectorDialog(store: BlueGasStore, onDismiss: () -> Unit) {
                                     CanonicalStatusChip(selectedOrder.status)
                                 }
                                 Spacer(modifier = Modifier.height(4.dp))
-                                Text("Mode: ${selectedOrder.fulfilmentMode.name}", fontSize = 11.sp)
+                                Text("Mode: ${if (selectedOrder.fulfilmentMode == FulfilmentMode.DELIVERY) "Delivery" else "Pickup"}", fontSize = 11.sp)
                                 Text("Customer: ${selectedOrder.customerId} | Address: ${selectedOrder.addressId}", fontSize = 11.sp)
                                 Text("Allocated Serial: ${selectedOrder.allocatedSerial ?: "NONE"}", fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
-                                Text("Deposit Line: ${formatPaisaToPkr(selectedOrder.depositTotalPaisa)} (Liability)", fontSize = 11.sp, color = Color(0xFFB45309))
-                                Text("Total Amount: ${formatPaisaToPkr(selectedOrder.totalAmountPaisa)}", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                                Text("Deposit Line: ${formatRupees(selectedOrder.depositTotalPaisa)} (Liability)", fontSize = 11.sp, color = Color(0xFFB45309))
+                                Text("Total Amount: ${formatRupees(selectedOrder.totalAmountPaisa)}", fontSize = 11.sp, fontWeight = FontWeight.Bold)
                                 if (selectedOrder.exceptionReason != null) {
                                     Text("Exception Reason: ${selectedOrder.exceptionReason?.description}", fontSize = 11.sp, color = Color(0xFFDC2626))
                                     Text("Exception Details: ${selectedOrder.exceptionDetails}", fontSize = 11.sp, color = Color(0xFFDC2626))
@@ -474,7 +471,7 @@ fun DevInspectorDialog(store: BlueGasStore, onDismiss: () -> Unit) {
 
                     items(store.auditLogs.takeLast(6).reversed()) { log ->
                         Text(
-                            text = "[${log.role.name}] ${log.action} on ${log.entityType}:${log.entityId} by ${log.actor}",
+                            text = "[${log.role.displayName}] ${log.action} on ${log.entityType}:${log.entityId} by ${log.actor}",
                             fontSize = 10.sp,
                             fontFamily = FontFamily.Monospace,
                             color = Color(0xFF334155),

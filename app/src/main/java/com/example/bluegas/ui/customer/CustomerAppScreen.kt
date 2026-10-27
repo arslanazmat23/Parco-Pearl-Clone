@@ -22,6 +22,7 @@ import androidx.compose.material.icons.automirrored.filled.ReceiptLong
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -73,7 +74,7 @@ fun CustomerAppScreen(store: BlueGasStore, modifier: Modifier = Modifier) {
         "PROFILE" -> CustomerTab.PROFILE
         else -> CustomerTab.HOME
     }
-    var selectedTrackingOrderId by remember { mutableStateOf<String?>(null) }
+    var selectedTrackingOrderId by rememberSaveable { mutableStateOf<String?>(null) }
 
     // Unified customer notification banner with auto-dismiss.
     // Automatically clears transient action confirmations and errors after 5 seconds to preserve viewport space.

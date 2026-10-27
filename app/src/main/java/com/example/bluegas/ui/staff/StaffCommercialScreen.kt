@@ -134,7 +134,7 @@ fun StaffCommercialScreen(
                             }
 
                             Spacer(modifier = Modifier.height(8.dp))
-                            Text("Deposit Liabilities (Refundable):", fontWeight = FontWeight.SemiBold, fontSize = 11.sp)
+                            Text("Deposit Liabilities:", fontWeight = FontWeight.SemiBold, fontSize = 11.sp)
                             activePriceList.depositPaisa.forEach { (sku, dep) ->
                                 Row(
                                     modifier = Modifier

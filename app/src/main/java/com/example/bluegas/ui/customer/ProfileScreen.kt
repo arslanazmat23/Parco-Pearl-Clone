@@ -55,17 +55,17 @@ import com.example.ui.theme.BlueGasDark
 import com.example.ui.theme.BlueGasPrimary
 
 /**
- * Masks the middle digits of a 13-digit Pakistani CNIC to preserve customer privacy in the UI.
+ * Privacy masking rule for Pakistani National Identity Cards (CNIC).
+ * Strips non-digits; if fewer than 13 digits, returns input unchanged.
+ * Formats as first 5 digits, then -XXXXXXX-, then final checksum digit (e.g. 37405-XXXXXXX-1).
  *
- * Privacy masking rule: exposes the initial 7 characters (division/district/tehsil code)
- * and the final checksum gender digit while obscuring the 5-digit family tree serial with 'XXXXX'.
- *
- * @param cnic The raw 13-digit CNIC string.
- * @return Formatted CNIC with the middle 5 digits replaced with 'XXXXX'.
+ * @param cnic The raw or formatted CNIC string.
+ * @return Masked CNIC string in format 37405-XXXXXXX-1.
  */
 fun maskCnic(cnic: String): String {
-    if (cnic.length < 13) return cnic
-    return cnic.take(7) + "XXXXX" + cnic.takeLast(1)
+    val digits = cnic.filter { it.isDigit() }
+    if (digits.length < 13) return cnic
+    return "${digits.take(5)}-XXXXXXX-${digits.takeLast(1)}"
 }
 
 /**

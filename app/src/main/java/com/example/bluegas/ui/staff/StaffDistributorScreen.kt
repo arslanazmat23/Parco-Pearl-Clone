@@ -216,18 +216,11 @@ fun StaffDistributorScreen(
                         }
                         Button(
                             onClick = {
-                                val tPrep = OrderStateMachine.transition(
-                                    order = ord,
-                                    targetStatus = OrderStatus.ORD_PREP,
-                                    actor = "Distributor Lead",
-                                    role = AccountableRole.DISTRIBUTOR,
-                                    trigger = "Distributor initiated preparation"
-                                )
-                                if (tPrep is TransitionResult.Success) {
-                                    store.notifyChanged()
+                                val (ok, msg) = store.startPreparing(ord.id)
+                                if (ok) {
                                     onBanner("Order ${ord.id} is now Preparing (ORD_PREP).")
-                                } else if (tPrep is TransitionResult.Failure) {
-                                    onBanner(tPrep.errorMessage)
+                                } else {
+                                    onBanner(msg)
                                 }
                             },
                             colors = ButtonDefaults.buttonColors(containerColor = BlueGasPrimary),
@@ -293,16 +286,11 @@ fun StaffDistributorScreen(
                             if (ord.fulfilmentMode == FulfilmentMode.PICKUP) {
                                 Button(
                                     onClick = {
-                                        val t = OrderStateMachine.transition(
-                                            order = ord,
-                                            targetStatus = OrderStatus.ORD_RDYPU,
-                                            actor = "Distributor Lead",
-                                            role = AccountableRole.DISTRIBUTOR,
-                                            trigger = "Staged for depot pickup"
-                                        )
-                                        if (t is TransitionResult.Success) {
-                                            store.notifyChanged()
+                                        val (ok, msg) = store.dispatchOrReadyForPickup(ord.id)
+                                        if (ok) {
                                             onBanner("Order ${ord.id} is Ready for Customer Pickup.")
+                                        } else {
+                                            onBanner(msg)
                                         }
                                     },
                                     colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF16A34A)),
@@ -313,16 +301,11 @@ fun StaffDistributorScreen(
                             } else {
                                 Button(
                                     onClick = {
-                                        val t = OrderStateMachine.transition(
-                                            order = ord,
-                                            targetStatus = OrderStatus.ORD_DISP,
-                                            actor = "Distributor Lead",
-                                            role = AccountableRole.DISTRIBUTOR,
-                                            trigger = "Dispatched with rider"
-                                        )
-                                        if (t is TransitionResult.Success) {
-                                            store.notifyChanged()
+                                        val (ok, msg) = store.dispatchOrReadyForPickup(ord.id)
+                                        if (ok) {
                                             onBanner("Order ${ord.id} dispatched with rider.")
+                                        } else {
+                                            onBanner(msg)
                                         }
                                     },
                                     colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF0284C7)),

@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.Scaffold
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import androidx.compose.ui.Modifier
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -52,6 +53,8 @@ fun BlueGasAppRoot(viewModel: BlueGasViewModel = viewModel()) {
         }
     }
 
+    val stateHolder = rememberSaveableStateHolder()
+
     Scaffold(
         modifier = Modifier.fillMaxSize(),
         topBar = {
@@ -61,7 +64,8 @@ fun BlueGasAppRoot(viewModel: BlueGasViewModel = viewModel()) {
                 isRiderOffline = appState.isRiderOffline,
                 onOpenDevDrawer = { showDevDrawer = true },
                 onOpenNotifications = { showNotifications = true },
-                onOpenAiAdvisor = { showAiAdvisor = true }
+                onOpenAiAdvisor = { showAiAdvisor = true },
+                onSwitchSurface = { viewModel.switchSurface(it) }
             )
         }
     ) { innerPadding ->
@@ -70,10 +74,13 @@ fun BlueGasAppRoot(viewModel: BlueGasViewModel = viewModel()) {
                 .fillMaxSize()
                 .padding(innerPadding)
         ) {
-            when (appState.activeSurface) {
-                AppSurface.CUSTOMER -> CustomerAppScreen(store = viewModel.store)
-                AppSurface.RIDER -> RiderAppScreen(store = viewModel.store)
-                AppSurface.STAFF -> StaffPortalScreen(store = viewModel.store)
+            // Preserves local UI state (such as tab selection, form inputs, and scroll offsets) across surface transitions.
+            stateHolder.SaveableStateProvider(key = appState.activeSurface.name) {
+                when (appState.activeSurface) {
+                    AppSurface.CUSTOMER -> CustomerAppScreen(store = viewModel.store)
+                    AppSurface.RIDER -> RiderAppScreen(store = viewModel.store)
+                    AppSurface.STAFF -> StaffPortalScreen(store = viewModel.store)
+                }
             }
         }
     }

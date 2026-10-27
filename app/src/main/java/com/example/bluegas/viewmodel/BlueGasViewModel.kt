@@ -33,8 +33,7 @@ class BlueGasViewModel(
     val appState: StateFlow<SharedAppState> = store.appState
 
     fun switchSurface(surface: AppSurface) {
-        store.activeSurface = surface
-        store.notifyChanged()
+        store.setSurface(surface)
     }
 
     fun switchStaffSubRole(role: StaffSubRole) {
@@ -42,18 +41,19 @@ class BlueGasViewModel(
     }
 
     fun switchCustomer(customerId: String) {
-        store.activeCustomerId = customerId
-        store.notifyChanged()
+        store.setActiveCustomer(customerId)
     }
 
     fun toggleRiderOffline(isOffline: Boolean) {
-        store.isRiderOffline = isOffline
-        store.notifyChanged()
+        store.setRiderOffline(isOffline)
+    }
+
+    fun setRiderOffline(offline: Boolean) {
+        store.setRiderOffline(offline)
     }
 
     fun selectOrderForDevDrawer(orderId: String?) {
-        store.selectedOrderIdForDrawer = orderId
-        store.notifyChanged()
+        store.selectOrderForDevDrawer(orderId)
     }
 
     fun markAllNotificationsRead(surface: AppSurface = store.activeSurface, role: StaffSubRole? = null) {

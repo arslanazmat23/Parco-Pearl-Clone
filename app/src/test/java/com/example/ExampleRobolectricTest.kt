@@ -193,10 +193,15 @@ class ExampleRobolectricTest {
         // 6. Rider completes safety check, COD collection, and POD (ORD_ATHO -> ORD_HOC -> ORD_COMP)
         val (compOk, compMsg) = store.completeHandover(
             orderId = "ORD-SEED-105",
-            nonTechInstallationPassed = true,
-            proofOfDeliveryNote = "Bubble leak test passed. Seal intact.",
-            collectedCashPaisa = pendingOrder?.totalAmountPaisa,
-            customerSignature = "Customer Sig"
+            pinVerified = true,
+            installationResult = InstallationResult.INSTALLED,
+            checklistAnswers = mapOf("Checklist step" to true),
+            proofOfDeliveryNote = "Delivered. Installation verified.",
+            amountReceivedPaisa = pendingOrder?.totalAmountPaisa,
+            signatureCaptured = true,
+            signerName = "Customer Sig",
+            photoCaptured = true,
+            evidenceConsent = true
         )
         assertTrue(compOk)
         assertEquals(OrderStatus.ORD_COMP, pendingOrder?.status)
@@ -207,9 +212,9 @@ class ExampleRobolectricTest {
         assertEquals(InventoryState.INV_CONSUMED, deliveredCyl?.status)
         assertEquals(CylinderCustody.CUSTOMER_PREMISES, deliveredCyl?.custody)
 
-        // Verify payment settled and ledger updated
+        // Verify payment collected by rider (settles when Finance reconciles under BRD L3)
         val payment = store.payments.find { it.orderId == "ORD-SEED-105" }
-        assertEquals(PaymentState.SETTLED, payment?.state)
+        assertEquals(PaymentState.CASH_COLLECTED, payment?.state)
     }
 
     @Test
@@ -277,15 +282,19 @@ class ExampleRobolectricTest {
         // Complete multi-step POD flow
         val (ok, msg) = store.completeHandover(
             orderId = "ORD-SEED-105",
-            nonTechInstallationPassed = true,
-            proofOfDeliveryNote = "Bubble leak test passed. Hose secured. Empty returned.",
-            collectedCashPaisa = order?.totalAmountPaisa,
-            customerSignature = "Digitally Signed by Bilal Customer",
-            photoEvidenceCaptured = true,
+            pinVerified = true,
+            installationResult = InstallationResult.INSTALLED,
+            checklistAnswers = mapOf("Checklist step" to true),
+            proofOfDeliveryNote = "Delivered. Installation completed.",
+            amountReceivedPaisa = order?.totalAmountPaisa,
+            signatureCaptured = true,
             signerName = "Bilal Customer",
+            photoCaptured = true,
+            evidenceConsent = true,
             changeReturnedPaisa = 11500L,
-            emptyCylinderCollected = true,
-            emptyCylinderSerial = "BG-LHR-OLD-812"
+            emptyCollected = true,
+            emptyBrand = "BLUE GAS",
+            emptySerial = "BG-LHR-OLD-812"
         )
 
         assertTrue(ok)

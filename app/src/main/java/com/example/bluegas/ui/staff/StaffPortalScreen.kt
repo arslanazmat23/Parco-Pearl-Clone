@@ -105,8 +105,7 @@ fun StaffPortalScreen(store: BlueGasStore) {
                             modifier = Modifier
                                 .testTag("staff_subrole_${role.name.lowercase()}")
                                 .clickable {
-                                    store.activeStaffSubRole = role
-                                    store.notifyChanged()
+                                    store.setStaffRole(role)
                                 }
                         ) {
                             Row(

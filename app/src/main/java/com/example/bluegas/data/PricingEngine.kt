@@ -165,7 +165,8 @@ object PricingEngine {
 
         // 3. Accessories
         for ((accSku, accQty) in accessories) {
-            val accPrice = roundToRupees(priceList.accessoryPaisa[accSku] ?: 145000L, priceList.roundingRule)
+            val rawAccPrice = priceList.accessoryPaisa[accSku] ?: continue
+            val accPrice = roundToRupees(rawAccPrice, priceList.roundingRule)
             lines.add(
                 OrderLine(
                     sku = accSku,

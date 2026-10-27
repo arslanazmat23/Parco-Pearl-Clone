@@ -161,10 +161,10 @@ enum class RoundingRule {
     DOWN
 }
 
-enum class InstallationResult {
-    INSTALLED,
-    NOT_INSTALLED,
-    NOT_APPLICABLE
+enum class InstallationResult(val displayName: String) {
+    INSTALLED("Installed"),
+    NOT_INSTALLED("Not installed"),
+    NOT_APPLICABLE("Not applicable")
 }
 
 enum class FulfilmentPointType {
@@ -512,6 +512,7 @@ data class Delivery(
     val installationResult: InstallationResult? = null,
     val notInstalledReason: String? = null,
     val pinVerified: Boolean = false,
+    val pinNotVerifiedReason: String? = null,
     val evidenceConsent: Boolean = true,
     val deviceId: String? = null,
     val location: String? = null,

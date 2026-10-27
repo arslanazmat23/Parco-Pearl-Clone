@@ -1,3 +1,18 @@
+/**
+ * Proof of Delivery (POD) multi-step capture flow for riders at customer doorstep.
+ *
+ * Implements R5.1 sequential delivery verification steps:
+ * 1. Handover code (PIN) verification with 3-attempt safety unlock
+ * 2. Non-technical installation checklist driven by platform configuration
+ * 3. Empty cylinder exchange (conditional on REFILL_EXCHANGE orders)
+ * 4. Cash on Delivery collection, live change calculation, and difference reasons
+ * 5. Optional photo capture with explicit customer consent
+ * 6. Customer signature canvas or inability reason capture
+ * 7. Review and final delivery submission
+ *
+ * Reads: [SharedAppState.settings], [SharedAppState.customers]
+ * Calls: [BlueGasStore.verifyHandoverPin], [BlueGasStore.completeHandover]
+ */
 package com.example.bluegas.ui.rider
 
 import androidx.compose.animation.AnimatedVisibility
@@ -23,7 +38,6 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
-import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.drawscope.Stroke
@@ -31,27 +45,42 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.bluegas.data.*
-import com.example.bluegas.model.Order
-import com.example.bluegas.model.PaymentMethod
-import com.example.bluegas.model.formatPaisaToPkr
+import com.example.bluegas.model.*
 import com.example.ui.theme.BlueGasDark
 import com.example.ui.theme.BlueGasPrimary
-import java.text.SimpleDateFormat
-import java.util.*
 
-enum class PodStep(val title: String, val subtitle: String) {
-    SAFETY_CHECKLIST("Safety Check", "OGRA Installation Standards"),
-    PAYMENT_CONFIRMATION("Payment", "Verify & Collect"),
-    PHOTO_EVIDENCE("Photo Evidence", "Capture Geotagged Proof"),
-    SIGNATURE_CAPTURE("Signature", "Customer Acknowledgment")
+/**
+ * Logical steps in the proof-of-delivery capture wizard.
+ *
+ * @property title User-facing step title displayed in the header.
+ */
+enum class PodStep(val title: String) {
+    PIN("Handover Code"),
+    INSTALLATION("Installation"),
+    EMPTY_CYLINDER("Empty Cylinder"),
+    PAYMENT("Payment"),
+    PHOTO("Photo"),
+    SIGNATURE("Signature"),
+    REVIEW("Review & Complete")
 }
 
+/**
+ * Modal dialog for capturing doorstep delivery verification evidence before completing an order.
+ *
+ * @param order The active order being delivered.
+ * @param store Application data store reference.
+ * @param onDismiss Invoked when the dialog is cancelled or closed.
+ * @param onCompleted Callback receiving success status and feedback message.
+ */
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun PodCaptureDialog(
     order: Order,
@@ -59,1227 +88,991 @@ fun PodCaptureDialog(
     onDismiss: () -> Unit,
     onCompleted: (Boolean, String) -> Unit
 ) {
-    var currentStep by remember { mutableStateOf(PodStep.SAFETY_CHECKLIST) }
-
-    // Step 1: Safety Checklist States
-    var leakCheckPassed by remember { mutableStateOf(false) }
-    var valveIntact by remember { mutableStateOf(false) }
-    var ventilatedArea by remember { mutableStateOf(false) }
-    var hoseConnectionSecured by remember { mutableStateOf(false) }
-    var emptyCylinderCollected by remember { mutableStateOf(false) }
-    var emptyCylinderSerial by remember { mutableStateOf("BG-LHR-OLD-812") }
-
-    // Step 2: Payment States
+    val snapshot by store.appState.collectAsStateWithLifecycle()
+    val settings = snapshot.settings
     val isCod = order.paymentMethod == PaymentMethod.CASH_ON_DELIVERY
-    var tenderedPaisa by remember(order.totalAmountPaisa) {
-        mutableLongStateOf(if (isCod) order.totalAmountPaisa else 0L)
-    }
-    var cashCollectedConfirmed by remember { mutableStateOf(!isCod) }
+    val isRefillExchange = order.orderType == OrderType.REFILL_EXCHANGE
 
-    // Step 3: Photo Evidence States
-    var photoCaptured by remember { mutableStateOf(false) }
-    var photoType by remember { mutableStateOf("DOORSTEP") } // DOORSTEP or VALVE_SEAL
-    val photoCaptureTimestamp = remember { System.currentTimeMillis() }
-
-    // Step 4: Signature Canvas States
-    val signaturePoints = remember { mutableStateListOf<Offset>() }
-    var quickSignAdopted by remember { mutableStateOf(false) }
-    val customer = store.customers.find { it.id == order.customerId }
-    var signerName by remember(customer?.name) { mutableStateOf(customer?.name ?: "Customer") }
-    var signerRelation by remember { mutableStateOf("Self") }
-    var riderNotes by remember { mutableStateOf("") }
-
-    val activeRider = store.getActiveRider() ?: store.riders.firstOrNull()
-    if (activeRider == null) {
-        Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-            Text("No riders configured. Please contact admin.", fontWeight = FontWeight.Bold)
+    // Compute active steps dynamically based on order type and payment method
+    val activeSteps = remember(order) {
+        buildList {
+            add(PodStep.PIN)
+            add(PodStep.INSTALLATION)
+            if (isRefillExchange) add(PodStep.EMPTY_CYLINDER)
+            if (isCod) add(PodStep.PAYMENT)
+            add(PodStep.PHOTO)
+            add(PodStep.SIGNATURE)
+            add(PodStep.REVIEW)
         }
-        return
     }
-    val customerAddress = store.addresses.find { it.id == order.addressId }
-    val zoneLabel = customerAddress?.let { "${it.city} (${it.zoneId})" } ?: activeRider.zoneName
 
-    // Step Validations
-    val isChecklistValid = leakCheckPassed && valveIntact && ventilatedArea && hoseConnectionSecured
-    val isPaymentValid = !isCod || (cashCollectedConfirmed && tenderedPaisa >= order.totalAmountPaisa)
-    val isPhotoValid = photoCaptured
-    val isSignatureValid = signaturePoints.size > 8 || quickSignAdopted
+    var currentStepIndex by remember { mutableIntStateOf(0) }
+    val currentStep = activeSteps[currentStepIndex]
+    var showDiscardAlert by remember { mutableStateOf(false) }
+    var isSubmitting by remember { mutableStateOf(false) }
 
-    val isCurrentStepValid = when (currentStep) {
-        PodStep.SAFETY_CHECKLIST -> isChecklistValid
-        PodStep.PAYMENT_CONFIRMATION -> isPaymentValid
-        PodStep.PHOTO_EVIDENCE -> isPhotoValid
-        PodStep.SIGNATURE_CAPTURE -> isSignatureValid
+    // Step 1: Handover Code (PIN) States
+    var enteredPin by remember { mutableStateOf("") }
+    var pinVerified by remember { mutableStateOf(false) }
+    var pinFailedAttempts by remember { mutableIntStateOf(0) }
+    var pinError by remember { mutableStateOf<String?>(null) }
+    var codeNotAvailableSelected by remember { mutableStateOf(false) }
+    var pinNotVerifiedReason by remember { mutableStateOf("") }
+
+    // Step 2: Installation States
+    var installationResult by remember { mutableStateOf(InstallationResult.INSTALLED) }
+    var notInstalledReason by remember { mutableStateOf("") }
+    val checklistSelections = remember(settings.installationChecklistItems) {
+        mutableStateMapOf<String, Boolean>().apply {
+            settings.installationChecklistItems.forEach { put(it, false) }
+        }
+    }
+
+    // Step 3: Empty Cylinder States (Refill only)
+    var emptyCollected by remember { mutableStateOf(false) }
+    var selectedBrand by remember(settings.approvedEmptyBrands) {
+        mutableStateOf(settings.approvedEmptyBrands.firstOrNull() ?: "BLUE GAS")
+    }
+    var emptySerialInput by remember { mutableStateOf("") }
+
+    // Step 4: Payment States (COD only)
+    var cashReceivedRupees by remember(order.totalAmountPaisa) {
+        mutableStateOf((order.totalAmountPaisa / 100).toString())
+    }
+    var cashReceivedConfirmed by remember { mutableStateOf(false) }
+    var cashDifferenceReason by remember { mutableStateOf("") }
+
+    val recPaisa = remember(cashReceivedRupees) {
+        (cashReceivedRupees.trim().toLongOrNull() ?: 0L) * 100L
+    }
+    val cashDifference = recPaisa - order.totalAmountPaisa
+
+    // Step 5: Photo States
+    var photoConsent by remember { mutableStateOf(false) }
+    var photoCaptured by remember { mutableStateOf(false) }
+    var skipPhoto by remember { mutableStateOf(false) }
+    var photoSkipReason by remember { mutableStateOf("") }
+
+    // Step 6: Signature States
+    val signaturePoints = remember { mutableStateListOf<Offset>() }
+    var cannotSignSelected by remember { mutableStateOf(false) }
+    var signatureUnavailableReason by remember { mutableStateOf("") }
+    val customer = snapshot.customers.find { it.id == order.customerId }
+    var signerName by remember(customer?.name) { mutableStateOf(customer?.name ?: "Customer") }
+
+    // Step Validation Logic
+    val isStepValid: Boolean = when (currentStep) {
+        PodStep.PIN -> {
+            pinVerified || (codeNotAvailableSelected && pinNotVerifiedReason.trim().isNotBlank())
+        }
+        PodStep.INSTALLATION -> {
+            when (installationResult) {
+                InstallationResult.INSTALLED -> {
+                    settings.installationChecklistItems.isEmpty() ||
+                            settings.installationChecklistItems.all { checklistSelections[it] == true }
+                }
+                InstallationResult.NOT_INSTALLED -> notInstalledReason.trim().isNotBlank()
+                InstallationResult.NOT_APPLICABLE -> true
+            }
+        }
+        PodStep.EMPTY_CYLINDER -> {
+            // Optional to collect; if collected, brand is chosen from approved list
+            true
+        }
+        PodStep.PAYMENT -> {
+            if (!isCod) true
+            else {
+                cashReceivedConfirmed && (cashDifference == 0L || cashDifferenceReason.trim().isNotBlank())
+            }
+        }
+        PodStep.PHOTO -> {
+            (photoCaptured && photoConsent) || (skipPhoto && photoSkipReason.trim().isNotBlank())
+        }
+        PodStep.SIGNATURE -> {
+            if (cannotSignSelected) {
+                signatureUnavailableReason.trim().isNotBlank()
+            } else {
+                signaturePoints.isNotEmpty() && signerName.trim().isNotBlank()
+            }
+        }
+        PodStep.REVIEW -> true
     }
 
     Dialog(
-        onDismissRequest = onDismiss,
-        properties = DialogProperties(
-            usePlatformDefaultWidth = false,
-            dismissOnBackPress = false,
-            dismissOnClickOutside = false
-        )
+        onDismissRequest = { showDiscardAlert = true },
+        properties = DialogProperties(dismissOnBackPress = false, dismissOnClickOutside = false)
     ) {
         Surface(
             modifier = Modifier
-                .fillMaxWidth(0.96f)
+                .fillMaxWidth()
                 .fillMaxHeight(0.92f)
-                .testTag("pod_dialog"),
+                .testTag("pod_capture_dialog"),
             shape = RoundedCornerShape(16.dp),
-            color = Color.White,
-            tonalElevation = 8.dp
+            color = MaterialTheme.colorScheme.surface,
+            tonalElevation = 6.dp
         ) {
-            Column(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(16.dp)
-            ) {
-                // Header Bar
+            Column(modifier = Modifier.fillMaxSize()) {
+                // Header (Pinned)
                 Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Column {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Icon(
-                                imageVector = Icons.Default.Verified,
-                                contentDescription = null,
-                                tint = BlueGasPrimary,
-                                modifier = Modifier.size(20.dp)
-                            )
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Text(
-                                text = "Proof of Delivery (POD)",
-                                fontWeight = FontWeight.Bold,
-                                fontSize = 17.sp,
-                                color = BlueGasDark
-                            )
-                        }
-                        Text(
-                            text = "Order: ${order.id} • ${order.allocatedSerial ?: "Serial Bound"}",
-                            fontSize = 11.sp,
-                            fontFamily = FontFamily.Monospace,
-                            color = Color(0xFF64748B)
-                        )
-                    }
-
-                    IconButton(
-                        onClick = onDismiss,
-                        modifier = Modifier.size(32.dp)
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.Close,
-                            contentDescription = "Close",
-                            tint = Color(0xFF64748B)
-                        )
-                    }
-                }
-
-                Spacer(modifier = Modifier.height(12.dp))
-
-                // Stepper Indicator
-                PodStepperIndicator(currentStep = currentStep)
-
-                Spacer(modifier = Modifier.height(14.dp))
-
-                // Scrollable Body Content
-                Box(
                     modifier = Modifier
-                        .weight(1f)
                         .fillMaxWidth()
-                ) {
-                    when (currentStep) {
-                        PodStep.SAFETY_CHECKLIST -> {
-                            PodSafetyChecklistStep(
-                                leakCheckPassed = leakCheckPassed,
-                                onLeakCheckChange = { leakCheckPassed = it },
-                                valveIntact = valveIntact,
-                                onValveIntactChange = { valveIntact = it },
-                                ventilatedArea = ventilatedArea,
-                                onVentilatedAreaChange = { ventilatedArea = it },
-                                hoseConnectionSecured = hoseConnectionSecured,
-                                onHoseConnectionChange = { hoseConnectionSecured = it },
-                                emptyCylinderCollected = emptyCylinderCollected,
-                                onEmptyCylinderToggle = { emptyCylinderCollected = it },
-                                emptyCylinderSerial = emptyCylinderSerial,
-                                onEmptyCylinderSerialChange = { emptyCylinderSerial = it }
-                            )
-                        }
-                        PodStep.PAYMENT_CONFIRMATION -> {
-                            PodPaymentConfirmationStep(
-                                order = order,
-                                isCod = isCod,
-                                tenderedPaisa = tenderedPaisa,
-                                onTenderedPaisaChange = { tenderedPaisa = it },
-                                cashCollectedConfirmed = cashCollectedConfirmed,
-                                onCashCollectedConfirmedChange = { cashCollectedConfirmed = it }
-                            )
-                        }
-                        PodStep.PHOTO_EVIDENCE -> {
-                            PodPhotoEvidenceStep(
-                                order = order,
-                                zoneLabel = zoneLabel,
-                                photoType = photoType,
-                                onPhotoTypeChange = { photoType = it },
-                                photoCaptured = photoCaptured,
-                                onPhotoCapture = { photoCaptured = true },
-                                onPhotoRetake = { photoCaptured = false },
-                                timestamp = photoCaptureTimestamp
-                            )
-                        }
-                        PodStep.SIGNATURE_CAPTURE -> {
-                            PodSignatureCaptureStep(
-                                signaturePoints = signaturePoints,
-                                onClearSignature = {
-                                    signaturePoints.clear()
-                                    quickSignAdopted = false
-                                },
-                                quickSignAdopted = quickSignAdopted,
-                                onAdoptQuickSign = { quickSignAdopted = true },
-                                signerName = signerName,
-                                onSignerNameChange = { signerName = it },
-                                signerRelation = signerRelation,
-                                onSignerRelationChange = { signerRelation = it },
-                                riderNotes = riderNotes,
-                                onRiderNotesChange = { riderNotes = it }
-                            )
-                        }
-                    }
-                }
-
-                Spacer(modifier = Modifier.height(12.dp))
-
-                // Footer Buttons
-                PodFooterButtons(
-                    currentStep = currentStep,
-                    isCurrentStepValid = isCurrentStepValid,
-                    onBack = {
-                        val allSteps = PodStep.entries
-                        val prevIndex = allSteps.indexOf(currentStep) - 1
-                        if (prevIndex >= 0) {
-                            currentStep = allSteps[prevIndex]
-                        }
-                    },
-                    onNext = {
-                        val allSteps = PodStep.entries
-                        val nextIndex = allSteps.indexOf(currentStep) + 1
-                        if (nextIndex < allSteps.size) {
-                            currentStep = allSteps[nextIndex]
-                        } else {
-                            // Step 4 Complete: Trigger completeHandover
-                            val changePaisa = if (isCod) (tenderedPaisa - order.totalAmountPaisa).coerceAtLeast(0L) else null
-                            val podNote = buildString {
-                                append("SAFETY: Leak=${leakCheckPassed}, Valve=${valveIntact}, Vent=${ventilatedArea}, Hose=${hoseConnectionSecured}")
-                                append(" | PAYMENT: ${if (isCod) "COD Collected" else "Prepaid"}")
-                                append(" | PHOTO: ${if (photoCaptured) photoType else "Not Captured"}")
-                                append(" | SIGNED_BY: $signerName ($signerRelation)")
-                                if (riderNotes.isNotBlank()) append(" | NOTES: $riderNotes")
-                            }
-
-                            val result = store.completeHandover(
-                                orderId = order.id,
-                                nonTechInstallationPassed = isChecklistValid,
-                                proofOfDeliveryNote = podNote,
-                                collectedCashPaisa = if (isCod) order.totalAmountPaisa else null,
-                                actor = activeRider.name,
-                                emptyCylinderCollected = emptyCylinderCollected,
-                                emptyCylinderSerial = if (emptyCylinderCollected) emptyCylinderSerial else null,
-                                customerSignature = if (quickSignAdopted) "Adopted: $signerName" else "Touch Verified",
-                                photoEvidenceCaptured = photoCaptured,
-                                signerName = signerName,
-                                changeReturnedPaisa = changePaisa
-                            )
-                            onCompleted(result.first, result.second)
-                        }
-                    },
-                    onCancel = onDismiss
-                )
-            }
-        }
-    }
-}
-
-@Composable
-fun PodStepperIndicator(currentStep: PodStep) {
-    val allSteps = PodStep.entries
-    val currentIndex = allSteps.indexOf(currentStep)
-
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 4.dp),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        allSteps.forEachIndexed { index, step ->
-            val isPassed = index < currentIndex
-            val isCurrent = index == currentIndex
-
-            Column(
-                horizontalAlignment = Alignment.CenterHorizontally,
-                modifier = Modifier.weight(1f)
-            ) {
-                Box(
-                    modifier = Modifier
-                        .size(26.dp)
-                        .clip(CircleShape)
-                        .background(
-                            when {
-                                isPassed -> Color(0xFF16A34A)
-                                isCurrent -> BlueGasPrimary
-                                else -> Color(0xFFE2E8F0)
-                            }
-                        ),
-                    contentAlignment = Alignment.Center
-                ) {
-                    if (isPassed) {
-                        Icon(
-                            imageVector = Icons.Default.Check,
-                            contentDescription = null,
-                            tint = Color.White,
-                            modifier = Modifier.size(16.dp)
-                        )
-                    } else {
-                        Text(
-                            text = (index + 1).toString(),
-                            fontSize = 11.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = if (isCurrent) Color.White else Color(0xFF64748B)
-                        )
-                    }
-                }
-                Spacer(modifier = Modifier.height(4.dp))
-                Text(
-                    text = step.title,
-                    fontSize = 10.sp,
-                    fontWeight = if (isCurrent) FontWeight.Bold else FontWeight.Normal,
-                    color = if (isCurrent) BlueGasPrimary else Color(0xFF64748B),
-                    maxLines = 1,
-                    textAlign = TextAlign.Center
-                )
-            }
-
-            if (index < allSteps.size - 1) {
-                Box(
-                    modifier = Modifier
-                        .height(2.dp)
-                        .weight(0.6f)
-                        .background(if (index < currentIndex) Color(0xFF16A34A) else Color(0xFFE2E8F0))
-                )
-            }
-        }
-    }
-}
-
-@Composable
-private fun PodSafetyChecklistStep(
-    leakCheckPassed: Boolean,
-    onLeakCheckChange: (Boolean) -> Unit,
-    valveIntact: Boolean,
-    onValveIntactChange: (Boolean) -> Unit,
-    ventilatedArea: Boolean,
-    onVentilatedAreaChange: (Boolean) -> Unit,
-    hoseConnectionSecured: Boolean,
-    onHoseConnectionChange: (Boolean) -> Unit,
-    emptyCylinderCollected: Boolean,
-    onEmptyCylinderToggle: (Boolean) -> Unit,
-    emptyCylinderSerial: String,
-    onEmptyCylinderSerialChange: (String) -> Unit
-) {
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .verticalScroll(rememberScrollState())
-            .testTag("pod_step_safety"),
-        verticalArrangement = Arrangement.spacedBy(10.dp)
-    ) {
-        // OGRA Compliance Banner
-        Surface(
-            color = Color(0xFFEFF6FF),
-            shape = RoundedCornerShape(10.dp),
-            border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFFBFDBFE)),
-            modifier = Modifier.fillMaxWidth()
-        ) {
-            Row(
-                modifier = Modifier.padding(10.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Icon(
-                    imageVector = Icons.Default.Shield,
-                    contentDescription = null,
-                    tint = BlueGasPrimary,
-                    modifier = Modifier.size(24.dp)
-                )
-                Spacer(modifier = Modifier.width(10.dp))
-                Column {
-                    Text(
-                        text = "OGRA Non-Technical Installation Standards",
-                        fontWeight = FontWeight.Bold,
-                        fontSize = 12.sp,
-                        color = Color(0xFF1E3A8A)
-                    )
-                    Text(
-                        text = "All 4 safety checks are legally mandated before handing over certified LPG.",
-                        fontSize = 10.sp,
-                        color = Color(0xFF3B82F6),
-                        lineHeight = 14.sp
-                    )
-                }
-            }
-        }
-
-        Text(
-            text = "Mandatory Delivery Checklist",
-            fontWeight = FontWeight.Bold,
-            fontSize = 13.sp,
-            color = BlueGasDark
-        )
-
-        SafetyCheckItem(
-            title = "1. Bubble Leak Test Passed",
-            subtitle = "Verified zero bubbling at cylinder valve and regulator joint with soapy water.",
-            checked = leakCheckPassed,
-            onCheckedChange = onLeakCheckChange,
-            testTag = "check_bubble_leak"
-        )
-
-        SafetyCheckItem(
-            title = "2. Protective Seal & Valve Intact",
-            subtitle = "Safety tamper seal verified, valve handwheel and collar are undamaged.",
-            checked = valveIntact,
-            onCheckedChange = onValveIntactChange,
-            testTag = "check_valve_intact"
-        )
-
-        SafetyCheckItem(
-            title = "3. Upright & Ventilated Placement",
-            subtitle = "Cylinder placed strictly upright on level floor in a ventilated area.",
-            checked = ventilatedArea,
-            onCheckedChange = onVentilatedAreaChange,
-            testTag = "check_ventilated"
-        )
-
-        SafetyCheckItem(
-            title = "4. Hose Pipe Securely Clamped",
-            subtitle = "Metallic jubilee clips tightened securely on regulator and stove joints without kinks.",
-            checked = hoseConnectionSecured,
-            onCheckedChange = onHoseConnectionChange,
-            testTag = "check_hose_clamped"
-        )
-
-        Spacer(modifier = Modifier.height(4.dp))
-
-        // Empty Cylinder Collection Section
-        Card(
-            colors = CardDefaults.cardColors(containerColor = Color(0xFFF8FAFC)),
-            shape = RoundedCornerShape(10.dp),
-            border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFFE2E8F0)),
-            modifier = Modifier.fillMaxWidth()
-        ) {
-            Column(modifier = Modifier.padding(10.dp)) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
+                        .padding(horizontal = 16.dp, vertical = 12.dp),
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Column(modifier = Modifier.weight(1f)) {
                         Text(
-                            text = "Collect Customer Empty Cylinder?",
+                            text = "Proof of Delivery",
+                            fontSize = 17.sp,
                             fontWeight = FontWeight.Bold,
-                            fontSize = 12.sp,
-                            color = Color(0xFF0F172A)
+                            color = BlueGasDark
                         )
                         Text(
-                            text = "Record return tare unit for depot refurbishment.",
-                            fontSize = 10.sp,
-                            color = Color(0xFF64748B)
+                            text = "Step ${currentStepIndex + 1} of ${activeSteps.size}: ${currentStep.title}",
+                            fontSize = 12.sp,
+                            color = BlueGasPrimary,
+                            fontWeight = FontWeight.Medium
                         )
                     }
-                    Switch(
-                        checked = emptyCylinderCollected,
-                        onCheckedChange = onEmptyCylinderToggle,
-                        modifier = Modifier.testTag("empty_cylinder_toggle")
-                    )
+                    IconButton(
+                        onClick = { showDiscardAlert = true },
+                        modifier = Modifier.size(48.dp)
+                    ) {
+                        Icon(Icons.Default.Close, contentDescription = "Close dialog")
+                    }
                 }
 
-                if (emptyCylinderCollected) {
-                    Spacer(modifier = Modifier.height(8.dp))
-                    OutlinedTextField(
-                        value = emptyCylinderSerial,
-                        onValueChange = onEmptyCylinderSerialChange,
-                        label = { Text("Old Cylinder Serial Number", fontSize = 11.sp) },
-                        placeholder = { Text("e.g. BG-LHR-OLD-812", fontSize = 11.sp) },
-                        singleLine = true,
+                // Step Progress Indicator
+                LinearProgressIndicator(
+                    progress = { (currentStepIndex + 1).toFloat() / activeSteps.size.toFloat() },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(3.dp),
+                    color = BlueGasPrimary,
+                    trackColor = Color(0xFFE2E8F0)
+                )
+
+                // Scrollable Body
+                Column(
+                    modifier = Modifier
+                        .weight(1f)
+                        .verticalScroll(rememberScrollState())
+                        .padding(16.dp)
+                ) {
+                    when (currentStep) {
+                        PodStep.PIN -> {
+                            Text(
+                                text = "Ask the customer for their 4-digit handover code.",
+                                fontSize = 13.sp,
+                                color = Color(0xFF475569)
+                            )
+                            Spacer(modifier = Modifier.height(14.dp))
+
+                            OutlinedTextField(
+                                value = enteredPin,
+                                onValueChange = {
+                                    if (it.length <= 4 && it.all { char -> char.isDigit() }) {
+                                        enteredPin = it
+                                        pinError = null
+                                    }
+                                },
+                                label = { Text("4-digit Handover Code") },
+                                singleLine = true,
+                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                                enabled = !pinVerified && !codeNotAvailableSelected,
+                                textStyle = LocalTextStyle.current.copy(
+                                    fontSize = 20.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    fontFamily = FontFamily.Monospace,
+                                    letterSpacing = 4.sp
+                                ),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .testTag("handover_pin_input")
+                            )
+
+                            Spacer(modifier = Modifier.height(10.dp))
+
+                            if (pinError != null) {
+                                Text(
+                                    text = pinError ?: "",
+                                    color = MaterialTheme.colorScheme.error,
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.Medium
+                                )
+                                Spacer(modifier = Modifier.height(8.dp))
+                            }
+
+                            if (!pinVerified && !codeNotAvailableSelected) {
+                                Button(
+                                    onClick = {
+                                        val ok = store.verifyHandoverPin(order.id, enteredPin)
+                                        if (ok) {
+                                            pinVerified = true
+                                            pinError = null
+                                        } else {
+                                            pinFailedAttempts++
+                                            if (pinFailedAttempts >= 3) {
+                                                pinError = "Code not accepted after 3 attempts."
+                                            } else {
+                                                pinError = "Incorrect code. ${3 - pinFailedAttempts} attempt(s) remaining."
+                                            }
+                                        }
+                                    },
+                                    enabled = enteredPin.length == 4,
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .height(48.dp)
+                                        .testTag("verify_pin_button")
+                                ) {
+                                    Text("Verify Code")
+                                }
+                            }
+
+                            if (pinVerified) {
+                                Card(
+                                    colors = CardDefaults.cardColors(containerColor = Color(0xFFDCFCE7)),
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    Row(
+                                        modifier = Modifier.padding(12.dp),
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Icon(Icons.Default.CheckCircle, contentDescription = null, tint = Color(0xFF166534))
+                                        Spacer(modifier = Modifier.width(8.dp))
+                                        Text(
+                                            "Code verified successfully",
+                                            fontWeight = FontWeight.SemiBold,
+                                            color = Color(0xFF166534),
+                                            fontSize = 13.sp
+                                        )
+                                    }
+                                }
+                            }
+
+                            if (pinFailedAttempts >= 3 || codeNotAvailableSelected) {
+                                Spacer(modifier = Modifier.height(14.dp))
+                                HorizontalDivider()
+                                Spacer(modifier = Modifier.height(14.dp))
+
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    modifier = Modifier.clickable {
+                                        codeNotAvailableSelected = !codeNotAvailableSelected
+                                        if (codeNotAvailableSelected) pinVerified = false
+                                    }
+                                ) {
+                                    Checkbox(
+                                        checked = codeNotAvailableSelected,
+                                        onCheckedChange = {
+                                            codeNotAvailableSelected = it
+                                            if (it) pinVerified = false
+                                        }
+                                    )
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Text(
+                                        "Code not available",
+                                        fontWeight = FontWeight.SemiBold,
+                                        fontSize = 13.sp
+                                    )
+                                }
+
+                                if (codeNotAvailableSelected) {
+                                    Spacer(modifier = Modifier.height(8.dp))
+                                    Text(
+                                        "Please provide the reason why the code could not be verified:",
+                                        fontSize = 12.sp,
+                                        color = Color(0xFF475569)
+                                    )
+                                    Spacer(modifier = Modifier.height(6.dp))
+
+                                    val reasons = listOf("Customer has no phone", "Customer unreachable", "SMS not received", "Other")
+                                    reasons.forEach { r ->
+                                        Row(
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .clickable { pinNotVerifiedReason = r }
+                                        ) {
+                                            RadioButton(
+                                                selected = pinNotVerifiedReason == r || (r == "Other" && pinNotVerifiedReason !in reasons),
+                                                onClick = { pinNotVerifiedReason = r }
+                                            )
+                                            Text(r, fontSize = 12.sp)
+                                        }
+                                    }
+
+                                    OutlinedTextField(
+                                        value = pinNotVerifiedReason,
+                                        onValueChange = { pinNotVerifiedReason = it },
+                                        label = { Text("Reason Details") },
+                                        placeholder = { Text("Explain why code was not checked") },
+                                        modifier = Modifier.fillMaxWidth(),
+                                        singleLine = true
+                                    )
+                                }
+                            }
+                        }
+
+                        PodStep.INSTALLATION -> {
+                            Text(
+                                text = "Installation",
+                                fontSize = 15.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = BlueGasDark
+                            )
+                            Text(
+                                text = "Complete the steps your company has approved.",
+                                fontSize = 12.sp,
+                                color = Color(0xFF475569)
+                            )
+                            Spacer(modifier = Modifier.height(12.dp))
+
+                            listOf(
+                                InstallationResult.INSTALLED to "Installed",
+                                InstallationResult.NOT_INSTALLED to "Not installed",
+                                InstallationResult.NOT_APPLICABLE to "Not applicable"
+                            ).forEach { (res, label) ->
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clickable { installationResult = res }
+                                        .padding(vertical = 4.dp)
+                                ) {
+                                    RadioButton(
+                                        selected = installationResult == res,
+                                        onClick = { installationResult = res }
+                                    )
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Text(label, fontSize = 13.sp, fontWeight = FontWeight.Medium)
+                                }
+                            }
+
+                            Spacer(modifier = Modifier.height(10.dp))
+
+                            when (installationResult) {
+                                InstallationResult.INSTALLED -> {
+                                    Text(
+                                        text = "Safety Checklist (all items required):",
+                                        fontWeight = FontWeight.SemiBold,
+                                        fontSize = 12.sp,
+                                        color = BlueGasDark
+                                    )
+                                    Spacer(modifier = Modifier.height(6.dp))
+
+                                    if (settings.installationChecklistItems.isEmpty()) {
+                                        Text(
+                                            "No checklist items configured in settings.",
+                                            fontSize = 12.sp,
+                                            color = Color(0xFF64748B)
+                                        )
+                                    } else {
+                                        settings.installationChecklistItems.forEach { item ->
+                                            Row(
+                                                verticalAlignment = Alignment.CenterVertically,
+                                                modifier = Modifier
+                                                    .fillMaxWidth()
+                                                    .clickable {
+                                                        val current = checklistSelections[item] ?: false
+                                                        checklistSelections[item] = !current
+                                                    }
+                                                    .padding(vertical = 4.dp)
+                                            ) {
+                                                Checkbox(
+                                                    checked = checklistSelections[item] == true,
+                                                    onCheckedChange = { checklistSelections[item] = it }
+                                                )
+                                                Spacer(modifier = Modifier.width(6.dp))
+                                                Text(item, fontSize = 12.sp)
+                                            }
+                                        }
+                                    }
+                                }
+                                InstallationResult.NOT_INSTALLED -> {
+                                    OutlinedTextField(
+                                        value = notInstalledReason,
+                                        onValueChange = { notInstalledReason = it },
+                                        label = { Text("Reason installation was not done") },
+                                        placeholder = { Text("e.g. Customer declined installation") },
+                                        modifier = Modifier.fillMaxWidth(),
+                                        singleLine = false,
+                                        minLines = 2
+                                    )
+                                }
+                                InstallationResult.NOT_APPLICABLE -> {
+                                    Text(
+                                        "Installation is marked Not applicable for this order.",
+                                        fontSize = 12.sp,
+                                        color = Color(0xFF64748B)
+                                    )
+                                }
+                            }
+                        }
+
+                        PodStep.EMPTY_CYLINDER -> {
+                            Text(
+                                text = "Empty Cylinder Exchange",
+                                fontSize = 15.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = BlueGasDark
+                            )
+                            Text(
+                                text = "Verify any empty cylinder returned for refill exchange.",
+                                fontSize = 12.sp,
+                                color = Color(0xFF475569)
+                            )
+                            Spacer(modifier = Modifier.height(12.dp))
+
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable { emptyCollected = !emptyCollected }
+                            ) {
+                                Checkbox(
+                                    checked = emptyCollected,
+                                    onCheckedChange = { emptyCollected = it }
+                                )
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text("Empty cylinder collected", fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
+                            }
+
+                            if (emptyCollected) {
+                                Spacer(modifier = Modifier.height(10.dp))
+                                Text("Select Cylinder Brand:", fontSize = 12.sp, fontWeight = FontWeight.Medium)
+                                Spacer(modifier = Modifier.height(4.dp))
+
+                                val brands = settings.approvedEmptyBrands + "Other brand"
+                                brands.forEach { b ->
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .clickable { selectedBrand = b }
+                                    ) {
+                                        RadioButton(selected = selectedBrand == b, onClick = { selectedBrand = b })
+                                        Spacer(modifier = Modifier.width(6.dp))
+                                        Text(b, fontSize = 12.sp)
+                                    }
+                                }
+
+                                Spacer(modifier = Modifier.height(8.dp))
+                                OutlinedTextField(
+                                    value = emptySerialInput,
+                                    onValueChange = { emptySerialInput = it },
+                                    label = { Text("Empty Cylinder Serial (Optional)") },
+                                    placeholder = { Text("Scan or enter serial number") },
+                                    modifier = Modifier.fillMaxWidth(),
+                                    singleLine = true
+                                )
+                            }
+                        }
+
+                        PodStep.PAYMENT -> {
+                            Text(
+                                text = "Cash on Delivery",
+                                fontSize = 15.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = BlueGasDark
+                            )
+                            Spacer(modifier = Modifier.height(8.dp))
+
+                            Card(
+                                colors = CardDefaults.cardColors(containerColor = Color(0xFFF8FAFC)),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Column(modifier = Modifier.padding(12.dp)) {
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.SpaceBetween
+                                    ) {
+                                        Text("Amount Due:", fontSize = 13.sp, color = Color(0xFF475569))
+                                        Text(
+                                            formatRupees(order.totalAmountPaisa),
+                                            fontSize = 15.sp,
+                                            fontWeight = FontWeight.Bold,
+                                            color = BlueGasDark
+                                        )
+                                    }
+                                }
+                            }
+
+                            Spacer(modifier = Modifier.height(12.dp))
+
+                            OutlinedTextField(
+                                value = cashReceivedRupees,
+                                onValueChange = {
+                                    if (it.all { c -> c.isDigit() }) {
+                                        cashReceivedRupees = it
+                                    }
+                                },
+                                label = { Text("Cash Received (Rupees)") },
+                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                                modifier = Modifier.fillMaxWidth(),
+                                singleLine = true
+                            )
+
+                            Spacer(modifier = Modifier.height(8.dp))
+
+                            when {
+                                cashDifference > 0 -> {
+                                    Text(
+                                        "Change to return: ${formatRupees(cashDifference)}",
+                                        color = Color(0xFF16A34A),
+                                        fontWeight = FontWeight.SemiBold,
+                                        fontSize = 13.sp
+                                    )
+                                }
+                                cashDifference < 0 -> {
+                                    Text(
+                                        "Short by: ${formatRupees(-cashDifference)}",
+                                        color = Color(0xFFDC2626),
+                                        fontWeight = FontWeight.SemiBold,
+                                        fontSize = 13.sp
+                                    )
+                                }
+                                else -> {
+                                    Text(
+                                        "Exact amount received",
+                                        color = Color(0xFF16A34A),
+                                        fontWeight = FontWeight.Medium,
+                                        fontSize = 12.sp
+                                    )
+                                }
+                            }
+
+                            if (cashDifference != 0L) {
+                                Spacer(modifier = Modifier.height(8.dp))
+                                OutlinedTextField(
+                                    value = cashDifferenceReason,
+                                    onValueChange = { cashDifferenceReason = it },
+                                    label = { Text("Reason for cash difference *") },
+                                    placeholder = { Text("e.g. Customer short of exact change") },
+                                    modifier = Modifier.fillMaxWidth(),
+                                    singleLine = true
+                                )
+                            }
+
+                            Spacer(modifier = Modifier.height(12.dp))
+
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable { cashReceivedConfirmed = !cashReceivedConfirmed }
+                            ) {
+                                Checkbox(
+                                    checked = cashReceivedConfirmed,
+                                    onCheckedChange = { cashReceivedConfirmed = it }
+                                )
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text(
+                                    "I have received this cash",
+                                    fontWeight = FontWeight.SemiBold,
+                                    fontSize = 13.sp
+                                )
+                            }
+                        }
+
+                        PodStep.PHOTO -> {
+                            Text(
+                                text = "Delivery Photo",
+                                fontSize = 15.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = BlueGasDark
+                            )
+                            Text(
+                                text = "Photo of the delivered cylinder at the door.",
+                                fontSize = 12.sp,
+                                color = Color(0xFF475569)
+                            )
+                            Spacer(modifier = Modifier.height(12.dp))
+
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable {
+                                        photoConsent = !photoConsent
+                                        if (!photoConsent) photoCaptured = false
+                                    }
+                            ) {
+                                Checkbox(
+                                    checked = photoConsent,
+                                    onCheckedChange = {
+                                        photoConsent = it
+                                        if (!it) photoCaptured = false
+                                    }
+                                )
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text(
+                                    "The customer agrees to a delivery photo",
+                                    fontSize = 13.sp,
+                                    fontWeight = FontWeight.Medium
+                                )
+                            }
+
+                            Spacer(modifier = Modifier.height(12.dp))
+
+                            if (!photoCaptured && !skipPhoto) {
+                                Button(
+                                    onClick = { photoCaptured = true },
+                                    enabled = photoConsent,
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .height(48.dp)
+                                ) {
+                                    Icon(Icons.Default.CameraAlt, contentDescription = null)
+                                    Spacer(modifier = Modifier.width(8.dp))
+                                    Text("Take delivery photo")
+                                }
+                            }
+
+                            if (photoCaptured) {
+                                Card(
+                                    colors = CardDefaults.cardColors(containerColor = Color(0xFFF1F5F9)),
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    Row(
+                                        modifier = Modifier.padding(12.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.SpaceBetween
+                                    ) {
+                                        Row(verticalAlignment = Alignment.CenterVertically) {
+                                            Icon(Icons.Default.PhotoCamera, contentDescription = null, tint = BlueGasPrimary)
+                                            Spacer(modifier = Modifier.width(8.dp))
+                                            Text("Photo captured", fontWeight = FontWeight.Medium, fontSize = 13.sp)
+                                        }
+                                        TextButton(onClick = { photoCaptured = false }) {
+                                            Text("Retake")
+                                        }
+                                    }
+                                }
+                            }
+
+                            Spacer(modifier = Modifier.height(12.dp))
+                            HorizontalDivider()
+                            Spacer(modifier = Modifier.height(12.dp))
+
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable {
+                                        skipPhoto = !skipPhoto
+                                        if (skipPhoto) photoCaptured = false
+                                    }
+                            ) {
+                                Checkbox(
+                                    checked = skipPhoto,
+                                    onCheckedChange = {
+                                        skipPhoto = it
+                                        if (it) photoCaptured = false
+                                    }
+                                )
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text("Skip photo", fontSize = 13.sp)
+                            }
+
+                            if (skipPhoto) {
+                                Spacer(modifier = Modifier.height(6.dp))
+                                OutlinedTextField(
+                                    value = photoSkipReason,
+                                    onValueChange = { photoSkipReason = it },
+                                    label = { Text("Reason for skipping photo *") },
+                                    placeholder = { Text("e.g. Customer declined photo") },
+                                    modifier = Modifier.fillMaxWidth(),
+                                    singleLine = true
+                                )
+                            }
+                        }
+
+                        PodStep.SIGNATURE -> {
+                            Text(
+                                text = "Customer Signature",
+                                fontSize = 15.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = BlueGasDark
+                            )
+                            Text(
+                                text = "Customer delivery acknowledgment.",
+                                fontSize = 12.sp,
+                                color = Color(0xFF475569)
+                            )
+                            Spacer(modifier = Modifier.height(12.dp))
+
+                            OutlinedTextField(
+                                value = signerName,
+                                onValueChange = { signerName = it },
+                                label = { Text("Signer Name") },
+                                modifier = Modifier.fillMaxWidth(),
+                                singleLine = true
+                            )
+
+                            Spacer(modifier = Modifier.height(10.dp))
+
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable {
+                                        cannotSignSelected = !cannotSignSelected
+                                        if (cannotSignSelected) signaturePoints.clear()
+                                    }
+                            ) {
+                                Checkbox(
+                                    checked = cannotSignSelected,
+                                    onCheckedChange = {
+                                        cannotSignSelected = it
+                                        if (it) signaturePoints.clear()
+                                    }
+                                )
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text("Customer cannot sign", fontSize = 13.sp)
+                            }
+
+                            if (cannotSignSelected) {
+                                Spacer(modifier = Modifier.height(6.dp))
+                                OutlinedTextField(
+                                    value = signatureUnavailableReason,
+                                    onValueChange = { signatureUnavailableReason = it },
+                                    label = { Text("Reason signature unavailable *") },
+                                    placeholder = { Text("e.g. Physical disability / authorized recipient") },
+                                    modifier = Modifier.fillMaxWidth(),
+                                    singleLine = true
+                                )
+                            } else {
+                                Spacer(modifier = Modifier.height(8.dp))
+                                Text("Draw signature in the box below:", fontSize = 12.sp, color = Color(0xFF64748B))
+                                Spacer(modifier = Modifier.height(6.dp))
+
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .height(140.dp)
+                                        .clip(RoundedCornerShape(8.dp))
+                                        .background(Color(0xFFF8FAFC))
+                                        .border(1.dp, Color(0xFFCBD5E1), RoundedCornerShape(8.dp))
+                                        .pointerInput(Unit) {
+                                            detectDragGestures { change, _ ->
+                                                change.consume()
+                                                signaturePoints.add(change.position)
+                                            }
+                                        }
+                                ) {
+                                    Canvas(modifier = Modifier.fillMaxSize()) {
+                                        if (signaturePoints.size > 1) {
+                                            val path = Path()
+                                            path.moveTo(signaturePoints.first().x, signaturePoints.first().y)
+                                            for (i in 1 until signaturePoints.size) {
+                                                path.lineTo(signaturePoints[i].x, signaturePoints[i].y)
+                                            }
+                                            drawPath(
+                                                path = path,
+                                                color = Color(0xFF0F172A),
+                                                style = Stroke(width = 4f, cap = StrokeCap.Round, join = StrokeJoin.Round)
+                                            )
+                                        }
+                                    }
+
+                                    if (signaturePoints.isEmpty()) {
+                                        Text(
+                                            "Sign here",
+                                            color = Color(0xFF94A3B8),
+                                            fontSize = 14.sp,
+                                            modifier = Modifier.align(Alignment.Center)
+                                        )
+                                    }
+                                }
+
+                                if (signaturePoints.isNotEmpty()) {
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.End
+                                    ) {
+                                        TextButton(onClick = { signaturePoints.clear() }) {
+                                            Text("Clear Signature")
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        PodStep.REVIEW -> {
+                            Text(
+                                text = "Delivery Summary",
+                                fontSize = 16.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = BlueGasDark
+                            )
+                            Spacer(modifier = Modifier.height(10.dp))
+
+                            Card(
+                                colors = CardDefaults.cardColors(containerColor = Color(0xFFF8FAFC)),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Column(modifier = Modifier.padding(14.dp)) {
+                                    ReviewSummaryRow(
+                                        label = "PIN Verification",
+                                        value = if (pinVerified) "Verified" else "Not verified: $pinNotVerifiedReason"
+                                    )
+                                    ReviewSummaryRow(
+                                        label = "Installation",
+                                        value = installationResult.displayName
+                                    )
+                                    if (isRefillExchange) {
+                                        ReviewSummaryRow(
+                                            label = "Empty Cylinder",
+                                            value = if (emptyCollected) "Collected ($selectedBrand)" else "Not collected"
+                                        )
+                                    }
+                                    ReviewSummaryRow(
+                                        label = "Payment",
+                                        value = if (isCod) "Cash received: ${formatRupees(recPaisa)}" + (if (cashDifference != 0L) " (${if (cashDifference > 0) "Change: " else "Short: "}${formatRupees(kotlin.math.abs(cashDifference))})" else "") else "Paid online"
+                                    )
+                                    ReviewSummaryRow(
+                                        label = "Photo Evidence",
+                                        value = if (photoCaptured) "Photo captured" else "Skipped: $photoSkipReason"
+                                    )
+                                    ReviewSummaryRow(
+                                        label = "Signature",
+                                        value = if (!cannotSignSelected && signaturePoints.isNotEmpty()) "Signed by $signerName" else "Unavailable: $signatureUnavailableReason"
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Pinned Bottom Action Bar
+                Surface(
+                    tonalElevation = 3.dp,
+                    color = MaterialTheme.colorScheme.surface
+                ) {
+                    Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .testTag("empty_serial_input")
-                    )
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun SafetyCheckItem(
-    title: String,
-    subtitle: String,
-    checked: Boolean,
-    onCheckedChange: (Boolean) -> Unit,
-    testTag: String
-) {
-    Surface(
-        color = if (checked) Color(0xFFF0FDF4) else Color.White,
-        shape = RoundedCornerShape(8.dp),
-        border = androidx.compose.foundation.BorderStroke(
-            1.dp,
-            if (checked) Color(0xFF86EFAC) else Color(0xFFE2E8F0)
-        ),
-        modifier = Modifier
-            .fillMaxWidth()
-            .clickable { onCheckedChange(!checked) }
-            .testTag(testTag)
-    ) {
-        Row(
-            modifier = Modifier.padding(10.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Checkbox(
-                checked = checked,
-                onCheckedChange = onCheckedChange,
-                colors = CheckboxDefaults.colors(checkedColor = Color(0xFF16A34A))
-            )
-            Spacer(modifier = Modifier.width(8.dp))
-            Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    text = title,
-                    fontWeight = FontWeight.Bold,
-                    fontSize = 12.sp,
-                    color = if (checked) Color(0xFF166534) else Color(0xFF0F172A)
-                )
-                Text(
-                    text = subtitle,
-                    fontSize = 10.sp,
-                    color = Color(0xFF64748B),
-                    lineHeight = 14.sp
-                )
-            }
-        }
-    }
-}
-
-@Composable
-private fun PodPaymentConfirmationStep(
-    order: Order,
-    isCod: Boolean,
-    tenderedPaisa: Long,
-    onTenderedPaisaChange: (Long) -> Unit,
-    cashCollectedConfirmed: Boolean,
-    onCashCollectedConfirmedChange: (Boolean) -> Unit
-) {
-    val totalAmountPaisa = order.totalAmountPaisa
-    val changePaisa = (tenderedPaisa - totalAmountPaisa).coerceAtLeast(0L)
-
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .verticalScroll(rememberScrollState())
-            .testTag("pod_step_payment"),
-        verticalArrangement = Arrangement.spacedBy(12.dp)
-    ) {
-        if (!isCod) {
-            // Prepaid / Online Hosted Confirmation
-            Surface(
-                color = Color(0xFFF0FDF4),
-                shape = RoundedCornerShape(12.dp),
-                border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFF86EFAC)),
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Column(
-                    modifier = Modifier.padding(16.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.CheckCircle,
-                        contentDescription = null,
-                        tint = Color(0xFF16A34A),
-                        modifier = Modifier.size(48.dp)
-                    )
-                    Spacer(modifier = Modifier.height(10.dp))
-                    Text(
-                        text = "Payment Received Online",
-                        fontWeight = FontWeight.Bold,
-                        fontSize = 15.sp,
-                        color = Color(0xFF166534)
-                    )
-                    Text(
-                        text = "Total amount of ${formatPaisaToPkr(totalAmountPaisa)} was captured via Online Hosted Gateway.",
-                        fontSize = 11.sp,
-                        color = Color(0xFF15803D),
-                        textAlign = TextAlign.Center
-                    )
-                    Spacer(modifier = Modifier.height(8.dp))
-                    Surface(
-                        color = Color(0xFFDCFCE7),
-                        shape = RoundedCornerShape(6.dp)
-                    ) {
-                        Text(
-                            text = "NO CASH COLLECTION NEEDED",
-                            fontSize = 10.sp,
-                            fontWeight = FontWeight.ExtraBold,
-                            color = Color(0xFF166534),
-                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
-                        )
-                    }
-                }
-            }
-        } else {
-            // Cash on Delivery (COD) Collection
-            Card(
-                colors = CardDefaults.cardColors(containerColor = Color(0xFFFFFBEB)),
-                shape = RoundedCornerShape(12.dp),
-                border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFFFDE68A)),
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Column(modifier = Modifier.padding(14.dp)) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
+                            .padding(horizontal = 16.dp, vertical = 10.dp),
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Column {
-                            Text(
-                                text = "Amount to Collect (COD)",
-                                fontSize = 11.sp,
-                                fontWeight = FontWeight.Bold,
-                                color = Color(0xFF78350F)
-                            )
-                            Text(
-                                text = "Inclusive of all taxes & cylinder charges",
-                                fontSize = 9.sp,
-                                color = Color(0xFF92400E)
-                            )
+                        if (currentStepIndex > 0) {
+                            OutlinedButton(
+                                onClick = { currentStepIndex-- },
+                                enabled = !isSubmitting,
+                                modifier = Modifier
+                                    .height(48.dp)
+                                    .testTag("pod_back_button")
+                            ) {
+                                Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = null)
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text("Back")
+                            }
+                        } else {
+                            Spacer(modifier = Modifier.width(1.dp))
                         }
-                        Text(
-                            text = formatPaisaToPkr(totalAmountPaisa),
-                            fontWeight = FontWeight.ExtraBold,
-                            fontSize = 18.sp,
-                            color = Color(0xFFB45309),
-                            fontFamily = FontFamily.Monospace
-                        )
-                    }
 
-                    Spacer(modifier = Modifier.height(8.dp))
-                    HorizontalDivider(color = Color(0xFFFDE68A))
-                    Spacer(modifier = Modifier.height(8.dp))
-
-                    order.items.forEach { line ->
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween
-                        ) {
-                            Text("${line.quantity}x ${line.productName}", fontSize = 11.sp, color = Color(0xFF451A03))
-                            Text(formatPaisaToPkr(line.subtotalPaisa), fontSize = 11.sp, color = Color(0xFF451A03))
-                        }
-                    }
-                    if (order.depositTotalPaisa > 0) {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween
-                        ) {
-                            Text("Security Deposit", fontSize = 11.sp, color = Color(0xFF92400E))
-                            Text(formatPaisaToPkr(order.depositTotalPaisa), fontSize = 11.sp, color = Color(0xFF92400E))
-                        }
-                    }
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween
-                    ) {
-                        Text("Delivery & Platform Fees", fontSize = 11.sp, color = Color(0xFF451A03))
-                        Text(formatPaisaToPkr(order.deliveryFeePaisa + order.platformFeePaisa), fontSize = 11.sp, color = Color(0xFF451A03))
-                    }
-                }
-            }
-
-            // Cash Tendered Input & Calculator
-            Column(modifier = Modifier.fillMaxWidth()) {
-                Text(
-                    text = "Cash Tendered by Customer",
-                    fontWeight = FontWeight.Bold,
-                    fontSize = 12.sp,
-                    color = BlueGasDark
-                )
-                Spacer(modifier = Modifier.height(4.dp))
-
-                var tenderInputText by remember { mutableStateOf((tenderedPaisa / 100).toString()) }
-
-                OutlinedTextField(
-                    value = tenderInputText,
-                    onValueChange = { input ->
-                        tenderInputText = input.filter { it.isDigit() }
-                        val num = tenderInputText.toLongOrNull() ?: 0L
-                        onTenderedPaisaChange(num * 100L)
-                    },
-                    prefix = { Text("PKR ", fontWeight = FontWeight.Bold, fontSize = 12.sp) },
-                    singleLine = true,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .testTag("tender_amount_input")
-                )
-
-                Spacer(modifier = Modifier.height(8.dp))
-
-                // Quick denomination chips
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    val exactPkr = totalAmountPaisa / 100
-                    AssistChip(
-                        onClick = {
-                            tenderInputText = exactPkr.toString()
-                            onTenderedPaisaChange(totalAmountPaisa)
-                        },
-                        label = { Text("Exact", fontSize = 10.sp) },
-                        modifier = Modifier.weight(1f)
-                    )
-                    AssistChip(
-                        onClick = {
-                            tenderInputText = "4000"
-                            onTenderedPaisaChange(400000L)
-                        },
-                        label = { Text("Rs. 4,000", fontSize = 10.sp) },
-                        modifier = Modifier.weight(1f)
-                    )
-                    AssistChip(
-                        onClick = {
-                            tenderInputText = "5000"
-                            onTenderedPaisaChange(500000L)
-                        },
-                        label = { Text("Rs. 5,000", fontSize = 10.sp) },
-                        modifier = Modifier.weight(1f)
-                    )
-                }
-
-                if (changePaisa > 0) {
-                    Spacer(modifier = Modifier.height(8.dp))
-                    Surface(
-                        color = Color(0xFFDCFCE7),
-                        shape = RoundedCornerShape(8.dp),
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Row(
-                            modifier = Modifier.padding(10.dp),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Text(
-                                text = "Change to Return:",
-                                fontWeight = FontWeight.Bold,
-                                fontSize = 11.sp,
-                                color = Color(0xFF166534)
-                            )
-                            Text(
-                                text = formatPaisaToPkr(changePaisa),
-                                fontWeight = FontWeight.ExtraBold,
-                                fontSize = 13.sp,
-                                color = Color(0xFF166534)
-                            )
+                        if (currentStepIndex < activeSteps.size - 1) {
+                            Button(
+                                onClick = { currentStepIndex++ },
+                                enabled = isStepValid && !isSubmitting,
+                                modifier = Modifier
+                                    .height(48.dp)
+                                    .testTag("pod_next_button")
+                            ) {
+                                Text("Next")
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Icon(Icons.AutoMirrored.Filled.ArrowForward, contentDescription = null)
+                            }
+                        } else {
+                            Button(
+                                onClick = {
+                                    isSubmitting = true
+                                    val (ok, msg) = store.completeHandover(
+                                        orderId = order.id,
+                                        checklistAnswers = checklistSelections.toMap(),
+                                        installationResult = installationResult,
+                                        notInstalledReason = notInstalledReason.ifBlank { null },
+                                        pinVerified = pinVerified,
+                                        pinNotVerifiedReason = pinNotVerifiedReason.ifBlank { null },
+                                        photoCaptured = photoCaptured,
+                                        signatureCaptured = !cannotSignSelected && signaturePoints.isNotEmpty(),
+                                        signatureUnavailableReason = signatureUnavailableReason.ifBlank { null },
+                                        evidenceConsent = photoConsent,
+                                        signerName = signerName.ifBlank { "Customer" },
+                                        amountReceivedPaisa = if (isCod) recPaisa else null,
+                                        changeReturnedPaisa = if (isCod && cashDifference > 0) cashDifference else null,
+                                        cashDifferenceReason = cashDifferenceReason.ifBlank { null },
+                                        emptyCollected = emptyCollected,
+                                        emptyBrand = if (emptyCollected) selectedBrand else null,
+                                        emptySerial = if (emptyCollected) emptySerialInput.ifBlank { null } else null
+                                    )
+                                    isSubmitting = false
+                                    onCompleted(ok, msg)
+                                },
+                                enabled = !isSubmitting,
+                                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF16A34A)),
+                                modifier = Modifier
+                                    .height(48.dp)
+                                    .testTag("pod_complete_button")
+                            ) {
+                                if (isSubmitting) {
+                                    CircularProgressIndicator(
+                                        modifier = Modifier.size(20.dp),
+                                        color = Color.White,
+                                        strokeWidth = 2.dp
+                                    )
+                                    Spacer(modifier = Modifier.width(8.dp))
+                                }
+                                Text("Complete delivery")
+                            }
                         }
                     }
-                }
-
-                Spacer(modifier = Modifier.height(10.dp))
-
-                // Confirmation Checkbox
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clickable { onCashCollectedConfirmedChange(!cashCollectedConfirmed) }
-                ) {
-                    Checkbox(
-                        checked = cashCollectedConfirmed,
-                        onCheckedChange = onCashCollectedConfirmedChange,
-                        modifier = Modifier.testTag("cash_confirmed_checkbox")
-                    )
-                    Spacer(modifier = Modifier.width(6.dp))
-                    Text(
-                        text = "I confirm I have physically collected ${formatPaisaToPkr(totalAmountPaisa)} in cash.",
-                        fontSize = 11.sp,
-                        fontWeight = FontWeight.Medium,
-                        color = Color(0xFF0F172A)
-                    )
                 }
             }
         }
     }
-}
 
-@Composable
-private fun PodPhotoEvidenceStep(
-    order: Order,
-    zoneLabel: String,
-    photoType: String,
-    onPhotoTypeChange: (String) -> Unit,
-    photoCaptured: Boolean,
-    onPhotoCapture: () -> Unit,
-    onPhotoRetake: () -> Unit,
-    timestamp: Long
-) {
-    val timeFormatted = remember(timestamp) {
-        val sdf = SimpleDateFormat("dd MMM yyyy, HH:mm:ss", Locale.US)
-        sdf.format(Date(timestamp))
-    }
-
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .verticalScroll(rememberScrollState())
-            .testTag("pod_step_photo"),
-        verticalArrangement = Arrangement.spacedBy(10.dp)
-    ) {
-        Text(
-            text = "Geotagged Photo Verification",
-            fontWeight = FontWeight.Bold,
-            fontSize = 13.sp,
-            color = BlueGasDark
-        )
-
-        // Photo Type Selector
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            FilterChip(
-                selected = photoType == "DOORSTEP",
-                onClick = { onPhotoTypeChange("DOORSTEP") },
-                label = { Text("Doorstep Handover", fontSize = 11.sp) },
-                leadingIcon = { Icon(Icons.Default.Home, contentDescription = null, modifier = Modifier.size(14.dp)) },
-                modifier = Modifier.weight(1f)
-            )
-            FilterChip(
-                selected = photoType == "VALVE_SEAL",
-                onClick = { onPhotoTypeChange("VALVE_SEAL") },
-                label = { Text("Valve Safety Seal", fontSize = 11.sp) },
-                leadingIcon = { Icon(Icons.Default.QrCode, contentDescription = null, modifier = Modifier.size(14.dp)) },
-                modifier = Modifier.weight(1f)
-            )
-        }
-
-        // Camera Viewfinder Canvas Mockup
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(260.dp)
-                .clip(RoundedCornerShape(12.dp))
-                .background(Color(0xFF0F172A))
-                .border(2.dp, if (photoCaptured) Color(0xFF22C55E) else Color(0xFF334155), RoundedCornerShape(12.dp))
-        ) {
-            Canvas(modifier = Modifier.fillMaxSize()) {
-                val strokeW = 4f
-                val cornerLen = 30f
-                val cornerColor = if (photoCaptured) Color(0xFF22C55E) else Color.White
-
-                // Top-Left corner
-                drawLine(cornerColor, Offset(16f, 16f), Offset(16f + cornerLen, 16f), strokeW)
-                drawLine(cornerColor, Offset(16f, 16f), Offset(16f, 16f + cornerLen), strokeW)
-
-                // Top-Right corner
-                drawLine(cornerColor, Offset(size.width - 16f, 16f), Offset(size.width - 16f - cornerLen, 16f), strokeW)
-                drawLine(cornerColor, Offset(size.width - 16f, 16f), Offset(size.width - 16f, 16f + cornerLen), strokeW)
-
-                // Bottom-Left corner
-                drawLine(cornerColor, Offset(16f, size.height - 16f), Offset(16f + cornerLen, size.height - 16f), strokeW)
-                drawLine(cornerColor, Offset(16f, size.height - 16f), Offset(16f, size.height - 16f - cornerLen), strokeW)
-
-                // Bottom-Right corner
-                drawLine(cornerColor, Offset(size.width - 16f, size.height - 16f), Offset(size.width - 16f - cornerLen, size.height - 16f), strokeW)
-                drawLine(cornerColor, Offset(size.width - 16f, size.height - 16f), Offset(size.width - 16f, size.height - 16f - cornerLen), strokeW)
-
-                // Center crosshair
-                val cx = size.width / 2f
-                val cy = size.height / 2f
-                drawLine(Color(0x66FFFFFF), Offset(cx - 15f, cy), Offset(cx + 15f, cy), 2f)
-                drawLine(Color(0x66FFFFFF), Offset(cx, cy - 15f), Offset(cx, cy + 15f), 2f)
-            }
-
-            // Watermark Overlay
-            Column(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(14.dp),
-                verticalArrangement = Arrangement.SpaceBetween
-            ) {
-                Surface(
-                    color = Color(0x99000000),
-                    shape = RoundedCornerShape(4.dp)
+    if (showDiscardAlert) {
+        AlertDialog(
+            onDismissRequest = { showDiscardAlert = false },
+            title = { Text("Discard progress?") },
+            text = { Text("Any details entered in this proof of delivery flow will be lost.") },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        showDiscardAlert = false
+                        onDismiss()
+                    }
                 ) {
-                    Text(
-                        text = if (photoCaptured) "✓ PHOTO EVIDENCE CAPTURED" else "ALIGN CYLINDER IN FRAME",
-                        color = if (photoCaptured) Color(0xFF86EFAC) else Color.White,
-                        fontSize = 9.sp,
-                        fontWeight = FontWeight.Bold,
-                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
-                    )
+                    Text("Discard", color = Color(0xFFDC2626))
                 }
-
-                // Watermark telemetry
-                Surface(
-                    color = Color(0xB3000000),
-                    shape = RoundedCornerShape(6.dp),
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Column(modifier = Modifier.padding(8.dp)) {
-                        Text(
-                            text = "📍 33.6844°N, 73.0479°E • $zoneLabel",
-                            color = Color.White,
-                            fontSize = 9.sp,
-                            fontFamily = FontFamily.Monospace
-                        )
-                        Text(
-                            text = "⏰ $timeFormatted",
-                            color = Color(0xFF93C5FD),
-                            fontSize = 9.sp,
-                            fontFamily = FontFamily.Monospace
-                        )
-                        Text(
-                            text = "Order: ${order.id} | Serial: ${order.allocatedSerial ?: "PENDING"}",
-                            color = Color(0xFF86EFAC),
-                            fontSize = 9.sp,
-                            fontWeight = FontWeight.Bold,
-                            fontFamily = FontFamily.Monospace
-                        )
-                        Text(
-                            text = "OGRA COMPLIANT POD WATERMARK",
-                            color = Color(0xFFFDE68A),
-                            fontSize = 8.sp,
-                            letterSpacing = 1.sp,
-                            fontWeight = FontWeight.Bold
-                        )
-                    }
+            },
+            dismissButton = {
+                TextButton(onClick = { showDiscardAlert = false }) {
+                    Text("Keep Editing")
                 }
             }
-        }
-
-        // Action Trigger
-        if (!photoCaptured) {
-            Button(
-                onClick = onPhotoCapture,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(44.dp)
-                    .testTag("capture_photo_button"),
-                colors = ButtonDefaults.buttonColors(containerColor = BlueGasPrimary)
-            ) {
-                Icon(Icons.Default.CameraAlt, contentDescription = null, modifier = Modifier.size(18.dp))
-                Spacer(modifier = Modifier.width(6.dp))
-                Text("Capture Proof Photo", fontSize = 12.sp, fontWeight = FontWeight.Bold)
-            }
-        } else {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                Surface(
-                    color = Color(0xFFDCFCE7),
-                    shape = RoundedCornerShape(8.dp),
-                    modifier = Modifier.weight(1f)
-                ) {
-                    Row(
-                        modifier = Modifier.padding(10.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Icon(Icons.Default.Check, contentDescription = null, tint = Color(0xFF166534), modifier = Modifier.size(16.dp))
-                        Spacer(modifier = Modifier.width(6.dp))
-                        Text("Photo Locked & Timestamped", color = Color(0xFF166534), fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
-                    }
-                }
-                OutlinedButton(
-                    onClick = onPhotoRetake,
-                    modifier = Modifier.height(40.dp)
-                ) {
-                    Text("Retake", fontSize = 11.sp)
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun PodSignatureCaptureStep(
-    signaturePoints: MutableList<Offset>,
-    onClearSignature: () -> Unit,
-    quickSignAdopted: Boolean,
-    onAdoptQuickSign: () -> Unit,
-    signerName: String,
-    onSignerNameChange: (String) -> Unit,
-    signerRelation: String,
-    onSignerRelationChange: (String) -> Unit,
-    riderNotes: String,
-    onRiderNotesChange: (String) -> Unit
-) {
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .verticalScroll(rememberScrollState())
-            .testTag("pod_step_signature"),
-        verticalArrangement = Arrangement.spacedBy(10.dp)
-    ) {
-        Text(
-            text = "Customer Digital Signature",
-            fontWeight = FontWeight.Bold,
-            fontSize = 13.sp,
-            color = BlueGasDark
-        )
-        Text(
-            text = "Customer or authorized household recipient must sign on the canvas below.",
-            fontSize = 10.sp,
-            color = Color(0xFF64748B)
-        )
-
-        // Touch Signature Box
-        Card(
-            colors = CardDefaults.cardColors(containerColor = Color.White),
-            shape = RoundedCornerShape(10.dp),
-            border = androidx.compose.foundation.BorderStroke(
-                1.5.dp,
-                if (signaturePoints.size > 8 || quickSignAdopted) Color(0xFF22C55E) else Color(0xFF94A3B8)
-            ),
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(180.dp)
-        ) {
-            Box(modifier = Modifier.fillMaxSize()) {
-                Canvas(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .pointerInput(Unit) {
-                            detectDragGestures { change, _ ->
-                                signaturePoints.add(change.position)
-                            }
-                        }
-                ) {
-                    // Dashed guide baseline at 70% height
-                    val baselineY = size.height * 0.72f
-                    drawLine(
-                        color = Color(0xFFCBD5E1),
-                        start = Offset(20f, baselineY),
-                        end = Offset(size.width - 20f, baselineY),
-                        strokeWidth = 2f,
-                        pathEffect = PathEffect.dashPathEffect(floatArrayOf(10f, 10f), 0f)
-                    )
-
-                    // Draw actual captured touch path
-                    if (signaturePoints.size > 1) {
-                        val path = Path().apply {
-                            moveTo(signaturePoints.first().x, signaturePoints.first().y)
-                            for (i in 1 until signaturePoints.size) {
-                                lineTo(signaturePoints[i].x, signaturePoints[i].y)
-                            }
-                        }
-                        drawPath(
-                            path = path,
-                            color = BlueGasPrimary,
-                            style = Stroke(
-                                width = 4f,
-                                cap = StrokeCap.Round,
-                                join = StrokeJoin.Round
-                            )
-                        )
-                    }
-                }
-
-                if (quickSignAdopted) {
-                    Surface(
-                        color = Color(0xE6DCFCE7),
-                        shape = RoundedCornerShape(8.dp),
-                        modifier = Modifier
-                            .align(Alignment.Center)
-                            .padding(16.dp)
-                    ) {
-                        Column(
-                            horizontalAlignment = Alignment.CenterHorizontally,
-                            modifier = Modifier.padding(12.dp)
-                        ) {
-                            Text(
-                                text = "✍ $signerName",
-                                fontSize = 18.sp,
-                                fontWeight = FontWeight.Bold,
-                                color = Color(0xFF166534),
-                                fontFamily = FontFamily.Cursive
-                            )
-                            Text(
-                                text = "Adopted Digital Name Signature",
-                                fontSize = 10.sp,
-                                color = Color(0xFF15803D)
-                            )
-                        }
-                    }
-                } else if (signaturePoints.isEmpty()) {
-                    Text(
-                        text = "Sign here with finger / stylus",
-                        fontSize = 11.sp,
-                        color = Color(0xFF94A3B8),
-                        modifier = Modifier
-                            .align(Alignment.Center)
-                    )
-                }
-
-                // Clear button in top-right
-                if (signaturePoints.isNotEmpty() || quickSignAdopted) {
-                    TextButton(
-                        onClick = onClearSignature,
-                        modifier = Modifier
-                            .align(Alignment.TopEnd)
-                            .padding(4.dp)
-                    ) {
-                        Text("Clear", fontSize = 11.sp, color = Color(0xFFDC2626))
-                    }
-                }
-            }
-        }
-
-        // Quick Sign Button
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.Center,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            HorizontalDivider(modifier = Modifier.weight(1f))
-            Text(" OR ", fontSize = 10.sp, color = Color.Gray, modifier = Modifier.padding(horizontal = 8.dp))
-            HorizontalDivider(modifier = Modifier.weight(1f))
-        }
-
-        OutlinedButton(
-            onClick = onAdoptQuickSign,
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(36.dp)
-                .testTag("adopt_quick_sign_button")
-        ) {
-            Icon(Icons.Default.Edit, contentDescription = null, modifier = Modifier.size(14.dp))
-            Spacer(modifier = Modifier.width(6.dp))
-            Text("Use Name as Quick Sign: '$signerName'", fontSize = 11.sp)
-        }
-
-        // Signer Details Form
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            OutlinedTextField(
-                value = signerName,
-                onValueChange = onSignerNameChange,
-                label = { Text("Signer Name", fontSize = 11.sp) },
-                singleLine = true,
-                modifier = Modifier
-                    .weight(1.2f)
-                    .testTag("signer_name_input")
-            )
-
-            // Relationship Picker
-            var relExpanded by remember { mutableStateOf(false) }
-            val relations = listOf("Self", "Family Member", "Security Guard", "Household Staff")
-
-            Box(modifier = Modifier.weight(1f)) {
-                OutlinedTextField(
-                    value = signerRelation,
-                    onValueChange = {},
-                    readOnly = true,
-                    label = { Text("Relation", fontSize = 11.sp) },
-                    trailingIcon = {
-                        IconButton(onClick = { relExpanded = true }) {
-                            Icon(Icons.Default.ArrowDropDown, contentDescription = null)
-                        }
-                    },
-                    modifier = Modifier.fillMaxWidth()
-                )
-                DropdownMenu(expanded = relExpanded, onDismissRequest = { relExpanded = false }) {
-                    relations.forEach { r ->
-                        DropdownMenuItem(
-                            text = { Text(r, fontSize = 12.sp) },
-                            onClick = {
-                                onSignerRelationChange(r)
-                                relExpanded = false
-                            }
-                        )
-                    }
-                }
-            }
-        }
-
-        OutlinedTextField(
-            value = riderNotes,
-            onValueChange = onRiderNotesChange,
-            label = { Text("Rider Handover Notes (Optional)", fontSize = 11.sp) },
-            placeholder = { Text("e.g. Delivered to kitchen ground floor; leak test verified.", fontSize = 10.sp) },
-            maxLines = 2,
-            modifier = Modifier.fillMaxWidth()
         )
     }
 }
 
 @Composable
-fun PodFooterButtons(
-    currentStep: PodStep,
-    isCurrentStepValid: Boolean,
-    onBack: () -> Unit,
-    onNext: () -> Unit,
-    onCancel: () -> Unit
-) {
-    val isFirstStep = currentStep == PodStep.SAFETY_CHECKLIST
-    val isLastStep = currentStep == PodStep.SIGNATURE_CAPTURE
-
+private fun ReviewSummaryRow(label: String, value: String) {
     Row(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.spacedBy(10.dp),
-        verticalAlignment = Alignment.CenterVertically
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 4.dp),
+        horizontalArrangement = Arrangement.SpaceBetween
     ) {
-        if (isFirstStep) {
-            OutlinedButton(
-                onClick = onCancel,
-                modifier = Modifier
-                    .weight(1f)
-                    .height(44.dp)
-                    .testTag("pod_cancel_button")
-            ) {
-                Text("Cancel", fontSize = 12.sp)
-            }
-        } else {
-            OutlinedButton(
-                onClick = onBack,
-                modifier = Modifier
-                    .weight(1f)
-                    .height(44.dp)
-                    .testTag("pod_back_button")
-            ) {
-                Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = null, modifier = Modifier.size(14.dp))
-                Spacer(modifier = Modifier.width(4.dp))
-                Text("Back", fontSize = 12.sp)
-            }
-        }
-
-        Button(
-            onClick = onNext,
-            enabled = isCurrentStepValid,
-            modifier = Modifier
-                .weight(1.4f)
-                .height(44.dp)
-                .testTag(if (isLastStep) "pod_complete_button" else "pod_next_button"),
-            colors = ButtonDefaults.buttonColors(
-                containerColor = if (isLastStep) Color(0xFF16A34A) else BlueGasPrimary
-            )
-        ) {
-            if (isLastStep) {
-                Icon(Icons.Default.CheckCircle, contentDescription = null, modifier = Modifier.size(16.dp))
-                Spacer(modifier = Modifier.width(6.dp))
-                Text("Complete Delivery", fontSize = 12.sp, fontWeight = FontWeight.Bold)
-            } else {
-                Text("Next Step", fontSize = 12.sp, fontWeight = FontWeight.Bold)
-                Spacer(modifier = Modifier.width(4.dp))
-                Icon(Icons.AutoMirrored.Filled.ArrowForward, contentDescription = null, modifier = Modifier.size(14.dp))
-            }
-        }
+        Text(text = label, fontSize = 12.sp, color = Color(0xFF64748B))
+        Text(
+            text = value,
+            fontSize = 12.sp,
+            fontWeight = FontWeight.Medium,
+            color = Color(0xFF0F172A),
+            modifier = Modifier.padding(start = 8.dp)
+        )
     }
 }

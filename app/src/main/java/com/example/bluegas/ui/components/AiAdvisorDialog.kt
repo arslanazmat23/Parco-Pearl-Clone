@@ -30,13 +30,13 @@ fun AiAdvisorDialog(store: BlueGasStore, onDismiss: () -> Unit) {
         mutableStateOf(
             "Welcome to Blue Gas Intelligence Advisor.\n" +
             "Powered by gemini-4-argon with High Thinking level.\n" +
-            "Ask any question about LPG safety procedures (leakage, OGRA compliance), operational exceptions recovery targets, or security deposit ownership vs custody."
+            "Ask any question about LPG safety procedures (leakage, safety standards compliance), operational exceptions recovery targets, or security deposit ownership vs custody."
         )
     }
 
     val quickQueries = listOf(
         "What to do if customer smells gas leak?",
-        "How to recover from ORD_EXC (Fulfilment Exception)?",
+        "How to recover from a Fulfilment Exception?",
         "Does security deposit give cylinder ownership?",
         "What happens if two offline riders scan same serial?"
     )

@@ -40,6 +40,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.compose.runtime.saveable.rememberSaveable
 import com.example.bluegas.data.BlueGasStore
 import com.example.bluegas.data.SharedAppState
 import com.example.bluegas.data.cancelOrder
@@ -84,8 +85,11 @@ fun OrdersScreen(
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
-    var selectedFilter by remember { mutableStateOf(OrdersFilterTab.ALL) }
-    var searchQuery by remember { mutableStateOf("") }
+    var selectedFilterName by rememberSaveable { mutableStateOf(OrdersFilterTab.ALL.name) }
+    val selectedFilter = remember(selectedFilterName) {
+        runCatching { OrdersFilterTab.valueOf(selectedFilterName) }.getOrDefault(OrdersFilterTab.ALL)
+    }
+    var searchQuery by rememberSaveable { mutableStateOf("") }
 
     // Dialog states
     var selectedOrderIdForPayment by remember { mutableStateOf<String?>(null) }
@@ -197,7 +201,7 @@ fun OrdersScreen(
                 }
                 Tab(
                     selected = selectedFilter == tab,
-                    onClick = { selectedFilter = tab },
+                    onClick = { selectedFilterName = tab.name },
                     text = {
                         Text(
                             text = "${tab.label} ($count)",

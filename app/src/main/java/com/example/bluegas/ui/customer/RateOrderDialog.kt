@@ -5,7 +5,7 @@
  * - 5-star interactive rating selector and optional customer review notes
  * - Submission handling and duplicate rating prevention
  *
- * Reads: [Order.ratingStars], [Order.ratingFeedback]
+ * Reads: [Order.ratingStars], [Order.ratingComment]
  * Calls: [BlueGasStore.rateOrder]
  */
 package com.example.bluegas.ui.customer
