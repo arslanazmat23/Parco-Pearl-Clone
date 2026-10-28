@@ -32,6 +32,7 @@ fun StaffAdminScreen(
     val currentSettings = snapshot.settings
     var holdTtl by remember(currentSettings.holdTtlMinutes) { mutableStateOf(currentSettings.holdTtlMinutes.toString()) }
     var acceptanceWindow by remember(currentSettings.distributorAcceptanceWindowMins) { mutableStateOf(currentSettings.distributorAcceptanceWindowMins.toString()) }
+    var riderAcceptanceWindow by remember(currentSettings.riderAcceptanceWindowMins) { mutableStateOf(currentSettings.riderAcceptanceWindowMins.toString()) }
     var promisedHandoverSla by remember(currentSettings.promisedHandoverMinutes) { mutableStateOf(currentSettings.promisedHandoverMinutes.toString()) }
     var cashHandoverHours by remember(currentSettings.cashHandoverHours) { mutableStateOf(currentSettings.cashHandoverHours.toString()) }
     var evidenceRetentionDays by remember(currentSettings.evidenceRetentionDays) { mutableStateOf(currentSettings.evidenceRetentionDays.toString()) }
@@ -98,6 +99,14 @@ fun StaffAdminScreen(
                                 value = acceptanceWindow,
                                 onValueChange = { acceptanceWindow = it },
                                 label = { Text("Distributor Acceptance Window (Minutes) [1-240]") },
+                                modifier = Modifier.fillMaxWidth()
+                            )
+                            Spacer(modifier = Modifier.height(6.dp))
+
+                            OutlinedTextField(
+                                value = riderAcceptanceWindow,
+                                onValueChange = { riderAcceptanceWindow = it },
+                                label = { Text("Rider Acceptance Window (mins) [1-240]") },
                                 modifier = Modifier.fillMaxWidth()
                             )
                             Spacer(modifier = Modifier.height(6.dp))
@@ -181,6 +190,7 @@ fun StaffAdminScreen(
                                     val newSettings = currentSettings.copy(
                                         holdTtlMinutes = holdTtl.toIntOrNull() ?: currentSettings.holdTtlMinutes,
                                         distributorAcceptanceWindowMins = acceptanceWindow.toIntOrNull() ?: currentSettings.distributorAcceptanceWindowMins,
+                                        riderAcceptanceWindowMins = riderAcceptanceWindow.toIntOrNull() ?: currentSettings.riderAcceptanceWindowMins,
                                         promisedHandoverMinutes = promisedHandoverSla.toIntOrNull() ?: currentSettings.promisedHandoverMinutes,
                                         cashHandoverHours = cashHandoverHours.toIntOrNull() ?: currentSettings.cashHandoverHours,
                                         evidenceRetentionDays = evidenceRetentionDays.toIntOrNull() ?: currentSettings.evidenceRetentionDays,

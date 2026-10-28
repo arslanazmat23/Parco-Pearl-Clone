@@ -99,7 +99,7 @@ class BlueGasViewModel(
         return store.arriveAtHandover(orderId)
     }
 
-    fun replayRiderOutbox(): String {
+    fun replayRiderOutbox(): Pair<Boolean, String> {
         return store.replayRiderOutbox()
     }
 

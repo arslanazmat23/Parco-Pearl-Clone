@@ -6,8 +6,42 @@ import com.example.bluegas.lifecycle.TransitionResult
 import com.example.bluegas.model.*
 import java.util.UUID
 
-// --- Distributor Fulfilment Functions ---
+/**
+ * Fulfilment store operations for BLUE GAS delivery and depot counter lifecycles (v0.4 §3.5 & §3.6).
+ *
+ * This file is organized into three distinct operational domains:
+ * 1. Distributor Fulfilment (RACI-05): Order acceptance, cylinder staging, physical serial allocation
+ *    at ORD_PREP (L4 rule), and offering tasks to qualified on-shift riders.
+ * 2. Rider Fulfilment (RACI-06/07): Task acceptance/rejection (task-level only; order status stays ORD_PREP),
+ *    local cylinder verification, trip initiation (ORD_DISP), doorstep arrival (ORD_ATHO), proof of delivery completion,
+ *    offline outbox queuing, and Cash on Delivery handover submission.
+ * 3. Depot Counter Fulfilment (RACI-08): Counter pickup staging (ORD_RDYPU), customer collection,
+ *    and depot cash handover submissions.
+ *
+ * Architectural & Regulatory Notes:
+ * - L3 Rule (BR-CSH-01/02): Doorstep COD payments transition to CASH_COLLECTED (never directly to SETTLED).
+ *   Settlement is strictly reserved for Finance reconciliation when cash is handed over to Distributor/Finance.
+ * - L4 Rule (RACI-05): Physical cylinder allocation must occur during ORD_PREP by the Distributor Lead,
+ *   never by the delivery rider. Riders verify the allocated serial against the physical cylinder before dispatch.
+ * - Outbox Replay (v0.4 §12.3): Offline actions are replayed in monotonic sequenceNumber order with duplicate
+ *   collision checks to prevent ghost actions or state corruption.
+ * - EXC-21 (UAT-24): Any variance between expected and collected cash at doorstep triggers an automated
+ *   Finance reconciliation exception for discrepancy auditing.
+ */
 
+// =========================================================================
+// 1. DISTRIBUTOR FULFILMENT FUNCTIONS (RACI-05)
+// =========================================================================
+
+/**
+ * Accepts an assigned delivery or pickup order on behalf of the distributor (RACI-05).
+ *
+ * Transitions order from ORD_ASGN to ORD_ACPT, recording SLA acceptance timestamp.
+ *
+ * @param orderId Target order identifier.
+ * @param distributorId Optional distributor identifier for multi-distributor tenancy checks.
+ * @return Success flag and human-readable feedback.
+ */
 fun BlueGasStore.distributorAccept(orderId: String, distributorId: String? = null): Pair<Boolean, String> {
     val order = orders.find { it.id == orderId } ?: return Pair(false, "Order not found.")
     if (order.status != OrderStatus.ORD_ASGN) {
@@ -30,9 +64,23 @@ fun BlueGasStore.distributorAccept(orderId: String, distributorId: String? = nul
     return Pair(true, "Order ${order.id} accepted. Ready to start preparation.")
 }
 
+/**
+ * Convenient wrapper for [distributorAccept] with custom actor name.
+ *
+ * @param orderId Target order identifier.
+ * @param actor Name of the distributor representative accepting the order.
+ * @return Success flag and message.
+ */
 fun BlueGasStore.distributorAcceptOrder(orderId: String, actor: String = "Distributor"): Pair<Boolean, String> =
     distributorAccept(orderId)
 
+/**
+ * Declines an assigned order on behalf of the distributor and raises an exception.
+ *
+ * @param orderId Target order identifier.
+ * @param reason Human-readable explanation for declining.
+ * @return Exception recording result.
+ */
 fun BlueGasStore.distributorDecline(orderId: String, reason: String): Pair<Boolean, String> {
     val order = orders.find { it.id == orderId } ?: return Pair(false, "Order not found.")
     if (order.status != OrderStatus.ORD_ASGN) {
@@ -41,6 +89,12 @@ fun BlueGasStore.distributorDecline(orderId: String, reason: String): Pair<Boole
     return raiseException(orderId, ExceptionReason.NO_ACCEPTANCE, "Distributor declined order: $reason")
 }
 
+/**
+ * Initiates physical preparation of the cylinder at the depot (ORD_ACPT -> ORD_PREP).
+ *
+ * @param orderId Target order identifier.
+ * @return Success flag and guidance message.
+ */
 fun BlueGasStore.startPreparing(orderId: String): Pair<Boolean, String> {
     val order = orders.find { it.id == orderId } ?: return Pair(false, "Order not found.")
     if (order.status != OrderStatus.ORD_ACPT) {
@@ -62,6 +116,16 @@ fun BlueGasStore.startPreparing(orderId: String): Pair<Boolean, String> {
     return Pair(true, "Order is now in Preparing. Allocate cylinder to proceed.")
 }
 
+/**
+ * Binds an exact physical cylinder serial to an order during preparation (L4 rule, RACI-05).
+ *
+ * Serial allocation is strictly a distributor responsibility. Verifies stock availability,
+ * ensures no HSE safety hold exists, and prevents double-allocation collision.
+ *
+ * @param orderId Target order identifier in ORD_PREP.
+ * @param cylinderId Unique serial number of the cylinder to allocate.
+ * @return Success flag and allocation confirmation or rejection reason.
+ */
 fun BlueGasStore.allocateCylinder(orderId: String, cylinderId: String): Pair<Boolean, String> {
     val order = orders.find { it.id == orderId } ?: return Pair(false, "Order not found.")
     if (order.status != OrderStatus.ORD_PREP) {
@@ -102,15 +166,45 @@ fun BlueGasStore.allocateCylinder(orderId: String, cylinderId: String): Pair<Boo
     return Pair(true, "Cylinder $cylinderId allocated to order $orderId.")
 }
 
+/**
+ * Overload for [allocateCylinder] accepting an explicit actor string.
+ *
+ * @param orderId Target order identifier.
+ * @param serialNumber Cylinder serial number.
+ * @param actor Name of the user performing the allocation.
+ * @return Success flag and message.
+ */
 fun BlueGasStore.allocateCylinderSerial(orderId: String, serialNumber: String, actor: String = "Distributor"): Pair<Boolean, String> =
     allocateCylinder(orderId, serialNumber)
 
+/**
+ * Reports stock shortage or preparation inability when no suitable cylinder is present (EXC-06 / EXC-22).
+ *
+ * @param orderId Target order identifier.
+ * @param untaggedOnly True if stock exists but lacks mandated digital tracking tags (Option A/B).
+ * @return Exception raising result.
+ */
 fun BlueGasStore.reportNoSuitableCylinder(orderId: String, untaggedOnly: Boolean = false): Pair<Boolean, String> {
     val reason = ExceptionReason.SERIAL_UNAVAILABLE_OR_PREP_FAILURE
     val details = if (untaggedOnly) "Only untagged cylinders available at depot (EXC-22)" else "No suitable cylinder in stock (EXC-06)"
     return raiseException(orderId, reason, details)
 }
 
+/**
+ * Offers a delivery task to an eligible delivery rider (RACI-05).
+ *
+ * Preconditions:
+ * - Order must exist and be in [OrderStatus.ORD_PREP] state.
+ * - Cylinder serial must already be allocated to the order (L4 rule).
+ * - Rider must exist, be approved ([Rider.onboardingStatus] == "APPROVED"),
+ *   be active on shift ([Rider.status] == "ACTIVE"),
+ *   be trained for installation ([Rider.installationTrained] == true),
+ *   and belong to the order's assigned distributor ([Rider.distributorId] == [Order.assignedDistributorId]).
+ *
+ * @param orderId Target order identifier.
+ * @param riderId Identifier of the rider to offer the delivery task to.
+ * @return Success flag and human-readable confirmation or reason for failure.
+ */
 fun BlueGasStore.assignRider(orderId: String, riderId: String): Pair<Boolean, String> {
     val order = orders.find { it.id == orderId } ?: return Pair(false, "Order not found.")
     if (order.status != OrderStatus.ORD_PREP) {
@@ -121,7 +215,22 @@ fun BlueGasStore.assignRider(orderId: String, riderId: String): Pair<Boolean, St
     }
 
     val rider = riders.find { it.id == riderId } ?: return Pair(false, "Rider not found.")
+    if (rider.onboardingStatus != "APPROVED") {
+        return Pair(false, "Rider is not approved.")
+    }
+    if (rider.status != "ACTIVE") {
+        return Pair(false, "Rider is off shift.")
+    }
+    if (!rider.installationTrained) {
+        return Pair(false, "Rider is not trained for installation.")
+    }
+    if (rider.distributorId != order.assignedDistributorId) {
+        return Pair(false, "Rider belongs to another distributor.")
+    }
+
     order.assignedRiderId = riderId
+    order.riderOfferedAt = System.currentTimeMillis()
+    order.riderCylinderVerified = false
     order.riderTaskStatus = RiderTaskStatus.OFFERED
 
     addNotification(
@@ -133,10 +242,21 @@ fun BlueGasStore.assignRider(orderId: String, riderId: String): Pair<Boolean, St
         code = "NTF-03"
     )
 
+    logAudit("Order", orderId, "ASSIGN_RIDER", "Distributor Lead", AccountableRole.DISTRIBUTOR, "Offered delivery task to rider ${rider.name} (${rider.id})")
     notifyChanged()
     return Pair(true, "Task offered to rider ${rider.name}.")
 }
 
+// =========================================================================
+// 2. DEPOT COUNTER FULFILMENT FUNCTIONS (RACI-08)
+// =========================================================================
+
+/**
+ * Marks a depot pickup order ready for collection at the counter (ORD_PREP -> ORD_RDYPU).
+ *
+ * @param orderId Target pickup order identifier.
+ * @return Success flag and staging confirmation.
+ */
 fun BlueGasStore.markReadyForPickup(orderId: String): Pair<Boolean, String> {
     val order = orders.find { it.id == orderId } ?: return Pair(false, "Order not found.")
     if (order.fulfilmentMode != FulfilmentMode.PICKUP) {
@@ -171,6 +291,13 @@ fun BlueGasStore.markReadyForPickup(orderId: String): Pair<Boolean, String> {
     return Pair(true, "Order is staged and ready for pickup.")
 }
 
+/**
+ * Records customer arrival at the depot counter for collection (ORD_RDYPU -> ORD_ATHO).
+ *
+ * @param orderId Target order identifier.
+ * @param by Actor triggering the check-in ("CUSTOMER" or "COUNTER").
+ * @return Success flag and confirmation message.
+ */
 fun BlueGasStore.customerArrivedAtDepot(orderId: String, by: String = "CUSTOMER"): Pair<Boolean, String> {
     val order = orders.find { it.id == orderId } ?: return Pair(false, "Order not found.")
     if (order.status != OrderStatus.ORD_RDYPU) {
@@ -187,15 +314,25 @@ fun BlueGasStore.customerArrivedAtDepot(orderId: String, by: String = "CUSTOMER"
     if (tAtHo is TransitionResult.Failure) {
         return Pair(false, tAtHo.errorMessage)
     }
-    recordHistory(tAtAtHo = tAtHo)
+    recordHistory(tAtHo, "AT_HANDOVER")
     notifyChanged()
     return Pair(true, "Customer arrived at counter.")
 }
 
-private fun BlueGasStore.recordHistory(tAtAtHo: TransitionResult) {
-    recordHistory(tAtAtHo, "AT_HANDOVER")
-}
-
+/**
+ * Completes final physical cylinder handover at the depot counter (ORD_ATHO -> ORD_HOC -> ORD_COMP).
+ *
+ * Updates empty cylinder intake, payment reconciliation, cylinder custody, and revenue ledger.
+ *
+ * @param orderId Target pickup order identifier.
+ * @param pinOrRefChecked Confirms customer pickup voucher/PIN was verified.
+ * @param scannedCylinderId Confirms cylinder serial handed across counter.
+ * @param amountReceivedPaisa Cash collected if order was unpaid COD.
+ * @param emptyBrand Returned cylinder brand if refill exchange.
+ * @param emptySize Cylinder weight class if returned.
+ * @param emptyCylinderId Serial of returned empty cylinder.
+ * @return Success flag and handover confirmation.
+ */
 fun BlueGasStore.completeCounterHandover(
     orderId: String,
     pinOrRefChecked: Boolean,
@@ -296,31 +433,131 @@ fun BlueGasStore.completeCounterHandover(
     return Pair(true, "Pickup handover completed successfully.")
 }
 
-// --- Rider Fulfilment Functions ---
-
-fun BlueGasStore.riderAcceptTask(orderId: String): Pair<Boolean, String> {
+/**
+ * Convenient shortcut for completing a counter pickup with standard defaults.
+ *
+ * @param orderId Target pickup order identifier.
+ * @return Success flag and confirmation message.
+ */
+fun BlueGasStore.completeDepotPickup(orderId: String): Pair<Boolean, String> {
     val order = orders.find { it.id == orderId } ?: return Pair(false, "Order not found.")
-    order.riderTaskStatus = RiderTaskStatus.ACCEPTED
-    if (order.status == OrderStatus.ORD_ASGN) {
-        order.acceptedAt = System.currentTimeMillis()
-        val tAcpt = OrderStateMachine.transition(
-            order = order,
-            targetStatus = OrderStatus.ORD_ACPT,
-            actor = getActiveRider()?.name ?: "Rider",
-            role = AccountableRole.OPERATIONS,
-            trigger = "Rider accepted delivery task"
-        )
-        if (tAcpt is TransitionResult.Failure) return Pair(false, tAcpt.errorMessage)
-        recordHistory(tAcpt, "RIDER_ACCEPTED")
+    val serial = order.allocatedSerial ?: "SERIAL-DEPOT-01"
+    val isPaid = activePaymentFor(orderId)?.state == PaymentState.SETTLED || activePaymentFor(orderId)?.state == PaymentState.CAPTURED
+    return completeCounterHandover(
+        orderId = orderId,
+        pinOrRefChecked = true,
+        scannedCylinderId = serial,
+        amountReceivedPaisa = if (!isPaid) order.totalAmountPaisa else null
+    )
+}
+
+/**
+ * Submits counter-collected COD cash from a depot point to Finance for reconciliation.
+ *
+ * @param distributorId Distributor managing the depot counter.
+ * @param declaredPaisa Cash amount physically presented to Finance.
+ * @return Success flag and hand-over reference ID.
+ */
+fun BlueGasStore.depotSubmitCashHandover(distributorId: String, declaredPaisa: Long): Pair<Boolean, String> {
+    val dist = distributors.find { it.id == distributorId }
+    val unhandedOrders = orders.filter {
+        it.fulfilmentMode == FulfilmentMode.PICKUP && it.paymentMethod == PaymentMethod.CASH_ON_DELIVERY &&
+                it.status == OrderStatus.ORD_COMP &&
+                (dist == null || (it.pickupPointId ?: it.fulfilmentPointId) == dist.pointId) &&
+                activePaymentFor(it.id)?.state == PaymentState.CASH_COLLECTED &&
+                cashHandovers.none { ch -> ch.orderIds.contains(it.id) }
     }
+    if (unhandedOrders.isEmpty()) {
+        return Pair(false, "No counter cash waiting for hand-over.")
+    }
+    val expected = unhandedOrders.sumOf { it.amountReceivedPaisa ?: it.totalAmountPaisa }
+    val id = "CSH-DEP-" + UUID.randomUUID().toString().take(6)
+    cashHandovers.add(
+        CashHandover(
+            id = id,
+            collectorType = "DEPOT",
+            collectorId = distributorId,
+            recipient = "FINANCE",
+            orderIds = unhandedOrders.map { it.id },
+            expectedPaisa = expected,
+            declaredPaisa = declaredPaisa
+        )
+    )
+    addNotification(
+        surface = AppSurface.STAFF,
+        title = "Cash hand-over submitted",
+        message = "Depot counter cash hand-over $id (${formatRupees(declaredPaisa)}) submitted for $distributorId.",
+        canonicalStatus = "SUBMITTED",
+        orderId = unhandedOrders.firstOrNull()?.id,
+        code = "NTF-15",
+        staffRole = StaffSubRole.FINANCE
+    )
+    logAudit("CashHandover", id, "SUBMIT_CASH_HANDOVER", distributorId, AccountableRole.DISTRIBUTOR, "Submitted depot cash handover of ${formatRupees(declaredPaisa)} for ${unhandedOrders.size} orders")
+    notifyChanged()
+    return Pair(true, "Depot cash handover $id submitted to Finance.")
+}
+
+// =========================================================================
+// 3. RIDER FULFILMENT FUNCTIONS (RACI-06/07)
+// =========================================================================
+
+/**
+ * Accepts an offered delivery task by the currently active rider (RACI-06).
+ *
+ * Task-level state change only: Does NOT transition order status from ORD_PREP.
+ *
+ * Preconditions:
+ * - Order must exist and be assigned to the active rider.
+ * - Order status must be [OrderStatus.ORD_PREP].
+ * - Task status must be [RiderTaskStatus.OFFERED].
+ * - Offer window must not have elapsed ([PlatformSettings.riderAcceptanceWindowMins]).
+ *
+ * @param orderId Target order identifier.
+ * @return Success status and confirmation message.
+ */
+fun BlueGasStore.riderAcceptTask(orderId: String, riderId: String? = null): Pair<Boolean, String> {
+    val order = orders.find { it.id == orderId } ?: return Pair(false, "Order not found.")
+    val effectiveRiderId = riderId ?: getActiveRider()?.id
+    if (order.assignedRiderId != effectiveRiderId) {
+        return Pair(false, "Order is not assigned to this rider.")
+    }
+    if (order.status != OrderStatus.ORD_PREP) {
+        return Pair(false, "Order must be in Preparing status.")
+    }
+    if (order.riderTaskStatus != RiderTaskStatus.OFFERED) {
+        return Pair(false, "Delivery task is not currently offered.")
+    }
+
+    val offeredAt = order.riderOfferedAt ?: 0L
+    val windowMs = settings.riderAcceptanceWindowMins * 60 * 1000L
+    if (System.currentTimeMillis() - offeredAt > windowMs) {
+        return Pair(false, "Acceptance time is over.")
+    }
+
+    order.riderTaskStatus = RiderTaskStatus.ACCEPTED
+    logAudit("Order", orderId, "RIDER_ACCEPT_TASK", getActiveRider()?.name ?: "Rider", AccountableRole.OPERATIONS, "Rider accepted delivery task")
     notifyChanged()
     return Pair(true, "Delivery task accepted.")
 }
 
+/**
+ * Declines an offered delivery task and returns it to the distributor for reassignment.
+ *
+ * @param orderId Target order identifier.
+ * @param reason Plain-language explanation for declining.
+ * @return Success status and notification confirmation.
+ */
 fun BlueGasStore.riderDeclineTask(orderId: String, reason: String): Pair<Boolean, String> {
     val order = orders.find { it.id == orderId } ?: return Pair(false, "Order not found.")
+    if (order.riderTaskStatus != RiderTaskStatus.OFFERED) {
+        return Pair(false, "Task is not offered.")
+    }
+
     order.riderTaskStatus = RiderTaskStatus.DECLINED
     order.assignedRiderId = null
+    order.riderOfferedAt = null
+    order.riderCylinderVerified = false
+
     logAudit("Order", orderId, "RIDER_DECLINE_TASK", getActiveRider()?.name ?: "Rider", AccountableRole.DISTRIBUTOR, "Rider declined task: $reason")
 
     addNotification(
@@ -337,20 +574,69 @@ fun BlueGasStore.riderDeclineTask(orderId: String, reason: String): Pair<Boolean
     return Pair(true, "Task declined. Distributor notified to reassign.")
 }
 
-fun BlueGasStore.riderVerifyCylinder(orderId: String, scannedId: String): Pair<Boolean, String> {
+fun BlueGasStore.riderDeclineTask(orderId: String, riderId: String, reason: String): Pair<Boolean, String> =
+    riderDeclineTask(orderId, reason)
+
+/**
+ * Verifies that the physical cylinder scanned/entered by the rider matches the allocated serial.
+ * Works completely offline using local device memory.
+ *
+ * @param orderId Target order identifier.
+ * @param scannedId Barcode or serial number input by rider.
+ * @param riderId Optional rider identifier.
+ * @return Success status and verification message.
+ */
+fun BlueGasStore.riderVerifyCylinder(orderId: String, scannedId: String, riderId: String? = null): Pair<Boolean, String> {
     val order = orders.find { it.id == orderId } ?: return Pair(false, "Order not found.")
     val allocated = order.allocatedSerial ?: return Pair(false, "No cylinder allocated to this order.")
 
-    if (scannedId != allocated && settings.cylinderIdMode != CylinderIdMode.OPTION_B_PHASE_IN) {
-        return Pair(false, "Scanned serial $scannedId does not match allocated serial $allocated!")
+    val cleanScanned = scannedId.trim().uppercase()
+    val cleanAllocated = allocated.trim().uppercase()
+
+    val isMatch = cleanScanned == cleanAllocated ||
+            (settings.cylinderIdMode == CylinderIdMode.OPTION_B_PHASE_IN && cylinders.find { it.serialNumber == allocated }?.isTagged == false)
+
+    if (!isMatch) {
+        return Pair(false, "This is not the cylinder allocated to this order. Contact your distributor.")
     }
-    return Pair(true, "Cylinder $scannedId verified successfully.")
+
+    order.riderCylinderVerified = true
+    notifyChanged()
+    return Pair(true, "Cylinder verified.")
 }
 
-fun BlueGasStore.riderStartTrip(orderId: String, isReplay: Boolean = false): Pair<Boolean, String> {
+/**
+ * Commences delivery trip from the distributor depot to customer doorstep (ORD_PREP -> ORD_DISP).
+ *
+ * Preconditions:
+ * - Order must be in [OrderStatus.ORD_PREP].
+ * - Task status must be [RiderTaskStatus.ACCEPTED].
+ * - Cylinder must be verified ([Order.riderCylinderVerified] == true).
+ *
+ * @param orderId Target order identifier.
+ * @param riderId Optional rider identifier.
+ * @param isReplay True if executing from offline queue synchronization.
+ * @return Success flag and confirmation message.
+ */
+fun BlueGasStore.riderStartTrip(orderId: String, riderId: String? = null, isReplay: Boolean = false): Pair<Boolean, String> {
     val order = orders.find { it.id == orderId } ?: return Pair(false, "Order not found.")
 
+    if (order.riderTaskStatus != RiderTaskStatus.ACCEPTED) {
+        return Pair(false, "Accept the delivery first.")
+    }
+    if (!order.riderCylinderVerified) {
+        return Pair(false, "Verify the cylinder first.")
+    }
+    if (order.status != OrderStatus.ORD_PREP) {
+        return Pair(false, "Order must be in Preparing status.")
+    }
+
     if (isRiderOffline && !isReplay) {
+        // Prevent duplicate queueing while offline (S2.1)
+        if (riderOutbox.any { it.orderId == orderId && it.action == "START_TRIP" && it.syncStatus == "PENDING" }) {
+            return Pair(true, "Already saved — it will be sent when you are back online.")
+        }
+
         val event = OfflineOutboxEvent(
             sequenceNumber = outboxSequenceCounter++,
             idempotencyKey = "IDEMP-OFF-" + UUID.randomUUID().toString().take(8),
@@ -378,7 +664,7 @@ fun BlueGasStore.riderStartTrip(orderId: String, isReplay: Boolean = false): Pai
     }
     recordHistory(tDisp, "DISPATCHED")
 
-    // Update custody to Rider Van
+    // Update cylinder custody to Rider Van
     order.allocatedSerial?.let { s ->
         val cyl = cylinders.find { it.serialNumber == s }
         cyl?.let {
@@ -387,14 +673,23 @@ fun BlueGasStore.riderStartTrip(orderId: String, isReplay: Boolean = false): Pai
         }
     }
 
-    deliveries.add(
-        Delivery(
-            id = "DEL-" + UUID.randomUUID().toString().take(6),
-            orderId = orderId,
-            riderId = rider?.id ?: "RIDER-001",
+    val existingDel = deliveries.find { it.orderId == orderId }
+    if (existingDel != null) {
+        val idx = deliveries.indexOf(existingDel)
+        deliveries[idx] = existingDel.copy(
+            riderId = rider?.id ?: existingDel.riderId,
             dispatchedAt = System.currentTimeMillis()
         )
-    )
+    } else {
+        deliveries.add(
+            Delivery(
+                id = "DEL-" + UUID.randomUUID().toString().take(6),
+                orderId = orderId,
+                riderId = rider?.id ?: "RIDER-001",
+                dispatchedAt = System.currentTimeMillis()
+            )
+        )
+    }
 
     addNotification(
         surface = AppSurface.CUSTOMER,
@@ -409,10 +704,26 @@ fun BlueGasStore.riderStartTrip(orderId: String, isReplay: Boolean = false): Pai
     return Pair(true, "Delivery trip started.")
 }
 
-fun BlueGasStore.riderArrive(orderId: String, isReplay: Boolean = false): Pair<Boolean, String> {
+/**
+ * Records rider arrival at customer doorstep (ORD_DISP -> ORD_ATHO).
+ *
+ * @param orderId Target order identifier.
+ * @param isReplay True if executing from offline queue synchronization.
+ * @return Success flag and confirmation message.
+ */
+fun BlueGasStore.riderArrive(orderId: String, riderId: String? = null, isReplay: Boolean = false): Pair<Boolean, String> {
     val order = orders.find { it.id == orderId } ?: return Pair(false, "Order not found.")
 
+    if (order.status != OrderStatus.ORD_DISP) {
+        return Pair(false, "Order must be dispatched before arriving at doorstep (cannot mark arrived in ${order.status.displayName}).")
+    }
+
     if (isRiderOffline && !isReplay) {
+        // Prevent duplicate queueing while offline (S2.1)
+        if (riderOutbox.any { it.orderId == orderId && it.action == "ARRIVE_AT_DOORSTEP" && it.syncStatus == "PENDING" }) {
+            return Pair(true, "Already saved — it will be sent when you are back online.")
+        }
+
         val event = OfflineOutboxEvent(
             sequenceNumber = outboxSequenceCounter++,
             idempotencyKey = "IDEMP-OFF-" + UUID.randomUUID().toString().take(8),
@@ -451,14 +762,34 @@ fun BlueGasStore.riderArrive(orderId: String, isReplay: Boolean = false): Pair<B
     return Pair(true, "Rider arrived at doorstep.")
 }
 
+fun BlueGasStore.riderArrive(orderId: String, isReplay: Boolean): Pair<Boolean, String> =
+    riderArrive(orderId, null, isReplay)
+
+/**
+ * Reports a delivery exception at doorstep and transitions order to ORD_EXC.
+ * Available only when the order is in Dispatched or At Handover status (S1.3).
+ *
+ * @param orderId Target order identifier.
+ * @param reason Categorized exception reason.
+ * @param details Free-text notes explaining the delivery failure.
+ * @param safetyConcern If true, raises an urgent HSE incident (L7).
+ * @param riderId Optional rider identifier.
+ * @param isReplay True if replaying from offline outbox.
+ * @return Success flag and exception message.
+ */
 fun BlueGasStore.riderReportIssue(
     orderId: String,
     reason: ExceptionReason,
     details: String,
     safetyConcern: Boolean = false,
+    riderId: String? = null,
     isReplay: Boolean = false
 ): Pair<Boolean, String> {
     val order = orders.find { it.id == orderId } ?: return Pair(false, "Order not found.")
+
+    if (order.status != OrderStatus.ORD_DISP && order.status != OrderStatus.ORD_ATHO) {
+        return Pair(false, "A problem can be reported once you have started the delivery.")
+    }
 
     if (isRiderOffline && !isReplay) {
         val event = OfflineOutboxEvent(
@@ -492,6 +823,15 @@ fun BlueGasStore.riderReportIssue(
     return raiseException(orderId, reason, details, actor = getActiveRider()?.name ?: "Rider")
 }
 
+fun BlueGasStore.riderReportIssue(
+    orderId: String,
+    riderId: String,
+    reason: ExceptionReason,
+    details: String,
+    safetyConcern: Boolean = false
+): Pair<Boolean, String> =
+    riderReportIssue(orderId, reason, details, safetyConcern, riderId)
+
 /**
  * Compares customer-provided handover PIN against the assigned PIN on the order.
  *
@@ -511,6 +851,8 @@ fun BlueGasStore.verifyHandoverPin(orderId: String, enteredPin: String): Boolean
  *
  * Per BRD L3, Cash on Delivery payments transition to CASH_COLLECTED (not SETTLED),
  * and settle only when Finance reconciles cash via [reconcileCashHandover].
+ *
+ * Evidence Rule: At least one of photo or signature must exist, or a signature-unavailable reason.
  */
 fun BlueGasStore.completeHandover(
     orderId: String,
@@ -522,6 +864,7 @@ fun BlueGasStore.completeHandover(
     photoCaptured: Boolean = false,
     signatureCaptured: Boolean = false,
     signatureUnavailableReason: String? = null,
+    photoSkippedReason: String? = null,
     evidenceConsent: Boolean = false,
     signerName: String? = "Customer",
     amountReceivedPaisa: Long? = null,
@@ -550,7 +893,19 @@ fun BlueGasStore.completeHandover(
         return Pair(false, "A reason is needed when installation is marked Not installed.")
     }
 
+    val actualPhotoCaptured = photoCaptured || photoEvidenceCaptured
+    val actualSignatureCaptured = signatureCaptured || (customerSignature != null)
+    val hasEvidence = actualPhotoCaptured || actualSignatureCaptured || !signatureUnavailableReason.isNullOrBlank()
+    if (!hasEvidence) {
+        return Pair(false, "Capture a photo or a signature, or give a reason the signature is unavailable.")
+    }
+
     if (isRiderOffline && !isReplay) {
+        // Prevent duplicate queueing while offline (S2.1)
+        if (riderOutbox.any { it.orderId == orderId && it.action == "COMPLETE_HANDOVER" && it.syncStatus == "PENDING" }) {
+            return Pair(true, "Already saved — it will be sent when you are back online.")
+        }
+
         val checklistJoined = checklistAnswers.entries.joinToString(";") { "${it.key}=${it.value}" }
         val payloadMap = mutableMapOf<String, String>(
             "pinVerified" to pinVerified.toString(),
@@ -571,6 +926,7 @@ fun BlueGasStore.completeHandover(
         changeReturnedPaisa?.let { payloadMap["changeReturnedPaisa"] = it.toString() }
         cashDifferenceReason?.let { payloadMap["cashDifferenceReason"] = it }
         signatureUnavailableReason?.let { payloadMap["signatureUnavailableReason"] = it }
+        photoSkippedReason?.let { payloadMap["photoSkippedReason"] = it }
         signerName?.let { payloadMap["signerName"] = it }
 
         val event = OfflineOutboxEvent(
@@ -589,8 +945,6 @@ fun BlueGasStore.completeHandover(
     }
 
     val actualActor = actor ?: getActiveRider()?.name ?: "Rider"
-    val actualPhotoCaptured = photoCaptured || photoEvidenceCaptured
-    val actualSignatureCaptured = signatureCaptured || (customerSignature != null)
     val actualEmptyCollected = emptyCollected || emptyCylinderCollected
     val actualEmptySerial = emptySerial ?: emptyCylinderSerial
     val actualAmountReceived = amountReceivedPaisa ?: collectedCashPaisa
@@ -627,6 +981,7 @@ fun BlueGasStore.completeHandover(
         customerSignatureCaptured = actualSignatureCaptured,
         signatureUnavailableReason = signatureUnavailableReason,
         photoEvidenceCaptured = actualPhotoCaptured,
+        photoSkippedReason = photoSkippedReason,
         signerName = signerName,
         changeReturnedPaisa = changeReturnedPaisa,
         installationChecklist = checklistAnswers,
@@ -762,18 +1117,49 @@ fun BlueGasStore.completeHandover(
     return Pair(true, "Handover completed successfully.")
 }
 
-fun BlueGasStore.riderSubmitCashHandover(
-    riderId: String,
-    recipient: String,
-    declaredPaisa: Long,
-    reason: String? = null
-): Pair<Boolean, String> {
-    val unhandedOrders = orders.filter {
-        it.assignedRiderId == riderId && it.paymentMethod == PaymentMethod.CASH_ON_DELIVERY &&
+/**
+ * Returns all COD orders completed by the given rider that are awaiting cash handover.
+ *
+ * Extracted helper used across tile, dialog, and store (S4.3).
+ *
+ * @param riderId Identifier of the rider.
+ * @return List of eligible orders in CASH_COLLECTED state not yet included in a handover.
+ */
+fun BlueGasStore.ridersCashWaiting(riderId: String): List<Order> {
+    return orders.filter {
+        it.assignedRiderId == riderId &&
+                it.paymentMethod == PaymentMethod.CASH_ON_DELIVERY &&
                 it.status == OrderStatus.ORD_COMP &&
                 activePaymentFor(it.id)?.state == PaymentState.CASH_COLLECTED &&
                 cashHandovers.none { ch -> ch.orderIds.contains(it.id) }
     }
+}
+
+/**
+ * Submits collected COD cash from a rider to either Distributor or Finance for reconciliation.
+ *
+ * @param riderId Identifier of the submitting rider.
+ * @param recipient Target department ("DISTRIBUTOR" or "FINANCE").
+ * @param declaredPaisa Cash amount physically presented by the rider in integer paisa.
+ * @param reason Discrepancy reason if declared amount differs from expected collection.
+ * @return Success flag and hand-over reference ID.
+ */
+fun BlueGasStore.riderSubmitCashHandover(
+    riderId: String,
+    recipient: String = "DISTRIBUTOR",
+    declaredPaisa: Long,
+    reason: String? = null,
+    notes: String? = null,
+    recipientType: String? = null
+): Pair<Boolean, String> {
+    if (declaredPaisa <= 0L) {
+        return Pair(false, "Enter the amount you are handing over.")
+    }
+    val effectiveRecipient = (recipientType ?: recipient).uppercase().let {
+        if (it.contains("FINANCE")) "FINANCE" else "DISTRIBUTOR"
+    }
+    val effectiveReason = reason ?: notes
+    val unhandedOrders = ridersCashWaiting(riderId)
     if (unhandedOrders.isEmpty()) {
         return Pair(false, "No rider cash waiting for hand-over.")
     }
@@ -784,11 +1170,11 @@ fun BlueGasStore.riderSubmitCashHandover(
             id = id,
             collectorType = "RIDER",
             collectorId = riderId,
-            recipient = recipient,
+            recipient = effectiveRecipient,
             orderIds = unhandedOrders.map { it.id },
             expectedPaisa = expected,
             declaredPaisa = declaredPaisa,
-            reason = reason
+            reason = effectiveReason
         )
     )
     addNotification(
@@ -803,45 +1189,6 @@ fun BlueGasStore.riderSubmitCashHandover(
     logAudit("CashHandover", id, "SUBMIT_CASH_HANDOVER", riderId, AccountableRole.DISTRIBUTOR, "Submitted cash handover of ${formatRupees(declaredPaisa)} for ${unhandedOrders.size} orders")
     notifyChanged()
     return Pair(true, "Cash handover $id submitted for reconciliation.")
-}
-
-fun BlueGasStore.depotSubmitCashHandover(distributorId: String, declaredPaisa: Long): Pair<Boolean, String> {
-    val dist = distributors.find { it.id == distributorId }
-    val unhandedOrders = orders.filter {
-        it.fulfilmentMode == FulfilmentMode.PICKUP && it.paymentMethod == PaymentMethod.CASH_ON_DELIVERY &&
-                it.status == OrderStatus.ORD_COMP &&
-                (dist == null || (it.pickupPointId ?: it.fulfilmentPointId) == dist.pointId) &&
-                activePaymentFor(it.id)?.state == PaymentState.CASH_COLLECTED &&
-                cashHandovers.none { ch -> ch.orderIds.contains(it.id) }
-    }
-    if (unhandedOrders.isEmpty()) {
-        return Pair(false, "No counter cash waiting for hand-over.")
-    }
-    val expected = unhandedOrders.sumOf { it.amountReceivedPaisa ?: it.totalAmountPaisa }
-    val id = "CSH-DEP-" + UUID.randomUUID().toString().take(6)
-    cashHandovers.add(
-        CashHandover(
-            id = id,
-            collectorType = "DEPOT",
-            collectorId = distributorId,
-            recipient = "FINANCE",
-            orderIds = unhandedOrders.map { it.id },
-            expectedPaisa = expected,
-            declaredPaisa = declaredPaisa
-        )
-    )
-    addNotification(
-        surface = AppSurface.STAFF,
-        title = "Cash hand-over submitted",
-        message = "Depot counter cash hand-over $id (${formatRupees(declaredPaisa)}) submitted for $distributorId.",
-        canonicalStatus = "SUBMITTED",
-        orderId = unhandedOrders.firstOrNull()?.id,
-        code = "NTF-15",
-        staffRole = StaffSubRole.FINANCE
-    )
-    logAudit("CashHandover", id, "SUBMIT_CASH_HANDOVER", distributorId, AccountableRole.DISTRIBUTOR, "Submitted depot cash handover of ${formatRupees(declaredPaisa)} for ${unhandedOrders.size} orders")
-    notifyChanged()
-    return Pair(true, "Depot cash handover $id submitted to Finance.")
 }
 
 /**
@@ -863,6 +1210,7 @@ data class ParsedHandoverData(
     val evidenceConsent: Boolean,
     val signatureCaptured: Boolean,
     val signatureUnavailableReason: String?,
+    val photoSkippedReason: String?,
     val signerName: String?
 )
 
@@ -898,6 +1246,7 @@ fun parseHandoverPayload(payload: Map<String, String>?): ParsedHandoverData {
     val evidenceConsent = p["evidenceConsent"]?.toBooleanStrictOrNull() ?: false
     val signatureCaptured = p["signatureCaptured"]?.toBooleanStrictOrNull() ?: false
     val signatureUnavailableReason = p["signatureUnavailableReason"]
+    val photoSkippedReason = p["photoSkippedReason"]
     val signerName = p["signerName"]
 
     return ParsedHandoverData(
@@ -916,13 +1265,29 @@ fun parseHandoverPayload(payload: Map<String, String>?): ParsedHandoverData {
         evidenceConsent = evidenceConsent,
         signatureCaptured = signatureCaptured,
         signatureUnavailableReason = signatureUnavailableReason,
+        photoSkippedReason = photoSkippedReason,
         signerName = signerName
     )
 }
 
-fun BlueGasStore.replayRiderOutbox(): String {
+/**
+ * Clears applied and duplicate items from the local rider offline outbox (S2.4).
+ */
+fun BlueGasStore.clearSentOutboxEvents() {
+    riderOutbox.removeAll { it.syncStatus == "APPLIED" || it.syncStatus == "DUPLICATE" }
+    notifyChanged()
+}
+
+/**
+ * Replays queued offline events in sequential order and handles duplicate collision detection (S2.3).
+ *
+ * @return Pair where Boolean indicates all-success (true = green banner; false = amber banner) and String is message.
+ */
+fun BlueGasStore.replayRiderOutbox(): Pair<Boolean, String> {
     val pending = riderOutbox.filter { it.syncStatus == "PENDING" }.sortedBy { it.sequenceNumber }
-    if (pending.isEmpty()) return "Offline outbox is empty."
+    if (pending.isEmpty()) {
+        return Pair(false, "Nothing waiting to send.")
+    }
 
     var applied = 0
     var conflicts = 0
@@ -938,11 +1303,6 @@ fun BlueGasStore.replayRiderOutbox(): String {
         }
 
         when (event.action) {
-            "START_PREPARING" -> {
-                val (ok, _) = startPreparing(event.orderId)
-                event.syncStatus = if (ok) "APPLIED" else "REJECTED"
-                if (ok) applied++ else rejected++
-            }
             "START_TRIP" -> {
                 val (ok, _) = riderStartTrip(event.orderId, isReplay = true)
                 event.syncStatus = if (ok) "APPLIED" else "REJECTED"
@@ -996,6 +1356,7 @@ fun BlueGasStore.replayRiderOutbox(): String {
                         photoCaptured = parsed.photoCaptured,
                         signatureCaptured = parsed.signatureCaptured,
                         signatureUnavailableReason = parsed.signatureUnavailableReason,
+                        photoSkippedReason = parsed.photoSkippedReason,
                         evidenceConsent = parsed.evidenceConsent,
                         signerName = parsed.signerName,
                         amountReceivedPaisa = parsed.amountReceivedPaisa,
@@ -1014,9 +1375,15 @@ fun BlueGasStore.replayRiderOutbox(): String {
     }
 
     notifyChanged()
-    return "Sync complete: $applied APPLIED, $conflicts CONFLICTS, $rejected REJECTED."
+    val isAllOk = conflicts == 0 && rejected == 0
+    return Pair(isAllOk, "Sync complete: $applied APPLIED, $conflicts CONFLICTS, $rejected REJECTED.")
 }
 
+/**
+ * Simulates a duplicate serial scan conflict for training and demonstration purposes.
+ *
+ * @return Confirmation message describing simulated collision item queued.
+ */
 fun BlueGasStore.simulateSerialConflict(): String {
     val targetOrder = orders.find { it.id == "ORD-SEED-105" }
     val serial = targetOrder?.allocatedSerial ?: "BG-LHR-118-002"
@@ -1036,31 +1403,29 @@ fun BlueGasStore.simulateSerialConflict(): String {
     return "Duplicate offline completion queued for serial $serial."
 }
 
+/**
+ * Backward-compatible alias for accepting a rider task.
+ *
+ * @param orderId Target order identifier.
+ * @return Success flag and message.
+ */
 fun BlueGasStore.riderAcceptOrder(orderId: String): Pair<Boolean, String> = riderAcceptTask(orderId)
 
+/**
+ * Backward-compatible alias for declining a rider task.
+ *
+ * @param orderId Target order identifier.
+ * @param reason Human-readable reason for declining.
+ * @return Success flag and message.
+ */
 fun BlueGasStore.riderDeclineOrder(orderId: String, reason: String = "Declined by Rider"): Pair<Boolean, String> = riderDeclineTask(orderId, reason)
 
-fun BlueGasStore.riderStartPreparing(orderId: String): Pair<Boolean, String> {
-    if (isRiderOffline) {
-        val event = OfflineOutboxEvent(
-            sequenceNumber = outboxSequenceCounter++,
-            idempotencyKey = "IDEMP-OFF-" + UUID.randomUUID().toString().take(8),
-            orderId = orderId,
-            action = "START_PREPARING",
-            fromStatus = orders.find { it.id == orderId }?.status ?: OrderStatus.ORD_ACPT,
-            toStatus = OrderStatus.ORD_PREP
-        )
-        riderOutbox.add(event)
-        notifyChanged()
-        return Pair(true, "Action queued in Offline Outbox (START_PREPARING)")
-    }
-    return startPreparing(orderId)
-}
-
-fun BlueGasStore.riderSelectAndBindSerial(orderId: String, serialNumber: String): Pair<Boolean, String> {
-    return allocateCylinderSerial(orderId, serialNumber, getActiveRider()?.name ?: "Rider")
-}
-
+/**
+ * Backward-compatible alias for starting a delivery trip.
+ *
+ * @param orderId Target order identifier.
+ * @return Success flag and message.
+ */
 fun BlueGasStore.riderStartDeliveryOrStagePickup(orderId: String): Pair<Boolean, String> {
     val order = orders.find { it.id == orderId } ?: return Pair(false, "Order not found.")
     return if (order.fulfilmentMode == FulfilmentMode.PICKUP) {
@@ -1070,10 +1435,29 @@ fun BlueGasStore.riderStartDeliveryOrStagePickup(orderId: String): Pair<Boolean,
     }
 }
 
+/**
+ * Backward-compatible alias for doorstep arrival.
+ *
+ * @param orderId Target order identifier.
+ * @param actor Name of the rider.
+ * @return Success flag and message.
+ */
 fun BlueGasStore.arriveAtHandover(orderId: String, actor: String = "Rider"): Pair<Boolean, String> = riderArrive(orderId)
 
+/**
+ * Backward-compatible alias for dispatching or staging pickup.
+ *
+ * @param orderId Target order identifier.
+ * @param riderIdOrActor Optional rider or actor reference.
+ * @return Success flag and message.
+ */
 fun BlueGasStore.dispatchOrReadyForPickup(orderId: String, riderIdOrActor: String? = null): Pair<Boolean, String> = riderStartDeliveryOrStagePickup(orderId)
 
+/**
+ * Toggles a rider's active shift status between ACTIVE and INACTIVE.
+ *
+ * @param riderId Identifier of the rider whose shift is toggling.
+ */
 fun BlueGasStore.toggleRiderShiftStatus(riderId: String) {
     val r = riders.find { it.id == riderId } ?: return
     val idx = riders.indexOf(r)
@@ -1081,16 +1465,3 @@ fun BlueGasStore.toggleRiderShiftStatus(riderId: String) {
     riders[idx] = r.copy(status = nextStatus)
     notifyChanged()
 }
-
-fun BlueGasStore.completeDepotPickup(orderId: String): Pair<Boolean, String> {
-    val order = orders.find { it.id == orderId } ?: return Pair(false, "Order not found.")
-    val serial = order.allocatedSerial ?: "SERIAL-DEPOT-01"
-    val isPaid = activePaymentFor(orderId)?.state == PaymentState.SETTLED || activePaymentFor(orderId)?.state == PaymentState.CAPTURED
-    return completeCounterHandover(
-        orderId = orderId,
-        pinOrRefChecked = true,
-        scannedCylinderId = serial,
-        amountReceivedPaisa = if (!isPaid) order.totalAmountPaisa else null
-    )
-}
-

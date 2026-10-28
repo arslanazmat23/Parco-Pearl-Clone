@@ -5,15 +5,16 @@
  * - Real-time task feeds partitioned into Pending, Active, and Completed tabs
  * - Strict state preservation across surface switches using rememberSaveable
  * - Honest acceptance countdown with timeout enforcement (no fake timestamps)
- * - Depot-constrained cylinder serial binding and safe doorstep handover
+ * - Cylinder verification before dispatch against allocated serial
+ * - Doorstep delivery completion and proof of delivery capture
  * - Full offline operation with idempotency-keyed outbox replay
- * - Cash on Delivery custody tracking and formal handover to depot/finance
+ * - Cash on Delivery custody tracking and formal handover to distributor or finance
  *
  * Reads: [SharedAppState.orders], [SharedAppState.riders], [SharedAppState.cylinders], [SharedAppState.settings]
- * Calls: [BlueGasStore.riderAcceptOrder], [BlueGasStore.riderDeclineOrder], [BlueGasStore.riderStartPreparing],
- *        [BlueGasStore.riderSelectAndBindSerial], [BlueGasStore.riderStartDeliveryOrStagePickup],
- *        [BlueGasStore.arriveAtHandover], [BlueGasStore.riderReportIssue], [BlueGasStore.riderSubmitCashHandover],
- *        [BlueGasStore.replayRiderOutbox], [BlueGasStore.simulateSerialConflict], [BlueGasStore.setRiderOffline]
+ * Calls: [BlueGasStore.riderAcceptTask], [BlueGasStore.riderDeclineTask], [BlueGasStore.riderVerifyCylinder],
+ *        [BlueGasStore.riderStartTrip], [BlueGasStore.riderArrive], [BlueGasStore.riderReportIssue],
+ *        [BlueGasStore.riderSubmitCashHandover], [BlueGasStore.replayRiderOutbox], [BlueGasStore.clearSentOutboxEvents],
+ *        [BlueGasStore.simulateSerialConflict], [BlueGasStore.setRiderOffline], [BlueGasStore.toggleRiderShiftStatus]
  */
 package com.example.bluegas.ui.rider
 
@@ -65,19 +66,25 @@ enum class RiderTab {
 }
 
 /**
- * Invariant: Every order assigned to this rider belongs to exactly one of the three tab lists
- * (Pending + Active + Completed == total assigned orders).
+ * Partitioning predicates for rider console tabs.
+ *
+ * Invariant: Every order assigned to this rider belongs to at most one of the three tab lists
+ * (Pending, Active, or Completed).
+ *
+ * Terminal orders that are cancelled, superseded, or failed-closed (such as ORD_CANC, ORD_FAIL,
+ * or ORD_REJ) are not displayed in any tab because they require no rider action and were not
+ * successfully completed by this rider.
  */
 private fun isPendingForRider(order: Order, riderId: String): Boolean {
     return order.assignedRiderId == riderId &&
-            order.status == OrderStatus.ORD_ASGN &&
-            order.riderTaskStatus != RiderTaskStatus.ACCEPTED
+            order.status == OrderStatus.ORD_PREP &&
+            order.riderTaskStatus == RiderTaskStatus.OFFERED
 }
 
 private fun isActiveForRider(order: Order, riderId: String): Boolean {
     return order.assignedRiderId == riderId &&
             !order.status.isTerminal &&
-            order.status != OrderStatus.ORD_ASGN &&
+            !isPendingForRider(order, riderId) &&
             order.status != OrderStatus.ORD_COMP
 }
 
@@ -114,7 +121,7 @@ fun RiderAppScreen(store: BlueGasStore) {
 
     // Dialog states
     var showDeclineOrderId by remember { mutableStateOf<String?>(null) }
-    var showSerialPickerOrderId by remember { mutableStateOf<String?>(null) }
+    var showVerifyCylinderOrderId by remember { mutableStateOf<String?>(null) }
     var showIssueOrderId by remember { mutableStateOf<String?>(null) }
     var showPodOrderId by remember { mutableStateOf<String?>(null) }
     var showOutboxDialog by remember { mutableStateOf(false) }
@@ -133,7 +140,7 @@ fun RiderAppScreen(store: BlueGasStore) {
     // Partition orders for this rider
     val pendingOrders = remember(appState.orders, activeRider.id) {
         appState.orders.filter { isPendingForRider(it, activeRider.id) }
-            .sortedByDescending { it.createdAt }
+            .sortedByDescending { it.riderOfferedAt ?: it.createdAt }
     }
 
     val activeOrders = remember(appState.orders, activeRider.id) {
@@ -143,7 +150,7 @@ fun RiderAppScreen(store: BlueGasStore) {
                     OrderStatus.ORD_EXC -> 6
                     OrderStatus.ORD_HOC -> 5
                     OrderStatus.ORD_ATHO -> 4
-                    OrderStatus.ORD_DISP, OrderStatus.ORD_RDYPU -> 3
+                    OrderStatus.ORD_DISP -> 3
                     OrderStatus.ORD_PREP -> 2
                     OrderStatus.ORD_ACPT -> 1
                     else -> 0
@@ -156,21 +163,18 @@ fun RiderAppScreen(store: BlueGasStore) {
             .sortedByDescending { it.completedAt ?: it.createdAt }
     }
 
-    // Calculate pending COD cash to hand over
-    val pendingCashPaisa = remember(appState.orders, appState.cashHandovers, activeRider.id) {
-        val completedCodOrders = appState.orders.filter {
-            it.assignedRiderId == activeRider.id &&
-                    it.paymentMethod == PaymentMethod.CASH_ON_DELIVERY &&
-                    it.status == OrderStatus.ORD_COMP &&
-                    appState.payments.find { p -> p.orderId == it.id }?.state == PaymentState.CASH_COLLECTED &&
-                    appState.cashHandovers.none { ch -> ch.orderIds.contains(it.id) }
-        }
-        completedCodOrders.sumOf { it.amountReceivedPaisa ?: it.totalAmountPaisa }
+    // Calculate pending COD cash to hand over using store helper
+    val pendingCashPaisa = remember(appState.orders, appState.cashHandovers, appState.payments, activeRider.id) {
+        store.ridersCashWaiting(activeRider.id).sumOf { it.amountReceivedPaisa ?: it.totalAmountPaisa }
     }
 
     // Count orders delivered on today's calendar date
     val deliveredTodayCount = remember(completedOrders) {
         completedOrders.count { it.completedAt != null && isToday(it.completedAt!!) }
+    }
+
+    val pendingOutboxCount = remember(appState.riderOutbox) {
+        appState.riderOutbox.count { it.syncStatus == "PENDING" }
     }
 
     Box(
@@ -318,12 +322,12 @@ fun RiderAppScreen(store: BlueGasStore) {
 
                         Spacer(modifier = Modifier.height(10.dp))
 
-                        // Stats Tiles Bar
+                        // Stats Tiles Bar (S4 & S5)
                         Row(
                             modifier = Modifier.fillMaxWidth(),
                             horizontalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
-                            // Tile 1: Cash to hand over (clickable to open hand-over dialog)
+                            // Tile 1: Cash to hand over (clickable to open hand-over dialog with chevron)
                             Surface(
                                 color = Color(0xFF1E293B),
                                 shape = RoundedCornerShape(8.dp),
@@ -331,16 +335,27 @@ fun RiderAppScreen(store: BlueGasStore) {
                                     .weight(1f)
                                     .clickable { showCashHandoverDialog = true }
                             ) {
-                                Column(
-                                    modifier = Modifier.padding(8.dp),
-                                    horizontalAlignment = Alignment.CenterHorizontally
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(8.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.SpaceBetween
                                 ) {
-                                    Text("Cash to hand over", fontSize = 10.sp, color = Color(0xFF94A3B8))
-                                    Text(
-                                        text = formatRupees(pendingCashPaisa),
-                                        fontSize = 13.sp,
-                                        fontWeight = FontWeight.Bold,
-                                        color = if (pendingCashPaisa > 0) Color(0xFF38BDF8) else Color.White
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Text("Cash to hand over", fontSize = 10.sp, color = Color(0xFF94A3B8))
+                                        Text(
+                                            text = formatRupees(pendingCashPaisa),
+                                            fontSize = 13.sp,
+                                            fontWeight = FontWeight.Bold,
+                                            color = if (pendingCashPaisa > 0) Color(0xFF38BDF8) else Color.White
+                                        )
+                                    }
+                                    Icon(
+                                        imageVector = Icons.Default.ChevronRight,
+                                        contentDescription = "View cash handover",
+                                        tint = Color(0xFF94A3B8),
+                                        modifier = Modifier.size(16.dp)
                                     )
                                 }
                             }
@@ -349,7 +364,7 @@ fun RiderAppScreen(store: BlueGasStore) {
                             Surface(
                                 color = Color(0xFF1E293B),
                                 shape = RoundedCornerShape(8.dp),
-                                modifier = Modifier.weight(1f)
+                                modifier = Modifier.weight(0.9f)
                             ) {
                                 Column(
                                     modifier = Modifier.padding(8.dp),
@@ -365,7 +380,7 @@ fun RiderAppScreen(store: BlueGasStore) {
                                 }
                             }
 
-                            // Tile 3: Shift Status Toggle
+                            // Tile 3: Shift Status Toggle ("On shift" / "Off shift" with "Tap to change")
                             Surface(
                                 color = if (activeRider.status == "ACTIVE") Color(0xFF166534) else Color(0xFF991B1B),
                                 shape = RoundedCornerShape(8.dp),
@@ -379,10 +394,15 @@ fun RiderAppScreen(store: BlueGasStore) {
                                 ) {
                                     Text("Shift", fontSize = 10.sp, color = Color(0xFFE2E8F0))
                                     Text(
-                                        text = if (activeRider.status == "ACTIVE") "On Shift" else "Off Duty",
+                                        text = if (activeRider.status == "ACTIVE") "On shift" else "Off shift",
                                         fontSize = 12.sp,
                                         fontWeight = FontWeight.Bold,
                                         color = Color.White
+                                    )
+                                    Text(
+                                        text = "Tap to change",
+                                        fontSize = 9.sp,
+                                        color = Color(0xFFCBD5E1)
                                     )
                                 }
                             }
@@ -390,7 +410,7 @@ fun RiderAppScreen(store: BlueGasStore) {
                     }
                 }
 
-                // 2. DEMO CONTROLS (Collapsible, explicitly labelled)
+                // 2. DEMO CONTROLS (Collapsible, explicitly labelled "Demo only")
                 Card(
                     colors = CardDefaults.cardColors(containerColor = Color(0xFFF8FAFC)),
                     shape = RoundedCornerShape(0.dp),
@@ -438,29 +458,29 @@ fun RiderAppScreen(store: BlueGasStore) {
                                     contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
                                     modifier = Modifier
                                         .weight(1.1f)
-                                        .height(34.dp)
+                                        .height(36.dp)
                                 ) {
                                     Icon(Icons.Default.ElectricBolt, contentDescription = null, modifier = Modifier.size(13.dp))
                                     Spacer(modifier = Modifier.width(3.dp))
-                                    Text("Demo Conflict", fontSize = 10.sp)
+                                    Text("Demo Conflict", fontSize = 11.sp)
                                 }
 
                                 Button(
                                     onClick = {
-                                        val report = store.replayRiderOutbox()
+                                        val (ok, report) = store.replayRiderOutbox()
                                         actionBanner = report
-                                        isErrorBanner = false
+                                        isErrorBanner = !ok
                                     },
                                     colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF0F766E)),
                                     contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
                                     modifier = Modifier
                                         .weight(1f)
-                                        .height(34.dp),
-                                    enabled = appState.riderOutbox.isNotEmpty() && !appState.isRiderOffline
+                                        .height(36.dp),
+                                    enabled = pendingOutboxCount > 0 && !appState.isRiderOffline
                                 ) {
                                     Icon(Icons.Default.Sync, contentDescription = null, modifier = Modifier.size(13.dp))
                                     Spacer(modifier = Modifier.width(3.dp))
-                                    Text("Sync Now (${appState.riderOutbox.size})", fontSize = 10.sp)
+                                    Text("Sync Now ($pendingOutboxCount)", fontSize = 11.sp)
                                 }
 
                                 OutlinedButton(
@@ -468,26 +488,33 @@ fun RiderAppScreen(store: BlueGasStore) {
                                     contentPadding = PaddingValues(horizontal = 6.dp, vertical = 4.dp),
                                     modifier = Modifier
                                         .weight(0.9f)
-                                        .height(34.dp)
+                                        .height(36.dp)
                                 ) {
                                     Icon(Icons.Default.Inbox, contentDescription = null, modifier = Modifier.size(13.dp))
                                     Spacer(modifier = Modifier.width(3.dp))
-                                    Text("Outbox (${appState.riderOutbox.size})", fontSize = 10.sp)
+                                    Text("Outbox (${appState.riderOutbox.size})", fontSize = 11.sp)
                                 }
                             }
-                            if (appState.riderOutbox.isEmpty()) {
+                            if (appState.isRiderOffline) {
                                 Spacer(modifier = Modifier.height(4.dp))
                                 Text(
-                                    text = "Offline outbox is currently empty. Actions taken while offline will appear here.",
-                                    fontSize = 10.sp,
-                                    color = Color(0xFF94A3B8)
+                                    text = "You are offline.",
+                                    fontSize = 11.sp,
+                                    color = Color(0xFFDC2626)
+                                )
+                            } else if (pendingOutboxCount == 0) {
+                                Spacer(modifier = Modifier.height(4.dp))
+                                Text(
+                                    text = "Nothing waiting to send.",
+                                    fontSize = 11.sp,
+                                    color = Color(0xFF64748B)
                                 )
                             }
                         }
                     }
                 }
 
-                // 3. AUTO-DISMISSING ACTION BANNER (Green=success, Amber=error)
+                // 3. AUTO-DISMISSING ACTION BANNER
                 if (actionBanner != null) {
                     Surface(
                         color = if (isErrorBanner) Color(0xFFFEF3C7) else Color(0xFFDCFCE7),
@@ -594,7 +621,7 @@ fun RiderAppScreen(store: BlueGasStore) {
                                         order = ord,
                                         snapshot = appState,
                                         onAccept = {
-                                            val (ok, msg) = store.riderAcceptOrder(ord.id)
+                                            val (ok, msg) = store.riderAcceptTask(ord.id, activeRider.id)
                                             actionBanner = msg
                                             isErrorBanner = !ok
                                         },
@@ -620,21 +647,16 @@ fun RiderAppScreen(store: BlueGasStore) {
                                     ActiveOrderCard(
                                         order = ord,
                                         snapshot = appState,
-                                        onStartPrep = {
-                                            val (ok, msg) = store.riderStartPreparing(ord.id)
-                                            actionBanner = msg
-                                            isErrorBanner = !ok
-                                        },
-                                        onScanSerial = {
-                                            showSerialPickerOrderId = ord.id
+                                        onVerifyCylinder = {
+                                            showVerifyCylinderOrderId = ord.id
                                         },
                                         onStartDelivery = {
-                                            val (ok, msg) = store.riderStartDeliveryOrStagePickup(ord.id)
+                                            val (ok, msg) = store.riderStartTrip(ord.id, activeRider.id)
                                             actionBanner = msg
                                             isErrorBanner = !ok
                                         },
                                         onArrive = {
-                                            val (ok, msg) = store.arriveAtHandover(ord.id)
+                                            val (ok, msg) = store.riderArrive(ord.id, activeRider.id)
                                             actionBanner = msg
                                             isErrorBanner = !ok
                                         },
@@ -680,7 +702,7 @@ fun RiderAppScreen(store: BlueGasStore) {
         }
     }
 
-    // --- DIALOG 1: DECLINE ORDER DIALOG (R2.2) ---
+    // --- DIALOG 1: DECLINE TASK DIALOG (S1.2, S5) ---
     if (showDeclineOrderId != null) {
         val ord = appState.orders.find { it.id == showDeclineOrderId }
         var chosenReason by remember { mutableStateOf("Too far") }
@@ -694,175 +716,189 @@ fun RiderAppScreen(store: BlueGasStore) {
                 Text("Decline Delivery Task", fontWeight = FontWeight.Bold, fontSize = 16.sp)
             },
             text = {
-                Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
+                if (ord == null) {
                     Text(
-                        text = "This delivery will go back to your distributor to assign to another rider.",
-                        fontSize = 12.sp,
-                        color = Color(0xFF475569),
-                        lineHeight = 16.sp
+                        text = "This delivery is no longer available.",
+                        fontSize = 13.sp,
+                        color = Color(0xFF475569)
                     )
-                    Spacer(modifier = Modifier.height(12.dp))
-                    Text("Select reason:", fontWeight = FontWeight.SemiBold, fontSize = 12.sp)
-                    Spacer(modifier = Modifier.height(6.dp))
-
-                    declineOptions.forEach { r ->
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clickable { chosenReason = r }
-                                .padding(vertical = 4.dp)
-                        ) {
-                            RadioButton(selected = chosenReason == r, onClick = { chosenReason = r })
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Text(r, fontSize = 13.sp)
-                        }
-                    }
-
-                    if (chosenReason == "Other") {
-                        Spacer(modifier = Modifier.height(6.dp))
-                        OutlinedTextField(
-                            value = customReason,
-                            onValueChange = { customReason = it },
-                            label = { Text("Please explain reason *") },
-                            modifier = Modifier.fillMaxWidth(),
-                            singleLine = true
+                } else {
+                    Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
+                        Text(
+                            text = "This delivery will go back to your distributor to assign to another rider.",
+                            fontSize = 12.sp,
+                            color = Color(0xFF475569),
+                            lineHeight = 16.sp
                         )
+                        Spacer(modifier = Modifier.height(12.dp))
+                        Text("Select reason:", fontWeight = FontWeight.SemiBold, fontSize = 12.sp)
+                        Spacer(modifier = Modifier.height(6.dp))
+
+                        declineOptions.forEach { r ->
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable { chosenReason = r }
+                                    .padding(vertical = 4.dp)
+                            ) {
+                                RadioButton(selected = chosenReason == r, onClick = { chosenReason = r })
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text(r, fontSize = 13.sp)
+                            }
+                        }
+
+                        if (chosenReason == "Other") {
+                            Spacer(modifier = Modifier.height(6.dp))
+                            OutlinedTextField(
+                                value = customReason,
+                                onValueChange = { customReason = it },
+                                label = { Text("Please explain reason *") },
+                                modifier = Modifier.fillMaxWidth(),
+                                singleLine = true
+                            )
+                        }
                     }
                 }
             },
             confirmButton = {
-                val effectiveReason = if (chosenReason == "Other") customReason.trim() else chosenReason
-                Button(
-                    onClick = {
-                        val (ok, msg) = store.riderDeclineOrder(ord?.id ?: "", effectiveReason)
-                        actionBanner = msg
-                        isErrorBanner = !ok
-                        showDeclineOrderId = null
-                    },
-                    enabled = chosenReason != "Other" || customReason.trim().isNotBlank(),
-                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFDC2626))
-                ) {
-                    Text("Decline Task")
+                if (ord != null) {
+                    val effectiveReason = if (chosenReason == "Other") customReason.trim() else chosenReason
+                    Button(
+                        onClick = {
+                            val (ok, msg) = store.riderDeclineTask(ord.id, activeRider.id, effectiveReason)
+                            actionBanner = msg
+                            isErrorBanner = !ok
+                            showDeclineOrderId = null
+                        },
+                        enabled = chosenReason != "Other" || customReason.trim().isNotBlank(),
+                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFDC2626))
+                    ) {
+                        Text("Decline Task")
+                    }
                 }
             },
             dismissButton = {
                 TextButton(onClick = { showDeclineOrderId = null }) {
-                    Text("Keep Delivery")
+                    Text(if (ord == null) "Close" else "Keep Delivery")
                 }
             }
         )
     }
 
-    // --- DIALOG 2: SERIAL NUMBER PICKER (R3.3) ---
-    if (showSerialPickerOrderId != null) {
-        val ord = appState.orders.find { it.id == showSerialPickerOrderId }
-        val targetSku = ord?.items?.firstOrNull { it.lineType == "GAS" }?.sku ?: ord?.items?.firstOrNull()?.sku ?: "SKU-LPG-11-8"
-
-        // Filter: SKU, available, not on HSE hold, pointId matches order's fulfilmentPointId
-        val depotCylinders = appState.cylinders.filter {
-            it.sku == targetSku &&
-                    (it.status == InventoryState.INV_AVAIL || it.allocatedOrderId == ord?.id) &&
-                    !it.hseHold &&
-                    (ord?.fulfilmentPointId == null || it.pointId == ord.fulfilmentPointId)
-        }
+    // --- DIALOG 2: VERIFY CYLINDER SERIAL (S1.5a) ---
+    if (showVerifyCylinderOrderId != null) {
+        val ord = appState.orders.find { it.id == showVerifyCylinderOrderId }
+        var enteredSerial by remember { mutableStateOf("") }
+        var verifyError by remember { mutableStateOf<String?>(null) }
 
         AlertDialog(
-            onDismissRequest = { showSerialPickerOrderId = null },
+            onDismissRequest = { showVerifyCylinderOrderId = null },
             title = {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Icon(Icons.Default.QrCodeScanner, contentDescription = null, tint = BlueGasPrimary)
                     Spacer(modifier = Modifier.width(8.dp))
-                    Text("Choose the cylinder you are loading", fontWeight = FontWeight.Bold, fontSize = 15.sp)
+                    Text("Verify Cylinder Serial", fontWeight = FontWeight.Bold, fontSize = 16.sp)
                 }
             },
             text = {
                 Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
-                    Text("Order: ${ord?.id}", fontWeight = FontWeight.Bold, fontSize = 12.sp)
-                    Spacer(modifier = Modifier.height(8.dp))
+                    Text(
+                        text = "Check the serial stamped on the cylinder collar before loading.",
+                        fontSize = 12.sp,
+                        color = Color(0xFF475569)
+                    )
+                    Spacer(modifier = Modifier.height(12.dp))
 
-                    if (depotCylinders.isEmpty()) {
-                        Card(
-                            colors = CardDefaults.cardColors(containerColor = Color(0xFFFEF2F2)),
+                    OutlinedTextField(
+                        value = enteredSerial,
+                        onValueChange = { input ->
+                            enteredSerial = input.filterNot { it.isWhitespace() }.uppercase()
+                            verifyError = null
+                        },
+                        label = { Text("Cylinder serial number") },
+                        placeholder = { Text("e.g. ${ord?.allocatedSerial ?: "BG-LHR-001"}") },
+                        modifier = Modifier.fillMaxWidth(),
+                        singleLine = true
+                    )
+
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text("Demo helper:", fontSize = 11.sp, color = Color(0xFF64748B))
+                        TextButton(
+                            onClick = {
+                                enteredSerial = ord?.allocatedSerial.orEmpty().trim().uppercase()
+                                verifyError = null
+                            },
+                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
+                            modifier = Modifier.height(32.dp)
+                        ) {
+                            DemoValuePill("Demo: scan")
+                        }
+                    }
+
+                    if (verifyError != null) {
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Surface(
+                            color = Color(0xFFFEE2E2),
+                            shape = RoundedCornerShape(6.dp),
                             modifier = Modifier.fillMaxWidth()
                         ) {
-                            Column(modifier = Modifier.padding(12.dp)) {
-                                Text(
-                                    text = "No suitable cylinder is available at this depot. Ask Operations.",
-                                    color = Color(0xFF991B1B),
-                                    fontSize = 12.sp
-                                )
-                                Spacer(modifier = Modifier.height(10.dp))
-                                Button(
-                                    onClick = {
-                                        showSerialPickerOrderId = null
-                                        showIssueOrderId = ord?.id
-                                    },
-                                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFDC2626))
-                                ) {
-                                    Text("Report a problem", fontSize = 11.sp)
-                                }
-                            }
-                        }
-                    } else {
-                        depotCylinders.forEach { cyl ->
-                            val isSelected = ord?.allocatedSerial == cyl.serialNumber
-                            Card(
-                                colors = CardDefaults.cardColors(
-                                    containerColor = if (isSelected) Color(0xFFEFF6FF) else Color(0xFFF8FAFC)
-                                ),
-                                border = BorderStroke(
-                                    if (isSelected) 2.dp else 1.dp,
-                                    if (isSelected) BlueGasPrimary else Color(0xFFCBD5E1)
-                                ),
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(vertical = 4.dp)
-                                    .clickable {
-                                        val (ok, msg) = store.riderSelectAndBindSerial(ord?.id ?: "", cyl.serialNumber)
-                                        actionBanner = msg
-                                        isErrorBanner = !ok
-                                        showSerialPickerOrderId = null
-                                    }
-                            ) {
-                                Row(
-                                    modifier = Modifier.padding(12.dp),
-                                    horizontalArrangement = Arrangement.SpaceBetween,
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    Column {
-                                        Text(cyl.serialNumber, fontWeight = FontWeight.Bold, fontSize = 13.sp)
-                                        Text("${cyl.weightKg} kg cylinder", fontSize = 11.sp, color = Color(0xFF64748B))
-                                    }
-                                    if (isSelected) {
-                                        Icon(Icons.Default.CheckCircle, contentDescription = null, tint = BlueGasPrimary, modifier = Modifier.size(20.dp))
-                                    }
-                                }
-                            }
+                            Text(
+                                text = verifyError ?: "",
+                                color = Color(0xFFDC2626),
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.Medium,
+                                modifier = Modifier.padding(8.dp)
+                            )
                         }
                     }
                 }
             },
-            confirmButton = {},
+            confirmButton = {
+                Button(
+                    onClick = {
+                        val (ok, msg) = store.riderVerifyCylinder(ord?.id ?: "", enteredSerial, activeRider.id)
+                        if (ok) {
+                            actionBanner = msg
+                            isErrorBanner = false
+                            showVerifyCylinderOrderId = null
+                        } else {
+                            verifyError = msg
+                        }
+                    },
+                    enabled = enteredSerial.isNotBlank(),
+                    colors = ButtonDefaults.buttonColors(containerColor = BlueGasPrimary)
+                ) {
+                    Text("Verify")
+                }
+            },
             dismissButton = {
-                TextButton(onClick = { showSerialPickerOrderId = null }) { Text("Close") }
+                TextButton(onClick = { showVerifyCylinderOrderId = null }) {
+                    Text("Cancel")
+                }
             }
         )
     }
 
-    // --- DIALOG 3: REPORT A PROBLEM (R4) ---
+    // --- DIALOG 3: REPORT A PROBLEM (S6.2) ---
     if (showIssueOrderId != null) {
         val ord = appState.orders.find { it.id == showIssueOrderId }
-        var issueReason by remember { mutableStateOf(ExceptionReason.DELIVERY_FAILURE_OR_CUSTOMER_UNAVAILABLE) }
+
+        // Exactly 3 radio options as required by S6.2
+        val issueOptions = listOf(
+            "Customer not answering or not available" to ExceptionReason.DELIVERY_FAILURE_OR_CUSTOMER_UNAVAILABLE,
+            "Cannot reach the address" to ExceptionReason.VALIDATION_OUT_OF_AREA,
+            "Customer refused the cylinder" to ExceptionReason.GOODS_REJECTED_AT_DOOR
+        )
+
+        var selectedIndex by remember { mutableIntStateOf(0) }
         var issueDetails by remember { mutableStateOf("") }
         var isSafetyConcern by remember { mutableStateOf(false) }
-
-        val permittedReasons = listOf(
-            ExceptionReason.DELIVERY_FAILURE_OR_CUSTOMER_UNAVAILABLE,
-            ExceptionReason.SERIAL_UNAVAILABLE_OR_PREP_FAILURE,
-            ExceptionReason.VALIDATION_OUT_OF_AREA,
-            ExceptionReason.UNRECOVERABLE_AFTER_RETRIES
-        )
 
         AlertDialog(
             onDismissRequest = { showIssueOrderId = null },
@@ -877,17 +913,17 @@ fun RiderAppScreen(store: BlueGasStore) {
                     Text("Select reason:", fontWeight = FontWeight.SemiBold, fontSize = 12.sp)
                     Spacer(modifier = Modifier.height(4.dp))
 
-                    permittedReasons.forEach { r ->
+                    issueOptions.forEachIndexed { idx, (label, _) ->
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .clickable { issueReason = r }
+                                .clickable { selectedIndex = idx }
                                 .padding(vertical = 3.dp)
                         ) {
-                            RadioButton(selected = issueReason == r, onClick = { issueReason = r })
+                            RadioButton(selected = selectedIndex == idx, onClick = { selectedIndex = idx })
                             Spacer(modifier = Modifier.width(6.dp))
-                            Text(r.description, fontSize = 12.sp)
+                            Text(label, fontSize = 12.sp)
                         }
                     }
 
@@ -905,7 +941,7 @@ fun RiderAppScreen(store: BlueGasStore) {
                         )
                         Spacer(modifier = Modifier.width(6.dp))
                         Text(
-                            text = "This is a safety concern (for example a smell of gas, a leak, or damage)",
+                            text = "Safety issue (leak, smell, fire risk)",
                             fontSize = 12.sp,
                             fontWeight = FontWeight.SemiBold,
                             color = Color(0xFFB91C1C)
@@ -919,7 +955,7 @@ fun RiderAppScreen(store: BlueGasStore) {
                             modifier = Modifier.fillMaxWidth()
                         ) {
                             Text(
-                                text = "HSE will be alerted. Follow the approved BLUE GAS HSE procedure.",
+                                text = "HSE will be alerted immediately. Do not transport or connect an unsafe cylinder.",
                                 fontSize = 11.sp,
                                 color = Color(0xFF991B1B),
                                 modifier = Modifier.padding(8.dp)
@@ -931,7 +967,7 @@ fun RiderAppScreen(store: BlueGasStore) {
                     OutlinedTextField(
                         value = issueDetails,
                         onValueChange = { issueDetails = it },
-                        label = { Text("Details") },
+                        label = { Text(if (isSafetyConcern) "Safety details *" else "Details (optional)") },
                         placeholder = { Text("Explain what happened...") },
                         modifier = Modifier.fillMaxWidth(),
                         minLines = 2
@@ -939,13 +975,15 @@ fun RiderAppScreen(store: BlueGasStore) {
                 }
             },
             confirmButton = {
-                val canSubmit = isSafetyConcern || issueDetails.trim().length >= 5
+                val canSubmit = !isSafetyConcern || issueDetails.trim().length >= 3
                 Button(
                     onClick = {
+                        val (_, selectedReason) = issueOptions[selectedIndex]
                         val (ok, msg) = store.riderReportIssue(
                             orderId = ord?.id ?: "",
-                            reason = issueReason,
-                            details = issueDetails.trim().ifBlank { "Safety concern reported at doorstep." },
+                            riderId = activeRider.id,
+                            reason = selectedReason,
+                            details = issueDetails.trim().ifBlank { issueOptions[selectedIndex].first },
                             safetyConcern = isSafetyConcern
                         )
                         actionBanner = msg
@@ -964,31 +1002,25 @@ fun RiderAppScreen(store: BlueGasStore) {
         )
     }
 
-    // --- DIALOG 4: CASH HANDOVER (R5.3) ---
+    // --- DIALOG 4: CASH HANDOVER (S4) ---
     if (showCashHandoverDialog) {
-        val completedCodOrders = appState.orders.filter {
-            it.assignedRiderId == activeRider.id &&
-                    it.paymentMethod == PaymentMethod.CASH_ON_DELIVERY &&
-                    it.status == OrderStatus.ORD_COMP &&
-                    appState.payments.find { p -> p.orderId == it.id }?.state == PaymentState.CASH_COLLECTED &&
-                    appState.cashHandovers.none { ch -> ch.orderIds.contains(it.id) }
+        val completedCodOrders = remember(appState.orders, appState.cashHandovers, appState.payments, activeRider.id) {
+            store.ridersCashWaiting(activeRider.id)
         }
         val expectedPaisa = completedCodOrders.sumOf { it.amountReceivedPaisa ?: it.totalAmountPaisa }
 
         var declaredRupees by remember(expectedPaisa) {
             mutableStateOf((expectedPaisa / 100).toString())
         }
-        var recipient by remember { mutableStateOf("Distributor Lead") }
-        var differenceReason by remember { mutableStateOf("") }
-
-        val declaredPaisa = (declaredRupees.trim().toLongOrNull() ?: 0L) * 100L
-        val hasDifference = declaredPaisa != expectedPaisa
-        val canSubmit = completedCodOrders.isNotEmpty() && (!hasDifference || differenceReason.trim().isNotBlank())
+        // Exactly two choices: "Distributor" and "Finance"
+        var recipient by remember { mutableStateOf("Distributor") }
+        var notes by remember { mutableStateOf("") }
+        var amountError by remember { mutableStateOf<String?>(null) }
 
         AlertDialog(
             onDismissRequest = { showCashHandoverDialog = false },
             title = {
-                Text("Cash Hand-Over", fontWeight = FontWeight.Bold, fontSize = 16.sp)
+                Text("Hand Over Collected Cash", fontWeight = FontWeight.Bold, fontSize = 16.sp)
             },
             text = {
                 Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
@@ -1000,7 +1032,7 @@ fun RiderAppScreen(store: BlueGasStore) {
                         )
                     } else {
                         Text(
-                            text = "Orders in pending collection (${completedCodOrders.size}):",
+                            text = "Orders to hand over (${completedCodOrders.size}):",
                             fontSize = 12.sp,
                             fontWeight = FontWeight.SemiBold
                         )
@@ -1028,7 +1060,7 @@ fun RiderAppScreen(store: BlueGasStore) {
                             modifier = Modifier.fillMaxWidth(),
                             horizontalArrangement = Arrangement.SpaceBetween
                         ) {
-                            Text("Expected Total:", fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                            Text("Total cash waiting:", fontWeight = FontWeight.Bold, fontSize = 13.sp)
                             Text(formatRupees(expectedPaisa), fontWeight = FontWeight.Bold, fontSize = 13.sp, color = BlueGasDark)
                         }
 
@@ -1036,7 +1068,7 @@ fun RiderAppScreen(store: BlueGasStore) {
 
                         Text("Hand over to:", fontSize = 12.sp, fontWeight = FontWeight.Medium)
                         Spacer(modifier = Modifier.height(4.dp))
-                        listOf("Distributor Lead", "Depot Cashier", "Finance Officer").forEach { r ->
+                        listOf("Distributor", "Finance").forEach { r ->
                             Row(
                                 verticalAlignment = Alignment.CenterVertically,
                                 modifier = Modifier
@@ -1053,26 +1085,37 @@ fun RiderAppScreen(store: BlueGasStore) {
 
                         OutlinedTextField(
                             value = declaredRupees,
-                            onValueChange = { if (it.all { c -> c.isDigit() }) declaredRupees = it },
-                            label = { Text("Declared Amount (Rupees)") },
+                            onValueChange = {
+                                if (it.all { c -> c.isDigit() }) {
+                                    declaredRupees = it
+                                    amountError = null
+                                }
+                            },
+                            label = { Text("Declared Amount (PKR) *") },
                             modifier = Modifier.fillMaxWidth(),
                             singleLine = true
                         )
 
-                        if (hasDifference) {
-                            Spacer(modifier = Modifier.height(8.dp))
-                            OutlinedTextField(
-                                value = differenceReason,
-                                onValueChange = { differenceReason = it },
-                                label = { Text("Reason for amount difference *") },
-                                placeholder = { Text("Explain discrepancy") },
-                                modifier = Modifier.fillMaxWidth(),
-                                singleLine = true
+                        if (amountError != null) {
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Text(
+                                text = amountError ?: "",
+                                fontSize = 11.sp,
+                                color = Color(0xFFDC2626)
                             )
                         }
 
-                        Spacer(modifier = Modifier.height(10.dp))
+                        Spacer(modifier = Modifier.height(8.dp))
+                        OutlinedTextField(
+                            value = notes,
+                            onValueChange = { notes = it },
+                            label = { Text("Notes (optional)") },
+                            placeholder = { Text("e.g. Handed to distributor cashier") },
+                            modifier = Modifier.fillMaxWidth(),
+                            singleLine = true
+                        )
 
+                        Spacer(modifier = Modifier.height(10.dp))
                         Text(
                             text = "Hand over your cash within ${appState.settings.cashHandoverHours} hours.",
                             fontSize = 11.sp,
@@ -1085,17 +1128,28 @@ fun RiderAppScreen(store: BlueGasStore) {
                 if (completedCodOrders.isNotEmpty()) {
                     Button(
                         onClick = {
+                            if (declaredRupees.trim().isBlank()) {
+                                amountError = "Enter the amount you are handing over."
+                                return@Button
+                            }
+                            val declaredPaisa = (declaredRupees.trim().toLongOrNull() ?: 0L) * 100L
+                            if (declaredPaisa <= 0L) {
+                                amountError = "Enter the amount you are handing over."
+                                return@Button
+                            }
+
                             val (ok, msg) = store.riderSubmitCashHandover(
                                 riderId = activeRider.id,
-                                recipient = recipient,
+                                recipientType = recipient,
                                 declaredPaisa = declaredPaisa,
-                                reason = differenceReason.ifBlank { null }
+                                notes = notes.ifBlank { null }
                             )
                             actionBanner = msg
                             isErrorBanner = !ok
-                            showCashHandoverDialog = false
-                        },
-                        enabled = canSubmit
+                            if (ok) {
+                                showCashHandoverDialog = false
+                            }
+                        }
                     ) {
                         Text("Submit Hand-Over")
                     }
@@ -1116,7 +1170,9 @@ fun RiderAppScreen(store: BlueGasStore) {
                 store = store,
                 onDismiss = { showPodOrderId = null },
                 onCompleted = { ok, msg ->
-                    showPodOrderId = null
+                    if (ok) {
+                        showPodOrderId = null
+                    }
                     actionBanner = msg
                     isErrorBanner = !ok
                 }
@@ -1124,7 +1180,7 @@ fun RiderAppScreen(store: BlueGasStore) {
         }
     }
 
-    // --- DIALOG 6: OUTBOX VIEWER (R7) ---
+    // --- DIALOG 6: OUTBOX VIEWER (S2) ---
     if (showOutboxDialog) {
         AlertDialog(
             onDismissRequest = { showOutboxDialog = false },
@@ -1140,13 +1196,27 @@ fun RiderAppScreen(store: BlueGasStore) {
                     if (appState.riderOutbox.isEmpty()) {
                         Text("Offline outbox is currently empty.", fontSize = 12.sp, color = Color(0xFF64748B))
                     } else {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.End
+                        ) {
+                            TextButton(
+                                onClick = { store.clearSentOutboxEvents() },
+                                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
+                                modifier = Modifier.height(30.dp)
+                            ) {
+                                Icon(Icons.Default.DeleteSweep, contentDescription = null, modifier = Modifier.size(14.dp))
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text("Clear sent items", fontSize = 11.sp)
+                            }
+                        }
+
                         appState.riderOutbox.forEach { evt ->
                             val humanAction = when (evt.action) {
                                 "START_TRIP" -> "Start trip"
                                 "ARRIVE_AT_DOORSTEP" -> "Arrived"
                                 "REPORT_ISSUE" -> "Report problem"
                                 "COMPLETE_HANDOVER" -> "Complete delivery"
-                                "START_PREPARING" -> "Start preparation"
                                 else -> evt.action
                             }
 
@@ -1201,12 +1271,12 @@ fun RiderAppScreen(store: BlueGasStore) {
                 }
             },
             confirmButton = {
-                if (appState.riderOutbox.isNotEmpty() && !appState.isRiderOffline) {
+                if (pendingOutboxCount > 0 && !appState.isRiderOffline) {
                     Button(
                         onClick = {
-                            val report = store.replayRiderOutbox()
+                            val (ok, report) = store.replayRiderOutbox()
                             actionBanner = report
-                            isErrorBanner = false
+                            isErrorBanner = !ok
                             showOutboxDialog = false
                         }
                     ) {
@@ -1220,7 +1290,7 @@ fun RiderAppScreen(store: BlueGasStore) {
         )
     }
 
-    // --- DIALOG 7: OFFICIAL RECEIPT MODAL (R6 - Reuses Customer ReceiptDialog) ---
+    // --- DIALOG 7: OFFICIAL RECEIPT MODAL ---
     if (showReceiptOrderId != null) {
         val ord = appState.orders.find { it.id == showReceiptOrderId }
         if (ord != null) {
@@ -1234,7 +1304,7 @@ fun RiderAppScreen(store: BlueGasStore) {
 }
 
 /**
- * Card representing a newly assigned order awaiting rider acceptance or decline.
+ * Card representing a newly offered order awaiting rider acceptance or decline.
  */
 @Composable
 private fun PendingOrderCard(
@@ -1245,15 +1315,16 @@ private fun PendingOrderCard(
 ) {
     val cust = snapshot.customers.find { it.id == order.customerId }
     val addr = snapshot.addresses.find { it.id == order.addressId }
+    val depotNode = snapshot.nodes.find { it.id == order.fulfilmentPointId }
 
     val customerFirstName = cust?.name?.split(" ")?.firstOrNull() ?: cust?.name ?: "Customer"
-    val areaText = addr?.area ?: addr?.city ?: "Local area"
+    val areaText = addr?.area?.takeIf { it.isNotBlank() } ?: addr?.city?.takeIf { it.isNotBlank() } ?: "Local area"
 
-    // Honest acceptance countdown
+    // Honest acceptance countdown calculated against riderOfferedAt
     val nowMillis = rememberNowMillis(1000L)
-    val assignedTime = order.assignedAt ?: order.createdAt
-    val windowMs = snapshot.settings.distributorAcceptanceWindowMins * 60 * 1000L
-    val deadline = assignedTime + windowMs
+    val offeredTime = order.riderOfferedAt ?: order.assignedAt ?: order.createdAt
+    val windowMs = snapshot.settings.riderAcceptanceWindowMins * 60 * 1000L
+    val deadline = offeredTime + windowMs
     val remainingMs = (deadline - nowMillis).coerceAtLeast(0L)
     val isExpired = remainingMs <= 0L
     val isExpiringSoon = remainingMs in 1L..300000L
@@ -1321,9 +1392,9 @@ private fun PendingOrderCard(
                         )
                     }
 
-                    if (order.assignedAt != null) {
+                    if (order.riderOfferedAt != null) {
                         Text(
-                            text = "Assigned ${formatTimeOnly(order.assignedAt!!)}",
+                            text = "Offered ${formatTimeOnly(order.riderOfferedAt!!)}",
                             fontSize = 10.sp,
                             color = Color(0xFF64748B)
                         )
@@ -1332,15 +1403,31 @@ private fun PendingOrderCard(
             }
 
             Spacer(modifier = Modifier.height(10.dp))
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = "$customerFirstName · $areaText",
+                    fontSize = 13.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    color = BlueGasDark,
+                    modifier = Modifier.weight(1f),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+
+            Spacer(modifier = Modifier.height(4.dp))
+            // Cylinder & Depot lines (S1.4)
             Text(
-                text = "$customerFirstName · $areaText",
-                fontSize = 13.sp,
-                fontWeight = FontWeight.SemiBold,
+                text = "Cylinder ${order.allocatedSerial ?: "allocated"} ready at the depot",
+                fontSize = 12.sp,
+                fontWeight = FontWeight.Medium,
                 color = BlueGasDark
             )
-
             Text(
-                text = if (order.fulfilmentMode == FulfilmentMode.DELIVERY) "Home delivery" else "Depot pickup",
+                text = "Depot: ${depotNode?.name ?: "Main Depot"}",
                 fontSize = 11.sp,
                 color = Color(0xFF64748B)
             )
@@ -1366,7 +1453,7 @@ private fun PendingOrderCard(
                 color = if (order.paymentMethod == PaymentMethod.CASH_ON_DELIVERY) Color(0xFFD97706) else Color(0xFF16A34A)
             )
 
-            // Buttons: Accept & Decline
+            // Buttons: Accept & Decline (S1.4)
             Spacer(modifier = Modifier.height(12.dp))
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -1383,7 +1470,7 @@ private fun PendingOrderCard(
                 ) {
                     Icon(Icons.Default.Check, contentDescription = null, modifier = Modifier.size(16.dp))
                     Spacer(modifier = Modifier.width(4.dp))
-                    Text("Accept Order", fontSize = 12.sp)
+                    Text(if (isExpired) "Acceptance time is over" else "Accept Task", fontSize = 12.sp)
                 }
 
                 OutlinedButton(
@@ -1405,14 +1492,13 @@ private fun PendingOrderCard(
 }
 
 /**
- * Card representing an active delivery task progressing from preparation to doorstep handover.
+ * Card representing an active delivery task progressing from depot verification to doorstep handover.
  */
 @Composable
 private fun ActiveOrderCard(
     order: Order,
     snapshot: SharedAppState,
-    onStartPrep: () -> Unit,
-    onScanSerial: () -> Unit,
+    onVerifyCylinder: () -> Unit,
     onStartDelivery: () -> Unit,
     onArrive: () -> Unit,
     onOpenPod: () -> Unit,
@@ -1423,6 +1509,24 @@ private fun ActiveOrderCard(
     val cust = snapshot.customers.find { it.id == order.customerId }
     val addr = snapshot.addresses.find { it.id == order.addressId }
     var addressExpanded by remember { mutableStateOf(false) }
+
+    val hasPendingOutbox = remember(snapshot.riderOutbox, order.id) {
+        snapshot.riderOutbox.any { it.orderId == order.id && it.syncStatus == "PENDING" }
+    }
+
+    val addressSummary = remember(addr) {
+        val parts = listOfNotNull(addr?.area?.takeIf { it.isNotBlank() }, addr?.city?.takeIf { it.isNotBlank() })
+        if (parts.isEmpty()) "Address not available" else parts.joinToString(", ")
+    }
+
+    val fullAddress = remember(addr) {
+        val parts = listOfNotNull(
+            addr?.street?.takeIf { it.isNotBlank() },
+            addr?.area?.takeIf { it.isNotBlank() },
+            addr?.city?.takeIf { it.isNotBlank() }
+        )
+        if (parts.isEmpty()) "Address not available" else parts.joinToString(", ")
+    }
 
     Card(
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
@@ -1458,7 +1562,7 @@ private fun ActiveOrderCard(
                 color = BlueGasDark
             )
 
-            // Tap-to-expand address
+            // Tap-to-expand address (S5)
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -1466,13 +1570,15 @@ private fun ActiveOrderCard(
                     .padding(vertical = 2.dp)
             ) {
                 Text(
-                    text = "${addr?.area ?: ""}, ${addr?.city ?: ""}" + if (!addressExpanded) " (Tap to view full address)" else "",
+                    text = addressSummary + if (!addressExpanded && addressSummary != "Address not available") " (Tap to view full address)" else "",
                     fontSize = 12.sp,
-                    color = Color(0xFF475569)
+                    color = Color(0xFF475569),
+                    maxLines = if (addressExpanded) 10 else 1,
+                    overflow = TextOverflow.Ellipsis
                 )
-                if (addressExpanded) {
+                if (addressExpanded && addressSummary != "Address not available") {
                     Text(
-                        text = "${addr?.street ?: ""}, ${addr?.area ?: ""}, ${addr?.city ?: ""}",
+                        text = fullAddress,
                         fontSize = 11.sp,
                         color = Color(0xFF64748B)
                     )
@@ -1533,47 +1639,35 @@ private fun ActiveOrderCard(
                 }
             }
 
-            // Serial Allocation Strip
-            Spacer(modifier = Modifier.height(10.dp))
-            Surface(
-                color = if (order.allocatedSerial != null) Color(0xFFEFF6FF) else Color(0xFFFFFBEB),
-                shape = RoundedCornerShape(6.dp),
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Row(
-                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceBetween
+            // Cylinder line: single line across Preparing, Dispatched, At Handover (S1.5)
+            // Hidden in ORD_HOC, ORD_INSP, ORD_ADJ, ORD_EXC
+            val showCylinderLine = order.status in listOf(OrderStatus.ORD_PREP, OrderStatus.ORD_DISP, OrderStatus.ORD_ATHO)
+            if (showCylinderLine) {
+                Spacer(modifier = Modifier.height(10.dp))
+                Surface(
+                    color = if (order.riderCylinderVerified) Color(0xFFDCFCE7) else Color(0xFFEFF6FF),
+                    shape = RoundedCornerShape(6.dp),
+                    modifier = Modifier.fillMaxWidth()
                 ) {
                     Row(
-                        modifier = Modifier.weight(1f),
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Icon(
-                            imageVector = if (order.allocatedSerial != null) Icons.Default.QrCodeScanner else Icons.Default.WarningAmber,
+                            imageVector = if (order.riderCylinderVerified) Icons.Default.CheckCircle else Icons.Default.QrCodeScanner,
                             contentDescription = null,
-                            tint = if (order.allocatedSerial != null) Color(0xFF0284C7) else Color(0xFFB45309),
+                            tint = if (order.riderCylinderVerified) Color(0xFF166534) else Color(0xFF0284C7),
                             modifier = Modifier.size(16.dp)
                         )
                         Spacer(modifier = Modifier.width(6.dp))
                         Text(
-                            text = "Serial: ${order.allocatedSerial ?: "Choose cylinder first"}",
-                            fontWeight = FontWeight.Bold,
+                            text = "Cylinder: ${order.allocatedSerial ?: "None"} · " + if (order.riderCylinderVerified) "Verified" else "Not verified yet",
+                            fontWeight = FontWeight.SemiBold,
                             fontSize = 12.sp,
-                            color = if (order.allocatedSerial != null) Color(0xFF0369A1) else Color(0xFFB45309),
+                            color = if (order.riderCylinderVerified) Color(0xFF166534) else Color(0xFF0369A1),
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis
                         )
-                    }
-
-                    if (order.status == OrderStatus.ORD_PREP) {
-                        TextButton(
-                            onClick = onScanSerial,
-                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
-                            modifier = Modifier.height(32.dp)
-                        ) {
-                            Text(if (order.allocatedSerial != null) "Change" else "Choose", fontSize = 11.sp)
-                        }
                     }
                 }
             }
@@ -1595,94 +1689,152 @@ private fun ActiveOrderCard(
                 color = if (order.paymentMethod == PaymentMethod.CASH_ON_DELIVERY) Color(0xFFD97706) else Color(0xFF16A34A)
             )
 
-            // Handover PIN reminder (R3.1: never show the PIN itself on the rider side)
-            Spacer(modifier = Modifier.height(6.dp))
-            Text(
-                text = "Ask the customer for their 4-digit handover code.",
-                fontSize = 11.sp,
-                color = Color(0xFF64748B),
-                fontWeight = FontWeight.Medium
-            )
+            // Handover PIN reminder (Only in ORD_DISP or ORD_ATHO; hidden in ORD_HOC, ORD_INSP, ORD_ADJ, ORD_EXC, ORD_PREP)
+            if (order.status in listOf(OrderStatus.ORD_DISP, OrderStatus.ORD_ATHO)) {
+                Spacer(modifier = Modifier.height(6.dp))
+                Text(
+                    text = "Ask customer for handover code.",
+                    fontSize = 11.sp,
+                    color = Color(0xFF64748B),
+                    fontWeight = FontWeight.Medium
+                )
+            }
 
-            // ACTION CONTROLS PER STATUS (R3)
+            // ACTION CONTROLS PER STATUS (S1.5)
             Spacer(modifier = Modifier.height(12.dp))
 
-            when (order.status) {
-                OrderStatus.ORD_EXC -> {
-                    // Amber strip for exceptions, no action buttons
-                    Surface(
-                        color = Color(0xFFFEF3C7),
-                        shape = RoundedCornerShape(6.dp),
-                        modifier = Modifier.fillMaxWidth()
+            if (hasPendingOutbox) {
+                // S1.5: Replace main action button with disabled amber chip
+                Surface(
+                    color = Color(0xFFFEF3C7),
+                    shape = RoundedCornerShape(8.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(48.dp)
+                ) {
+                    Box(
+                        contentAlignment = Alignment.Center,
+                        modifier = Modifier.fillMaxSize()
                     ) {
-                        Row(
-                            modifier = Modifier.padding(10.dp),
-                            verticalAlignment = Alignment.CenterVertically
+                        Text(
+                            text = "Saved — waiting to send",
+                            color = Color(0xFF92400E),
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 13.sp
+                        )
+                    }
+                }
+            } else {
+                when (order.status) {
+                    OrderStatus.ORD_EXC -> {
+                        Surface(
+                            color = Color(0xFFFEF3C7),
+                            shape = RoundedCornerShape(6.dp),
+                            modifier = Modifier.fillMaxWidth()
                         ) {
-                            Icon(Icons.Default.WarningAmber, contentDescription = null, tint = Color(0xFFB45309))
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Text(
-                                text = "Needs attention — Operations has been alerted",
-                                fontWeight = FontWeight.Bold,
-                                fontSize = 12.sp,
-                                color = Color(0xFF92400E)
-                            )
+                            Row(
+                                modifier = Modifier.padding(10.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Icon(Icons.Default.WarningAmber, contentDescription = null, tint = Color(0xFFB45309))
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text(
+                                    text = "Needs attention — Operations has been alerted",
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 12.sp,
+                                    color = Color(0xFF92400E)
+                                )
+                            }
                         }
                     }
-                }
 
-                OrderStatus.ORD_INSP, OrderStatus.ORD_ADJ -> {
-                    Surface(
-                        color = Color(0xFFF1F5F9),
-                        shape = RoundedCornerShape(6.dp),
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Row(
-                            modifier = Modifier.padding(10.dp),
-                            verticalAlignment = Alignment.CenterVertically
+                    OrderStatus.ORD_INSP, OrderStatus.ORD_ADJ -> {
+                        Surface(
+                            color = Color(0xFFF1F5F9),
+                            shape = RoundedCornerShape(6.dp),
+                            modifier = Modifier.fillMaxWidth()
                         ) {
-                            Icon(Icons.Default.HourglassEmpty, contentDescription = null, tint = Color(0xFF475569))
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Text(
-                                text = "Waiting for the inspection / price adjustment to be completed",
-                                fontSize = 12.sp,
-                                color = Color(0xFF334155)
-                            )
+                            Row(
+                                modifier = Modifier.padding(10.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Icon(Icons.Default.HourglassEmpty, contentDescription = null, tint = Color(0xFF475569))
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text(
+                                    text = "Waiting for the inspection / price adjustment to be completed",
+                                    fontSize = 12.sp,
+                                    color = Color(0xFF334155)
+                                )
+                            }
                         }
                     }
-                }
 
-                OrderStatus.ORD_ACPT -> {
-                    Button(
-                        onClick = onStartPrep,
-                        colors = ButtonDefaults.buttonColors(containerColor = BlueGasPrimary),
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(48.dp)
-                    ) {
-                        Icon(Icons.Default.Build, contentDescription = null, modifier = Modifier.size(16.dp))
-                        Spacer(modifier = Modifier.width(6.dp))
-                        Text("Begin Preparation & Select Serial")
+                    OrderStatus.ORD_PREP -> {
+                        Column(modifier = Modifier.fillMaxWidth()) {
+                            if (!order.riderCylinderVerified) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    Button(
+                                        onClick = onVerifyCylinder,
+                                        colors = ButtonDefaults.buttonColors(containerColor = BlueGasPrimary),
+                                        modifier = Modifier
+                                            .weight(1f)
+                                            .height(48.dp)
+                                    ) {
+                                        Icon(Icons.Default.QrCodeScanner, contentDescription = null, modifier = Modifier.size(16.dp))
+                                        Spacer(modifier = Modifier.width(6.dp))
+                                        Text("Verify cylinder")
+                                    }
+
+                                    Button(
+                                        onClick = {},
+                                        enabled = false,
+                                        modifier = Modifier
+                                            .weight(1f)
+                                            .height(48.dp)
+                                    ) {
+                                        Text("Start delivery")
+                                    }
+                                }
+                                Spacer(modifier = Modifier.height(4.dp))
+                                Text(
+                                    text = "Verify the cylinder first.",
+                                    fontSize = 11.sp,
+                                    color = Color(0xFF64748B)
+                                )
+                            } else {
+                                Button(
+                                    onClick = onStartDelivery,
+                                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF16A34A)),
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .height(48.dp)
+                                ) {
+                                    Icon(Icons.Default.DepartureBoard, contentDescription = null, modifier = Modifier.size(16.dp))
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Text("Start delivery")
+                                }
+                            }
+                        }
                     }
-                }
 
-                OrderStatus.ORD_PREP -> {
-                    Column(modifier = Modifier.fillMaxWidth()) {
+                    OrderStatus.ORD_DISP -> {
                         Row(
                             modifier = Modifier.fillMaxWidth(),
                             horizontalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
                             Button(
-                                onClick = onStartDelivery,
-                                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF16A34A)),
-                                enabled = order.allocatedSerial != null,
+                                onClick = onArrive,
+                                colors = ButtonDefaults.buttonColors(containerColor = BlueGasPrimary),
                                 modifier = Modifier
                                     .weight(1f)
                                     .height(48.dp)
                             ) {
-                                Icon(Icons.Default.DepartureBoard, contentDescription = null, modifier = Modifier.size(16.dp))
+                                Icon(Icons.Default.PinDrop, contentDescription = null, modifier = Modifier.size(16.dp))
                                 Spacer(modifier = Modifier.width(4.dp))
-                                Text("Start Delivery")
+                                Text("Arrived at location")
                             }
 
                             OutlinedButton(
@@ -1690,105 +1842,62 @@ private fun ActiveOrderCard(
                                 colors = ButtonDefaults.outlinedButtonColors(contentColor = Color(0xFFDC2626)),
                                 modifier = Modifier.height(48.dp)
                             ) {
-                                Text("Report issue")
+                                Text("Report a problem")
                             }
                         }
-
-                        if (order.allocatedSerial == null) {
-                            Spacer(modifier = Modifier.height(4.dp))
-                            Text(
-                                text = "Choose the cylinder to deliver first.",
-                                fontSize = 11.sp,
-                                color = Color(0xFF94A3B8)
-                            )
-                        } else if (snapshot.isRiderOffline) {
-                            Spacer(modifier = Modifier.height(4.dp))
-                            Text(
-                                text = "You are offline — this will be saved and sent later.",
-                                fontSize = 11.sp,
-                                color = Color(0xFFB45309)
-                            )
-                        }
                     }
-                }
 
-                OrderStatus.ORD_DISP, OrderStatus.ORD_RDYPU -> {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        Button(
-                            onClick = onArrive,
-                            colors = ButtonDefaults.buttonColors(containerColor = BlueGasPrimary),
-                            modifier = Modifier
-                                .weight(1f)
-                                .height(48.dp)
-                        ) {
-                            Icon(Icons.Default.PinDrop, contentDescription = null, modifier = Modifier.size(16.dp))
-                            Spacer(modifier = Modifier.width(4.dp))
-                            Text("Arrived at location")
-                        }
-
-                        OutlinedButton(
-                            onClick = onReportIssue,
-                            colors = ButtonDefaults.outlinedButtonColors(contentColor = Color(0xFFDC2626)),
-                            modifier = Modifier.height(48.dp)
-                        ) {
-                            Text("Report issue")
-                        }
-                    }
-                }
-
-                OrderStatus.ORD_ATHO -> {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        Button(
-                            onClick = onOpenPod,
-                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF16A34A)),
-                            modifier = Modifier
-                                .weight(1f)
-                                .height(48.dp)
-                        ) {
-                            Icon(Icons.Default.CheckCircle, contentDescription = null, modifier = Modifier.size(16.dp))
-                            Spacer(modifier = Modifier.width(4.dp))
-                            Text("Complete delivery")
-                        }
-
-                        OutlinedButton(
-                            onClick = onReportIssue,
-                            colors = ButtonDefaults.outlinedButtonColors(contentColor = Color(0xFFDC2626)),
-                            modifier = Modifier.height(48.dp)
-                        ) {
-                            Text("Report issue")
-                        }
-                    }
-                }
-
-                OrderStatus.ORD_HOC -> {
-                    Surface(
-                        color = Color(0xFFDCFCE7),
-                        shape = RoundedCornerShape(6.dp),
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
+                    OrderStatus.ORD_ATHO -> {
                         Row(
-                            modifier = Modifier.padding(10.dp),
-                            verticalAlignment = Alignment.CenterVertically
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
-                            Icon(Icons.Default.CheckCircle, contentDescription = null, tint = Color(0xFF166534))
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Text(
-                                text = "Delivery is being finalised.",
-                                fontWeight = FontWeight.SemiBold,
-                                fontSize = 12.sp,
-                                color = Color(0xFF166534)
-                            )
+                            Button(
+                                onClick = onOpenPod,
+                                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF16A34A)),
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .height(48.dp)
+                            ) {
+                                Icon(Icons.Default.CheckCircle, contentDescription = null, modifier = Modifier.size(16.dp))
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text("Complete delivery")
+                            }
+
+                            OutlinedButton(
+                                onClick = onReportIssue,
+                                colors = ButtonDefaults.outlinedButtonColors(contentColor = Color(0xFFDC2626)),
+                                modifier = Modifier.height(48.dp)
+                            ) {
+                                Text("Report a problem")
+                            }
                         }
                     }
-                }
 
-                else -> {}
+                    OrderStatus.ORD_HOC -> {
+                        Surface(
+                            color = Color(0xFFDCFCE7),
+                            shape = RoundedCornerShape(6.dp),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(10.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Icon(Icons.Default.CheckCircle, contentDescription = null, tint = Color(0xFF166534))
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text(
+                                    text = "Delivery is being finalised.",
+                                    fontWeight = FontWeight.SemiBold,
+                                    fontSize = 12.sp,
+                                    color = Color(0xFF166534)
+                                )
+                            }
+                        }
+                    }
+
+                    else -> {}
+                }
             }
         }
     }

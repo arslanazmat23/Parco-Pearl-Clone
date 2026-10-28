@@ -25,6 +25,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
@@ -46,7 +47,6 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
-import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
@@ -74,6 +74,8 @@ enum class PodStep(val title: String) {
 
 /**
  * Modal dialog for capturing doorstep delivery verification evidence before completing an order.
+ *
+ * On submission failure, stays open and displays an inline error banner. Closes only on success.
  *
  * @param order The active order being delivered.
  * @param store Application data store reference.
@@ -110,6 +112,7 @@ fun PodCaptureDialog(
     val currentStep = activeSteps[currentStepIndex]
     var showDiscardAlert by remember { mutableStateOf(false) }
     var isSubmitting by remember { mutableStateOf(false) }
+    var submissionError by remember { mutableStateOf<String?>(null) }
 
     // Step 1: Handover Code (PIN) States
     var enteredPin by remember { mutableStateOf("") }
@@ -117,7 +120,14 @@ fun PodCaptureDialog(
     var pinFailedAttempts by remember { mutableIntStateOf(0) }
     var pinError by remember { mutableStateOf<String?>(null) }
     var codeNotAvailableSelected by remember { mutableStateOf(false) }
-    var pinNotVerifiedReason by remember { mutableStateOf("") }
+    var pinReasonChoice by remember { mutableStateOf<String?>(null) }
+    var pinReasonOtherText by remember { mutableStateOf("") }
+
+    val finalPinReason = remember(pinVerified, codeNotAvailableSelected, pinReasonChoice, pinReasonOtherText) {
+        if (pinVerified) null
+        else if (pinReasonChoice == "Other") pinReasonOtherText.trim()
+        else pinReasonChoice
+    }
 
     // Step 2: Installation States
     var installationResult by remember { mutableStateOf(InstallationResult.INSTALLED) }
@@ -153,17 +163,22 @@ fun PodCaptureDialog(
     var skipPhoto by remember { mutableStateOf(false) }
     var photoSkipReason by remember { mutableStateOf("") }
 
-    // Step 6: Signature States
-    val signaturePoints = remember { mutableStateListOf<Offset>() }
+    // Step 6: Signature States (Multi-stroke canvas: S3.6)
+    val signatureStrokes = remember { mutableStateListOf<List<Offset>>() }
+    var currentStroke by remember { mutableStateOf<List<Offset>>(emptyList()) }
+    val hasSignature = signatureStrokes.isNotEmpty() || currentStroke.isNotEmpty()
     var cannotSignSelected by remember { mutableStateOf(false) }
     var signatureUnavailableReason by remember { mutableStateOf("") }
     val customer = snapshot.customers.find { it.id == order.customerId }
     var signerName by remember(customer?.name) { mutableStateOf(customer?.name ?: "Customer") }
 
+    // Evidence rule (S3.4): At least photo, signature, or signature-unavailable reason
+    val hasEvidence = (photoCaptured && photoConsent) || hasSignature || (cannotSignSelected && signatureUnavailableReason.trim().isNotBlank())
+
     // Step Validation Logic
     val isStepValid: Boolean = when (currentStep) {
         PodStep.PIN -> {
-            pinVerified || (codeNotAvailableSelected && pinNotVerifiedReason.trim().isNotBlank())
+            pinVerified || (codeNotAvailableSelected && pinReasonChoice != null && (pinReasonChoice != "Other" || pinReasonOtherText.trim().length >= 5))
         }
         PodStep.INSTALLATION -> {
             when (installationResult) {
@@ -175,10 +190,7 @@ fun PodCaptureDialog(
                 InstallationResult.NOT_APPLICABLE -> true
             }
         }
-        PodStep.EMPTY_CYLINDER -> {
-            // Optional to collect; if collected, brand is chosen from approved list
-            true
-        }
+        PodStep.EMPTY_CYLINDER -> true
         PodStep.PAYMENT -> {
             if (!isCod) true
             else {
@@ -192,10 +204,10 @@ fun PodCaptureDialog(
             if (cannotSignSelected) {
                 signatureUnavailableReason.trim().isNotBlank()
             } else {
-                signaturePoints.isNotEmpty() && signerName.trim().isNotBlank()
+                hasSignature && signerName.trim().isNotBlank()
             }
         }
-        PodStep.REVIEW -> true
+        PodStep.REVIEW -> hasEvidence
     }
 
     Dialog(
@@ -262,8 +274,14 @@ fun PodCaptureDialog(
                     when (currentStep) {
                         PodStep.PIN -> {
                             Text(
-                                text = "Ask the customer for their 4-digit handover code.",
-                                fontSize = 13.sp,
+                                text = "Customer Handover Code",
+                                fontSize = 15.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = BlueGasDark
+                            )
+                            Text(
+                                text = "Ask the customer for the 4-digit code shown on their tracking screen.",
+                                fontSize = 12.sp,
                                 color = Color(0xFF475569)
                             )
                             Spacer(modifier = Modifier.height(14.dp))
@@ -323,7 +341,6 @@ fun PodCaptureDialog(
                                     modifier = Modifier
                                         .fillMaxWidth()
                                         .height(48.dp)
-                                        .testTag("verify_pin_button")
                                 ) {
                                     Text("Verify Code")
                                 }
@@ -386,30 +403,45 @@ fun PodCaptureDialog(
                                     )
                                     Spacer(modifier = Modifier.height(6.dp))
 
-                                    val reasons = listOf("Customer has no phone", "Customer unreachable", "SMS not received", "Other")
-                                    reasons.forEach { r ->
+                                    val pinReasons = listOf(
+                                        "Customer has no phone",
+                                        "Customer unreachable",
+                                        "Customer cannot find the code",
+                                        "Other"
+                                    )
+                                    pinReasons.forEach { r ->
                                         Row(
                                             verticalAlignment = Alignment.CenterVertically,
                                             modifier = Modifier
                                                 .fillMaxWidth()
-                                                .clickable { pinNotVerifiedReason = r }
+                                                .clickable { pinReasonChoice = r }
                                         ) {
                                             RadioButton(
-                                                selected = pinNotVerifiedReason == r || (r == "Other" && pinNotVerifiedReason !in reasons),
-                                                onClick = { pinNotVerifiedReason = r }
+                                                selected = pinReasonChoice == r,
+                                                onClick = { pinReasonChoice = r }
                                             )
+                                            Spacer(modifier = Modifier.width(4.dp))
                                             Text(r, fontSize = 12.sp)
                                         }
                                     }
 
-                                    OutlinedTextField(
-                                        value = pinNotVerifiedReason,
-                                        onValueChange = { pinNotVerifiedReason = it },
-                                        label = { Text("Reason Details") },
-                                        placeholder = { Text("Explain why code was not checked") },
-                                        modifier = Modifier.fillMaxWidth(),
-                                        singleLine = true
-                                    )
+                                    if (pinReasonChoice == "Other") {
+                                        Spacer(modifier = Modifier.height(6.dp))
+                                        OutlinedTextField(
+                                            value = pinReasonOtherText,
+                                            onValueChange = { pinReasonOtherText = it },
+                                            label = { Text("Reason Details (minimum 5 characters) *") },
+                                            placeholder = { Text("Explain why code was not checked") },
+                                            modifier = Modifier.fillMaxWidth(),
+                                            singleLine = true,
+                                            isError = pinReasonOtherText.trim().isNotEmpty() && pinReasonOtherText.trim().length < 5,
+                                            supportingText = {
+                                                if (pinReasonOtherText.trim().isNotEmpty() && pinReasonOtherText.trim().length < 5) {
+                                                    Text("Enter at least 5 characters.", color = MaterialTheme.colorScheme.error)
+                                                }
+                                            }
+                                        )
+                                    }
                                 }
                             }
                         }
@@ -449,43 +481,33 @@ fun PodCaptureDialog(
                                 }
                             }
 
-                            Spacer(modifier = Modifier.height(10.dp))
+                            Spacer(modifier = Modifier.height(12.dp))
 
                             when (installationResult) {
                                 InstallationResult.INSTALLED -> {
                                     Text(
-                                        text = "Safety Checklist (all items required):",
-                                        fontWeight = FontWeight.SemiBold,
-                                        fontSize = 12.sp,
-                                        color = BlueGasDark
+                                        "Safety Verification Checklist:",
+                                        fontSize = 13.sp,
+                                        fontWeight = FontWeight.SemiBold
                                     )
                                     Spacer(modifier = Modifier.height(6.dp))
 
-                                    if (settings.installationChecklistItems.isEmpty()) {
-                                        Text(
-                                            "No checklist items configured in settings.",
-                                            fontSize = 12.sp,
-                                            color = Color(0xFF64748B)
-                                        )
-                                    } else {
-                                        settings.installationChecklistItems.forEach { item ->
-                                            Row(
-                                                verticalAlignment = Alignment.CenterVertically,
-                                                modifier = Modifier
-                                                    .fillMaxWidth()
-                                                    .clickable {
-                                                        val current = checklistSelections[item] ?: false
-                                                        checklistSelections[item] = !current
-                                                    }
-                                                    .padding(vertical = 4.dp)
-                                            ) {
-                                                Checkbox(
-                                                    checked = checklistSelections[item] == true,
-                                                    onCheckedChange = { checklistSelections[item] = it }
-                                                )
-                                                Spacer(modifier = Modifier.width(6.dp))
-                                                Text(item, fontSize = 12.sp)
-                                            }
+                                    settings.installationChecklistItems.forEach { item ->
+                                        Row(
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .clickable {
+                                                    checklistSelections[item] = !(checklistSelections[item] ?: false)
+                                                }
+                                                .padding(vertical = 4.dp)
+                                        ) {
+                                            Checkbox(
+                                                checked = checklistSelections[item] ?: false,
+                                                onCheckedChange = { checklistSelections[item] = it }
+                                            )
+                                            Spacer(modifier = Modifier.width(6.dp))
+                                            Text(item, fontSize = 12.sp)
                                         }
                                     }
                                 }
@@ -493,10 +515,9 @@ fun PodCaptureDialog(
                                     OutlinedTextField(
                                         value = notInstalledReason,
                                         onValueChange = { notInstalledReason = it },
-                                        label = { Text("Reason installation was not done") },
-                                        placeholder = { Text("e.g. Customer declined installation") },
+                                        label = { Text("Reason Not Installed *") },
+                                        placeholder = { Text("e.g. Customer requested self-installation") },
                                         modifier = Modifier.fillMaxWidth(),
-                                        singleLine = false,
                                         minLines = 2
                                     )
                                 }
@@ -554,6 +575,36 @@ fun PodCaptureDialog(
                                         RadioButton(selected = selectedBrand == b, onClick = { selectedBrand = b })
                                         Spacer(modifier = Modifier.width(6.dp))
                                         Text(b, fontSize = 12.sp)
+                                    }
+                                }
+
+                                if (selectedBrand == "Other brand") {
+                                    Spacer(modifier = Modifier.height(6.dp))
+                                    Surface(
+                                        color = Color(0xFFFEF3C7),
+                                        shape = RoundedCornerShape(6.dp),
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .padding(vertical = 4.dp)
+                                    ) {
+                                        Row(
+                                            modifier = Modifier.padding(10.dp),
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            Icon(
+                                                Icons.Default.Warning,
+                                                contentDescription = null,
+                                                tint = Color(0xFFD97706),
+                                                modifier = Modifier.size(16.dp)
+                                            )
+                                            Spacer(modifier = Modifier.width(8.dp))
+                                            Text(
+                                                "Other brands are not accepted for exchange. Do not take this cylinder.",
+                                                color = Color(0xFF92400E),
+                                                fontSize = 11.sp,
+                                                fontWeight = FontWeight.Medium
+                                            )
+                                        }
                                     }
                                 }
 
@@ -818,14 +869,20 @@ fun PodCaptureDialog(
                                     .fillMaxWidth()
                                     .clickable {
                                         cannotSignSelected = !cannotSignSelected
-                                        if (cannotSignSelected) signaturePoints.clear()
+                                        if (cannotSignSelected) {
+                                            signatureStrokes.clear()
+                                            currentStroke = emptyList()
+                                        }
                                     }
                             ) {
                                 Checkbox(
                                     checked = cannotSignSelected,
                                     onCheckedChange = {
                                         cannotSignSelected = it
-                                        if (it) signaturePoints.clear()
+                                        if (it) {
+                                            signatureStrokes.clear()
+                                            currentStroke = emptyList()
+                                        }
                                     }
                                 )
                                 Spacer(modifier = Modifier.width(6.dp))
@@ -855,28 +912,54 @@ fun PodCaptureDialog(
                                         .background(Color(0xFFF8FAFC))
                                         .border(1.dp, Color(0xFFCBD5E1), RoundedCornerShape(8.dp))
                                         .pointerInput(Unit) {
-                                            detectDragGestures { change, _ ->
-                                                change.consume()
-                                                signaturePoints.add(change.position)
-                                            }
+                                            detectDragGestures(
+                                                onDragStart = { offset ->
+                                                    currentStroke = listOf(offset)
+                                                },
+                                                onDrag = { change, _ ->
+                                                    change.consume()
+                                                    currentStroke = currentStroke + change.position
+                                                },
+                                                onDragEnd = {
+                                                    if (currentStroke.isNotEmpty()) {
+                                                        signatureStrokes.add(currentStroke)
+                                                        currentStroke = emptyList()
+                                                    }
+                                                },
+                                                onDragCancel = {
+                                                    if (currentStroke.isNotEmpty()) {
+                                                        signatureStrokes.add(currentStroke)
+                                                        currentStroke = emptyList()
+                                                    }
+                                                }
+                                            )
                                         }
                                 ) {
                                     Canvas(modifier = Modifier.fillMaxSize()) {
-                                        if (signaturePoints.size > 1) {
-                                            val path = Path()
-                                            path.moveTo(signaturePoints.first().x, signaturePoints.first().y)
-                                            for (i in 1 until signaturePoints.size) {
-                                                path.lineTo(signaturePoints[i].x, signaturePoints[i].y)
+                                        val allStrokes = signatureStrokes + (if (currentStroke.isNotEmpty()) listOf(currentStroke) else emptyList())
+                                        for (stroke in allStrokes) {
+                                            if (stroke.size > 1) {
+                                                val path = Path()
+                                                path.moveTo(stroke.first().x, stroke.first().y)
+                                                for (i in 1 until stroke.size) {
+                                                    path.lineTo(stroke[i].x, stroke[i].y)
+                                                }
+                                                drawPath(
+                                                    path = path,
+                                                    color = Color(0xFF0F172A),
+                                                    style = Stroke(width = 4f, cap = StrokeCap.Round, join = StrokeJoin.Round)
+                                                )
+                                            } else if (stroke.size == 1) {
+                                                drawCircle(
+                                                    color = Color(0xFF0F172A),
+                                                    radius = 2.5f,
+                                                    center = stroke.first()
+                                                )
                                             }
-                                            drawPath(
-                                                path = path,
-                                                color = Color(0xFF0F172A),
-                                                style = Stroke(width = 4f, cap = StrokeCap.Round, join = StrokeJoin.Round)
-                                            )
                                         }
                                     }
 
-                                    if (signaturePoints.isEmpty()) {
+                                    if (!hasSignature) {
                                         Text(
                                             "Sign here",
                                             color = Color(0xFF94A3B8),
@@ -886,12 +969,15 @@ fun PodCaptureDialog(
                                     }
                                 }
 
-                                if (signaturePoints.isNotEmpty()) {
+                                if (hasSignature) {
                                     Row(
                                         modifier = Modifier.fillMaxWidth(),
                                         horizontalArrangement = Arrangement.End
                                     ) {
-                                        TextButton(onClick = { signaturePoints.clear() }) {
+                                        TextButton(onClick = {
+                                            signatureStrokes.clear()
+                                            currentStroke = emptyList()
+                                        }) {
                                             Text("Clear Signature")
                                         }
                                     }
@@ -915,7 +1001,7 @@ fun PodCaptureDialog(
                                 Column(modifier = Modifier.padding(14.dp)) {
                                     ReviewSummaryRow(
                                         label = "PIN Verification",
-                                        value = if (pinVerified) "Verified" else "Not verified: $pinNotVerifiedReason"
+                                        value = if (pinVerified) "Verified" else if (!finalPinReason.isNullOrBlank()) "Not verified: $finalPinReason" else "Not verified"
                                     )
                                     ReviewSummaryRow(
                                         label = "Installation",
@@ -931,16 +1017,52 @@ fun PodCaptureDialog(
                                         label = "Payment",
                                         value = if (isCod) "Cash received: ${formatRupees(recPaisa)}" + (if (cashDifference != 0L) " (${if (cashDifference > 0) "Change: " else "Short: "}${formatRupees(kotlin.math.abs(cashDifference))})" else "") else "Paid online"
                                     )
+                                    if (isCod && cashDifference != 0L && cashDifferenceReason.isNotBlank()) {
+                                        ReviewSummaryRow(
+                                            label = "Difference Reason",
+                                            value = cashDifferenceReason
+                                        )
+                                    }
                                     ReviewSummaryRow(
                                         label = "Photo Evidence",
-                                        value = if (photoCaptured) "Photo captured" else "Skipped: $photoSkipReason"
+                                        value = if (photoCaptured && photoConsent) "Photo captured" else if (photoSkipReason.isNotBlank()) "Skipped: $photoSkipReason" else "Skipped"
                                     )
                                     ReviewSummaryRow(
                                         label = "Signature",
-                                        value = if (!cannotSignSelected && signaturePoints.isNotEmpty()) "Signed by $signerName" else "Unavailable: $signatureUnavailableReason"
+                                        value = if (!cannotSignSelected && hasSignature) "Signed by $signerName" else if (signatureUnavailableReason.isNotBlank()) "Unavailable: $signatureUnavailableReason" else "Unavailable"
                                     )
                                 }
                             }
+                        }
+                    }
+                }
+
+                // Error strip if submission failed (S3.1)
+                if (submissionError != null) {
+                    Surface(
+                        color = Color(0xFFFEE2E2),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp, vertical = 6.dp),
+                        shape = RoundedCornerShape(8.dp)
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(10.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(
+                                Icons.Default.ErrorOutline,
+                                contentDescription = null,
+                                tint = Color(0xFFDC2626),
+                                modifier = Modifier.size(16.dp)
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text(
+                                text = submissionError ?: "",
+                                color = Color(0xFFDC2626),
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.Medium
+                            )
                         }
                     }
                 }
@@ -989,16 +1111,18 @@ fun PodCaptureDialog(
                             Button(
                                 onClick = {
                                     isSubmitting = true
+                                    submissionError = null
                                     val (ok, msg) = store.completeHandover(
                                         orderId = order.id,
-                                        checklistAnswers = checklistSelections.toMap(),
+                                        checklistAnswers = if (installationResult == InstallationResult.INSTALLED) checklistSelections.toMap() else emptyMap(),
                                         installationResult = installationResult,
                                         notInstalledReason = notInstalledReason.ifBlank { null },
                                         pinVerified = pinVerified,
-                                        pinNotVerifiedReason = pinNotVerifiedReason.ifBlank { null },
-                                        photoCaptured = photoCaptured,
-                                        signatureCaptured = !cannotSignSelected && signaturePoints.isNotEmpty(),
-                                        signatureUnavailableReason = signatureUnavailableReason.ifBlank { null },
+                                        pinNotVerifiedReason = finalPinReason?.ifBlank { null },
+                                        photoCaptured = photoCaptured && photoConsent,
+                                        signatureCaptured = !cannotSignSelected && hasSignature,
+                                        signatureUnavailableReason = if (cannotSignSelected) signatureUnavailableReason.ifBlank { null } else null,
+                                        photoSkippedReason = if (skipPhoto) photoSkipReason.ifBlank { null } else null,
                                         evidenceConsent = photoConsent,
                                         signerName = signerName.ifBlank { "Customer" },
                                         amountReceivedPaisa = if (isCod) recPaisa else null,
@@ -1009,9 +1133,13 @@ fun PodCaptureDialog(
                                         emptySerial = if (emptyCollected) emptySerialInput.ifBlank { null } else null
                                     )
                                     isSubmitting = false
-                                    onCompleted(ok, msg)
+                                    if (ok) {
+                                        onCompleted(true, msg)
+                                    } else {
+                                        submissionError = msg
+                                    }
                                 },
-                                enabled = !isSubmitting,
+                                enabled = !isSubmitting && isStepValid,
                                 colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF16A34A)),
                                 modifier = Modifier
                                     .height(48.dp)
@@ -1058,6 +1186,12 @@ fun PodCaptureDialog(
     }
 }
 
+/**
+ * Displays a single key-value metric in the final proof-of-delivery review summary card.
+ *
+ * @param label Category or step name being summarized.
+ * @param value Concise, plain-language outcome formatted for rider verification.
+ */
 @Composable
 private fun ReviewSummaryRow(label: String, value: String) {
     Row(

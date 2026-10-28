@@ -43,6 +43,8 @@ fun StaffDistributorScreen(
     var requested118Qty by remember { mutableStateOf("10") }
     var requested110Qty by remember { mutableStateOf("5") }
     var requested60Qty by remember { mutableStateOf("2") }
+    var selectedRiderForOrder by remember { mutableStateOf(mapOf<String, String>()) }
+    var expandedRiderDropdownForOrder by remember { mutableStateOf<String?>(null) }
 
     val unhandedCodOrders = snapshot.orders.filter { ord ->
         ord.status == OrderStatus.ORD_COMP &&
@@ -299,19 +301,132 @@ fun StaffDistributorScreen(
                                     Text("Mark Ready for Counter Pickup", fontSize = 11.sp)
                                 }
                             } else {
-                                Button(
-                                    onClick = {
-                                        val (ok, msg) = store.dispatchOrReadyForPickup(ord.id)
-                                        if (ok) {
-                                            onBanner("Order ${ord.id} dispatched with rider.")
-                                        } else {
-                                            onBanner(msg)
+                                val distId = ord.assignedDistributorId ?: snapshot.distributors.firstOrNull()?.id
+                                val eligibleRiders = snapshot.riders.filter {
+                                    it.distributorId == distId &&
+                                            it.onboardingStatus == "APPROVED" &&
+                                            it.status == "ACTIVE" &&
+                                            it.installationTrained
+                                }
+
+                                val hasAssignedRider = ord.assignedRiderId != null && ord.riderTaskStatus != RiderTaskStatus.DECLINED
+
+                                if (hasAssignedRider) {
+                                    val assignedRider = snapshot.riders.find { it.id == ord.assignedRiderId }
+                                    val riderName = assignedRider?.name ?: ord.assignedRiderId ?: "Rider"
+                                    val isOffered = ord.riderTaskStatus == RiderTaskStatus.OFFERED
+                                    Surface(
+                                        color = if (isOffered) Color(0xFFFEF3C7) else Color(0xFFDCFCE7),
+                                        shape = RoundedCornerShape(6.dp),
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .padding(top = 4.dp)
+                                    ) {
+                                        Row(
+                                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            Icon(
+                                                if (isOffered) Icons.Default.Schedule else Icons.Default.CheckCircle,
+                                                contentDescription = null,
+                                                tint = if (isOffered) Color(0xFFD97706) else Color(0xFF166534),
+                                                modifier = Modifier.size(16.dp)
+                                            )
+                                            Spacer(modifier = Modifier.width(6.dp))
+                                            Text(
+                                                if (isOffered) "Offered to $riderName — waiting" else "Accepted by $riderName",
+                                                fontSize = 11.sp,
+                                                fontWeight = FontWeight.SemiBold,
+                                                color = if (isOffered) Color(0xFF92400E) else Color(0xFF166534)
+                                            )
                                         }
-                                    },
-                                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF0284C7)),
-                                    modifier = Modifier.fillMaxWidth()
-                                ) {
-                                    Text("Mark Dispatched with Rider", fontSize = 11.sp)
+                                    }
+                                } else {
+                                    val isDeclined = ord.riderTaskStatus == RiderTaskStatus.DECLINED
+                                    if (isDeclined) {
+                                        Text(
+                                            "Task declined by rider — Reassign rider:",
+                                            fontSize = 10.sp,
+                                            color = Color(0xFFDC2626),
+                                            fontWeight = FontWeight.SemiBold
+                                        )
+                                        Spacer(modifier = Modifier.height(4.dp))
+                                    } else {
+                                        Text(
+                                            "Assign Rider for Delivery:",
+                                            fontSize = 10.sp,
+                                            fontWeight = FontWeight.SemiBold
+                                        )
+                                        Spacer(modifier = Modifier.height(4.dp))
+                                    }
+
+                                    if (eligibleRiders.isEmpty()) {
+                                        Text(
+                                            "No approved, on-shift, trained riders available.",
+                                            fontSize = 10.sp,
+                                            color = Color.Gray
+                                        )
+                                    } else {
+                                        val currentSelectedRiderId = selectedRiderForOrder[ord.id] ?: eligibleRiders.first().id
+                                        val selectedRider = eligibleRiders.find { it.id == currentSelectedRiderId } ?: eligibleRiders.first()
+                                        val activeCount = snapshot.orders.count { it.assignedRiderId == selectedRider.id && !it.status.isTerminal && it.status != OrderStatus.ORD_COMP }
+
+                                        Box(modifier = Modifier.fillMaxWidth()) {
+                                            OutlinedButton(
+                                                onClick = { expandedRiderDropdownForOrder = ord.id },
+                                                modifier = Modifier
+                                                    .fillMaxWidth()
+                                                    .height(42.dp),
+                                                shape = RoundedCornerShape(6.dp),
+                                                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp)
+                                            ) {
+                                                Row(
+                                                    modifier = Modifier.fillMaxWidth(),
+                                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                                    verticalAlignment = Alignment.CenterVertically
+                                                ) {
+                                                    Text(
+                                                        "${selectedRider.name} · ${selectedRider.zoneName} · $activeCount active",
+                                                        fontSize = 11.sp,
+                                                        fontWeight = FontWeight.Medium,
+                                                        color = Color(0xFF0F172A)
+                                                    )
+                                                    Icon(Icons.Default.ArrowDropDown, contentDescription = "Select rider", modifier = Modifier.size(16.dp))
+                                                }
+                                            }
+                                            DropdownMenu(
+                                                expanded = expandedRiderDropdownForOrder == ord.id,
+                                                onDismissRequest = { expandedRiderDropdownForOrder = null }
+                                            ) {
+                                                eligibleRiders.forEach { r ->
+                                                    val rActive = snapshot.orders.count { it.assignedRiderId == r.id && !it.status.isTerminal && it.status != OrderStatus.ORD_COMP }
+                                                    DropdownMenuItem(
+                                                        text = {
+                                                            Text("${r.name} · ${r.zoneName} · $rActive active", fontSize = 11.sp)
+                                                        },
+                                                        onClick = {
+                                                            selectedRiderForOrder = selectedRiderForOrder + (ord.id to r.id)
+                                                            expandedRiderDropdownForOrder = null
+                                                        }
+                                                    )
+                                                }
+                                            }
+                                        }
+                                        Spacer(modifier = Modifier.height(6.dp))
+                                        Button(
+                                            onClick = {
+                                                val (ok, msg) = store.assignRider(ord.id, selectedRider.id)
+                                                onBanner(msg)
+                                            },
+                                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF0284C7)),
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .height(38.dp),
+                                            shape = RoundedCornerShape(6.dp)
+                                        ) {
+                                            Text(if (isDeclined) "Reassign & Offer to Rider" else "Offer to rider", fontSize = 11.sp)
+                                        }
+                                    }
                                 }
                             }
                         }

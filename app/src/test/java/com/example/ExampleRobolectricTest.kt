@@ -160,37 +160,34 @@ class ExampleRobolectricTest {
         assertNotNull(activeRider)
         assertEquals("Bilal Ahmed", activeRider?.name)
 
-        // Find the seeded pending order ORD-SEED-105 in ORD_ASGN
+        // Find the seeded pending order ORD-SEED-105 in ORD_PREP with OFFERED task
         val pendingOrder = store.orders.find { it.id == "ORD-SEED-105" }
         assertNotNull(pendingOrder)
-        assertEquals(OrderStatus.ORD_ASGN, pendingOrder?.status)
-
-        // 1. Rider accepts order (ORD_ASGN -> ORD_ACPT)
-        val (acceptOk, acceptMsg) = store.riderAcceptOrder("ORD-SEED-105")
-        assertTrue(acceptOk)
-        assertEquals(OrderStatus.ORD_ACPT, pendingOrder?.status)
-
-        // 2. Rider begins preparation (ORD_ACPT -> ORD_PREP)
-        val (prepOk, prepMsg) = store.riderStartPreparing("ORD-SEED-105")
-        assertTrue(prepOk)
         assertEquals(OrderStatus.ORD_PREP, pendingOrder?.status)
+        assertEquals(RiderTaskStatus.OFFERED, pendingOrder?.riderTaskStatus)
 
-        // 3. Rider scans and binds exact cylinder serial
-        val (bindOk, bindMsg) = store.riderSelectAndBindSerial("ORD-SEED-105", "BG-LHR-002")
-        assertTrue(bindOk)
-        assertEquals("BG-LHR-002", pendingOrder?.allocatedSerial)
+        // 1. Rider accepts task (task-level acceptance, order remains ORD_PREP)
+        val (acceptOk, acceptMsg) = store.riderAcceptTask("ORD-SEED-105", "RIDER-001")
+        assertTrue(acceptOk)
+        assertEquals(OrderStatus.ORD_PREP, pendingOrder?.status)
+        assertEquals(RiderTaskStatus.ACCEPTED, pendingOrder?.riderTaskStatus)
 
-        // 4. Rider dispatches delivery (ORD_PREP -> ORD_DISP)
-        val (dispOk, dispMsg) = store.riderStartDeliveryOrStagePickup("ORD-SEED-105")
+        // 2. Rider verifies cylinder serial against allocated serial
+        val (verifyOk, verifyMsg) = store.riderVerifyCylinder("ORD-SEED-105", "BG-LHR-002", "RIDER-001")
+        assertTrue(verifyOk)
+        assertTrue(pendingOrder?.riderCylinderVerified == true)
+
+        // 3. Rider starts delivery trip (ORD_PREP -> ORD_DISP)
+        val (dispOk, dispMsg) = store.riderStartTrip("ORD-SEED-105", "RIDER-001")
         assertTrue(dispOk)
         assertEquals(OrderStatus.ORD_DISP, pendingOrder?.status)
 
-        // 5. Rider arrives at customer doorstep (ORD_DISP -> ORD_ATHO)
-        val (arriveOk, arriveMsg) = store.arriveAtHandover("ORD-SEED-105")
+        // 4. Rider arrives at customer doorstep (ORD_DISP -> ORD_ATHO)
+        val (arriveOk, arriveMsg) = store.riderArrive("ORD-SEED-105", "RIDER-001")
         assertTrue(arriveOk)
         assertEquals(OrderStatus.ORD_ATHO, pendingOrder?.status)
 
-        // 6. Rider completes safety check, COD collection, and POD (ORD_ATHO -> ORD_HOC -> ORD_COMP)
+        // 5. Rider completes safety check, COD collection, and POD (ORD_ATHO -> ORD_HOC -> ORD_COMP)
         val (compOk, compMsg) = store.completeHandover(
             orderId = "ORD-SEED-105",
             pinVerified = true,
@@ -225,24 +222,29 @@ class ExampleRobolectricTest {
         store.switchRider("RIDER-001")
         val order = store.orders.find { it.id == "ORD-SEED-106" }
         assertNotNull(order)
-        assertEquals(OrderStatus.ORD_ACPT, order?.status)
+        assertEquals(OrderStatus.ORD_PREP, order?.status)
+
+        // Verify cylinder serial first
+        val (vOk, _) = store.riderVerifyCylinder("ORD-SEED-106", "BG-LHR-118-003", "RIDER-001")
+        assertTrue(vOk)
 
         // Turn offline mode ON
         store.isRiderOffline = true
 
-        // Queue preparation while offline
-        val (offlinePrepOk, offlinePrepMsg) = store.riderStartPreparing("ORD-SEED-106")
-        assertTrue(offlinePrepOk)
-        assertTrue(offlinePrepMsg.contains("queued in Offline Outbox"))
+        // Queue trip start while offline
+        val (offlineTripOk, offlineTripMsg) = store.riderStartTrip("ORD-SEED-106", "RIDER-001")
+        assertTrue(offlineTripOk)
+        assertTrue(offlineTripMsg.contains("queued in Offline Outbox"))
         assertEquals(1, store.riderOutbox.size)
-        assertEquals("START_PREPARING", store.riderOutbox[0].action)
+        assertEquals("START_TRIP", store.riderOutbox[0].action)
         assertNotNull(store.riderOutbox[0].idempotencyKey)
 
         // Turn offline mode OFF and replay
         store.isRiderOffline = false
-        val replayReport = store.replayRiderOutbox()
+        val (replayOk, replayReport) = store.replayRiderOutbox()
+        assertTrue(replayOk)
         assertTrue(replayReport.contains("APPLIED"))
-        assertEquals(OrderStatus.ORD_PREP, order?.status)
+        assertEquals(OrderStatus.ORD_DISP, order?.status)
         assertEquals("APPLIED", store.riderOutbox[0].syncStatus)
     }
 
@@ -253,12 +255,12 @@ class ExampleRobolectricTest {
 
         val order = store.orders.find { it.id == "ORD-SEED-106" }
         assertNotNull(order)
-        assertEquals(OrderStatus.ORD_ACPT, order?.status)
+        assertEquals(OrderStatus.ORD_PREP, order?.status)
 
-        // Attempt invalid skip from ACPT directly to ATHO
-        val (arriveOk, errMsg) = store.arriveAtHandover("ORD-SEED-106")
+        // Attempt invalid skip from PREP directly to ATHO
+        val (arriveOk, errMsg) = store.riderArrive("ORD-SEED-106", "RIDER-001")
         assertFalse(arriveOk)
-        assertTrue(errMsg.contains("Legal transitions"))
+        assertTrue(errMsg.contains("cannot mark arrived"))
     }
 
     @Test
@@ -271,11 +273,10 @@ class ExampleRobolectricTest {
         assertNotNull(order)
 
         // Advance order to ATHO
-        store.riderAcceptOrder("ORD-SEED-105")
-        store.riderStartPreparing("ORD-SEED-105")
-        store.riderSelectAndBindSerial("ORD-SEED-105", "BG-LHR-002")
-        store.riderStartDeliveryOrStagePickup("ORD-SEED-105")
-        store.arriveAtHandover("ORD-SEED-105")
+        store.riderAcceptTask("ORD-SEED-105", "RIDER-001")
+        store.riderVerifyCylinder("ORD-SEED-105", "BG-LHR-002", "RIDER-001")
+        store.riderStartTrip("ORD-SEED-105", "RIDER-001")
+        store.riderArrive("ORD-SEED-105", "RIDER-001")
 
         assertEquals(OrderStatus.ORD_ATHO, order?.status)
 

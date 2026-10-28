@@ -317,6 +317,30 @@ fun BlueGasStore.processTimers() {
             raiseException(ord.id, ExceptionReason.NO_ACCEPTANCE, "Distributor SLA expired without acceptance")
             changed = true
         }
+
+        // 2b. Rider Offer Expiry check (S1.4)
+        val overdueRiderOffers = orders.filter {
+            it.riderTaskStatus == RiderTaskStatus.OFFERED &&
+                    it.riderOfferedAt != null &&
+                    (now - it.riderOfferedAt!!) > (settings.riderAcceptanceWindowMins * 60000L)
+        }
+        for (ord in overdueRiderOffers) {
+            ord.riderTaskStatus = RiderTaskStatus.DECLINED
+            ord.assignedRiderId = null
+            ord.riderOfferedAt = null
+            ord.riderCylinderVerified = false
+            logAudit("Order", ord.id, "RIDER_OFFER_EXPIRED", "System Timer", AccountableRole.DISTRIBUTOR, "Rider offer expired without acceptance within ${settings.riderAcceptanceWindowMins}m window")
+            addNotification(
+                surface = AppSurface.STAFF,
+                title = "Rider Offer Expired",
+                message = "Rider did not accept in time for order ${ord.id}. Please reassign.",
+                canonicalStatus = ord.status.canonicalLabel,
+                orderId = ord.id,
+                code = "NTF-03",
+                staffRole = StaffSubRole.DISTRIBUTOR
+            )
+            changed = true
+        }
     }
 
     // 3. FBR auto-posting removed (S0.2). Re-posting happens only from Finance (retryFbr).

@@ -16,6 +16,9 @@ fun BlueGasStore.updateSettings(
     if (new.distributorAcceptanceWindowMins !in 1..240) {
         return Pair(false, "Acceptance window must be between 1 and 240 minutes.")
     }
+    if (new.riderAcceptanceWindowMins !in 1..240) {
+        return Pair(false, "Rider acceptance window must be between 1 and 240 minutes.")
+    }
     if (new.promisedHandoverMinutes !in 15..1440) {
         return Pair(false, "Promised handover SLA must be between 15 and 1440 minutes (24h).")
     }
@@ -39,6 +42,7 @@ fun BlueGasStore.updateSettings(
     val changedFields = mutableListOf<String>()
     if (old.holdTtlMinutes != new.holdTtlMinutes) changedFields.add("holdTtl: ${old.holdTtlMinutes} -> ${new.holdTtlMinutes}m")
     if (old.distributorAcceptanceWindowMins != new.distributorAcceptanceWindowMins) changedFields.add("acceptanceWindow: ${old.distributorAcceptanceWindowMins} -> ${new.distributorAcceptanceWindowMins}m")
+    if (old.riderAcceptanceWindowMins != new.riderAcceptanceWindowMins) changedFields.add("riderAcceptanceWindow: ${old.riderAcceptanceWindowMins} -> ${new.riderAcceptanceWindowMins}m")
     if (old.promisedHandoverMinutes != new.promisedHandoverMinutes) changedFields.add("promisedHandover: ${old.promisedHandoverMinutes} -> ${new.promisedHandoverMinutes}m")
     if (old.cashHandoverHours != new.cashHandoverHours) changedFields.add("cashHandoverHours: ${old.cashHandoverHours} -> ${new.cashHandoverHours}h")
     if (old.evidenceRetentionDays != new.evidenceRetentionDays) changedFields.add("retentionDays: ${old.evidenceRetentionDays} -> ${new.evidenceRetentionDays}d")

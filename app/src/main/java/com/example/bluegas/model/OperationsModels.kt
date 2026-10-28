@@ -267,6 +267,7 @@ data class PlatformSettings(
     val cylinderIdMode: CylinderIdMode = CylinderIdMode.OPTION_A_TAGGED, // Q10
     val holdTtlMinutes: Int = 15,
     val distributorAcceptanceWindowMins: Int = 20,
+    val riderAcceptanceWindowMins: Int = 10, // Configurable demo default for rider task acceptance (S1.1)
     val autoRaiseNoAcceptance: Boolean = false,
     val promisedHandoverMinutes: Int = 120, // KPI-02 demo
     val installationChecklistItems: List<String> = listOf(

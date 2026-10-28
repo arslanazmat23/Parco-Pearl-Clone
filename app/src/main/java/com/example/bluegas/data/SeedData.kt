@@ -68,12 +68,12 @@ internal fun BlueGasStore.seedAll() {
     // 9. Cylinders
     // NODE-LHR-1
     cylinders.add(Cylinder("BG-LHR-001", "SKU-LPG-11-8", 11.8, InventoryState.INV_CONSUMED, CylinderCustody.CUSTOMER_PREMISES, "With Customer (CUST-001)"))
-    cylinders.add(Cylinder("BG-LHR-002", "SKU-LPG-11-8", 11.8, InventoryState.INV_AVAIL, CylinderCustody.DISTRIBUTOR_NODE, "Gulberg Dispatch Terminal"))
+    cylinders.add(Cylinder("BG-LHR-002", "SKU-LPG-11-8", 11.8, InventoryState.INV_SERIAL, CylinderCustody.DISTRIBUTOR_NODE, "Gulberg Dispatch Terminal", allocatedOrderId = "ORD-SEED-105"))
     cylinders.add(Cylinder("BG-LHR-INC-001", "SKU-LPG-11-8", 11.8, InventoryState.INV_AVAIL, CylinderCustody.DISTRIBUTOR_NODE, "Gulberg Dispatch Terminal", hseHold = true, allocatedOrderId = "ORD-SEED-111"))
     cylinders.add(Cylinder("BG-LHR-003", "SKU-LPG-11-8", 11.8, InventoryState.INV_SERIAL, CylinderCustody.DISTRIBUTOR_NODE, "Gulberg Dispatch Terminal", allocatedOrderId = "ORD-SEED-112"))
     cylinders.add(Cylinder("BG-LHR-118-001", "SKU-LPG-11-8", 11.8, InventoryState.INV_SERIAL, CylinderCustody.DISTRIBUTOR_NODE, "Gulberg Dispatch Terminal", allocatedOrderId = "ORD-SEED-107"))
     cylinders.add(Cylinder("BG-LHR-118-002", "SKU-LPG-11-8", 11.8, InventoryState.INV_AVAIL, CylinderCustody.DISTRIBUTOR_NODE, "Gulberg Dispatch Terminal"))
-    cylinders.add(Cylinder("BG-LHR-118-003", "SKU-LPG-11-8", 11.8, InventoryState.INV_AVAIL, CylinderCustody.DISTRIBUTOR_NODE, "Gulberg Dispatch Terminal"))
+    cylinders.add(Cylinder("BG-LHR-118-003", "SKU-LPG-11-8", 11.8, InventoryState.INV_SERIAL, CylinderCustody.DISTRIBUTOR_NODE, "Gulberg Dispatch Terminal", allocatedOrderId = "ORD-SEED-106"))
     cylinders.add(Cylinder("BG-LHR-110-001", "SKU-LPG-11-0", 11.0, InventoryState.INV_AVAIL, CylinderCustody.DISTRIBUTOR_NODE, "Gulberg Dispatch Terminal"))
     cylinders.add(Cylinder("BG-LHR-110-002", "SKU-LPG-11-0", 11.0, InventoryState.INV_AVAIL, CylinderCustody.DISTRIBUTOR_NODE, "Gulberg Dispatch Terminal"))
     cylinders.add(Cylinder("BG-LHR-060-001", "SKU-LPG-6-0", 6.0, InventoryState.INV_AVAIL, CylinderCustody.DISTRIBUTOR_NODE, "Gulberg Dispatch Terminal"))
@@ -350,14 +350,14 @@ internal fun BlueGasStore.seedAll() {
     payments.add(Payment("PAY-SEED-104", "ORD-SEED-104", PaymentMethod.ONLINE_HOSTED, PaymentState.PAYMENT_PENDING, o104.totalAmountPaisa, o104.totalAmountPaisa, 0L, 0L, "PKR", "IDEMP-PAY-104"))
     seedOrderHistory("ORD-SEED-104", listOf(OrderStatus.ORD_DRAFT, OrderStatus.ORD_PAYPEND), 10)
 
-    // ORD-SEED-105 (Assigned to Bilal Ahmed)
+    // ORD-SEED-105 (Offered to Bilal Ahmed)
     val q105 = quote("SKU-LPG-11-8", 1, FulfilmentMode.DELIVERY)
     val o105 = Order(
         id = "ORD-SEED-105",
         customerId = "CUST-001",
         addressId = "ADDR-001",
         fulfilmentMode = FulfilmentMode.DELIVERY,
-        status = OrderStatus.ORD_ASGN,
+        status = OrderStatus.ORD_PREP,
         items = q105.lines,
         subtotalPaisa = q105.subtotalPaisa,
         depositTotalPaisa = q105.depositTotalPaisa,
@@ -366,23 +366,26 @@ internal fun BlueGasStore.seedAll() {
         taxPaisa = q105.taxPaisa,
         totalAmountPaisa = q105.totalAmountPaisa,
         paymentMethod = PaymentMethod.CASH_ON_DELIVERY,
+        allocatedSerial = "BG-LHR-002",
         assignedDistributorId = "DIST-001",
         assignedRiderId = "RIDER-001",
-        assignedAt = now - 900000L
+        riderTaskStatus = RiderTaskStatus.OFFERED,
+        riderOfferedAt = now - 120000L,
+        assignedAt = now - 900000L,
+        acceptedAt = now - 600000L
     )
     orders.add(o105)
     payments.add(Payment("PAY-SEED-105", "ORD-SEED-105", PaymentMethod.CASH_ON_DELIVERY, PaymentState.COD_PENDING, o105.totalAmountPaisa, o105.totalAmountPaisa, 0L, 0L, "PKR", "IDEMP-PAY-105"))
-    deliveries.add(Delivery("DEL-SEED-105", "ORD-SEED-105", "RIDER-001"))
-    seedOrderHistory("ORD-SEED-105", listOf(OrderStatus.ORD_DRAFT, OrderStatus.ORD_CONF, OrderStatus.ORD_ASGN), 20)
+    seedOrderHistory("ORD-SEED-105", listOf(OrderStatus.ORD_DRAFT, OrderStatus.ORD_CONF, OrderStatus.ORD_ASGN, OrderStatus.ORD_ACPT, OrderStatus.ORD_PREP), 20)
 
-    // ORD-SEED-106 (Accepted)
+    // ORD-SEED-106 (Accepted task by Bilal Ahmed)
     val q106 = quote("SKU-LPG-11-8", 1, FulfilmentMode.DELIVERY)
     val o106 = Order(
         id = "ORD-SEED-106",
         customerId = "CUST-001",
         addressId = "ADDR-001",
         fulfilmentMode = FulfilmentMode.DELIVERY,
-        status = OrderStatus.ORD_ACPT,
+        status = OrderStatus.ORD_PREP,
         items = q106.lines,
         subtotalPaisa = q106.subtotalPaisa,
         depositTotalPaisa = q106.depositTotalPaisa,
@@ -391,13 +394,17 @@ internal fun BlueGasStore.seedAll() {
         taxPaisa = q106.taxPaisa,
         totalAmountPaisa = q106.totalAmountPaisa,
         paymentMethod = PaymentMethod.CASH_ON_DELIVERY,
+        allocatedSerial = "BG-LHR-118-003",
         assignedDistributorId = "DIST-001",
-        assignedRiderId = "RIDER-001"
+        assignedRiderId = "RIDER-001",
+        riderTaskStatus = RiderTaskStatus.ACCEPTED,
+        riderCylinderVerified = false,
+        assignedAt = now - 900000L,
+        acceptedAt = now - 600000L
     )
     orders.add(o106)
     payments.add(Payment("PAY-SEED-106", "ORD-SEED-106", PaymentMethod.CASH_ON_DELIVERY, PaymentState.COD_PENDING, o106.totalAmountPaisa, o106.totalAmountPaisa, 0L, 0L, "PKR", "IDEMP-PAY-106"))
-    deliveries.add(Delivery("DEL-SEED-106", "ORD-SEED-106", "RIDER-001"))
-    seedOrderHistory("ORD-SEED-106", listOf(OrderStatus.ORD_DRAFT, OrderStatus.ORD_CONF, OrderStatus.ORD_ASGN, OrderStatus.ORD_ACPT), 15)
+    seedOrderHistory("ORD-SEED-106", listOf(OrderStatus.ORD_DRAFT, OrderStatus.ORD_CONF, OrderStatus.ORD_ASGN, OrderStatus.ORD_ACPT, OrderStatus.ORD_PREP), 15)
 
     // ORD-SEED-107 (Ready for pickup at counter)
     val q107 = quote("SKU-LPG-11-8", 1, FulfilmentMode.PICKUP)

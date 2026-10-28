@@ -69,41 +69,7 @@ fun DemoValuePill(text: String, modifier: Modifier = Modifier) {
     }
 }
 
-/**
- * Coroutine-backed state producer providing the current epoch millisecond timestamp.
- *
- * Ticks periodically only while [enabled] is true. When disabled (e.g. order has no active
- * stock hold or has transitioned past dispatch), the background ticker halts to eliminate
- * unnecessary recompositions and conserve battery.
- *
- * @param tickMs Interval between clock ticks in milliseconds.
- * @param enabled Controls whether the ticking coroutine is active.
- * @return The latest epoch timestamp in milliseconds.
- */
-@Composable
-fun rememberNowMillis(tickMs: Long = 1000L, enabled: Boolean = true): Long {
-    return produceState(initialValue = System.currentTimeMillis(), key1 = enabled, key2 = tickMs) {
-        if (!enabled) return@produceState
-        while (isActive) {
-            value = System.currentTimeMillis()
-            delay(tickMs)
-        }
-    }.value
-}
 
-/**
- * Formats a remaining time duration in milliseconds into a concise "m:ss" countdown string.
- *
- * @param remainingMs Duration remaining until expiry in milliseconds.
- * @return Formatted countdown string, clamping at "0:00" if remaining time is non-positive.
- */
-fun formatCountdown(remainingMs: Long): String {
-    if (remainingMs <= 0L) return "0:00"
-    val totalSeconds = remainingMs / 1000
-    val minutes = totalSeconds / 60
-    val seconds = totalSeconds % 60
-    return String.format("%d:%02d", minutes, seconds)
-}
 
 /**
  * Immutable carrier for reorder form prefill values transferred from order history to the checkout form.
