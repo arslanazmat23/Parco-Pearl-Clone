@@ -71,8 +71,8 @@ enum class RiderTab {
  * Invariant: Every order assigned to this rider belongs to at most one of the three tab lists
  * (Pending, Active, or Completed).
  *
- * Terminal orders that are cancelled, superseded, or failed-closed (such as ORD_CANC, ORD_FAIL,
- * or ORD_REJ) are not displayed in any tab because they require no rider action and were not
+ * Terminal orders that are cancelled, superseded, or failed-closed (such as ORD_CANC, ORD_SUPS,
+ * or ORD_FCLO) are not displayed in any tab because they require no rider action and were not
  * successfully completed by this rider.
  */
 private fun isPendingForRider(order: Order, riderId: String): Boolean {
@@ -81,6 +81,16 @@ private fun isPendingForRider(order: Order, riderId: String): Boolean {
             order.riderTaskStatus == RiderTaskStatus.OFFERED
 }
 
+/**
+ * Evaluates whether an order belongs to the Active delivery tab for a given rider.
+ * Matches orders assigned to the rider that are non-terminal, not pending rider acceptance,
+ * and not completed (e.g. Preparing, Dispatched, At Handover, Exception).
+ * Called by [RiderAppScreen] to partition the rider's task dashboard.
+ *
+ * @param order Target order instance.
+ * @param riderId Identifier of the active rider.
+ * @return True if the order should appear in the Active deliveries list.
+ */
 private fun isActiveForRider(order: Order, riderId: String): Boolean {
     return order.assignedRiderId == riderId &&
             !order.status.isTerminal &&
@@ -88,6 +98,15 @@ private fun isActiveForRider(order: Order, riderId: String): Boolean {
             order.status != OrderStatus.ORD_COMP
 }
 
+/**
+ * Evaluates whether an order belongs to the Completed deliveries tab for a given rider.
+ * Matches orders assigned to the rider that have reached the ORD_COMP terminal status.
+ * Called by [RiderAppScreen] to render the rider's delivery history.
+ *
+ * @param order Target order instance.
+ * @param riderId Identifier of the active rider.
+ * @return True if the order should appear in the Completed deliveries list.
+ */
 private fun isCompletedForRider(order: Order, riderId: String): Boolean {
     return order.assignedRiderId == riderId && order.status == OrderStatus.ORD_COMP
 }
@@ -817,7 +836,7 @@ fun RiderAppScreen(store: BlueGasStore) {
                             verifyError = null
                         },
                         label = { Text("Cylinder serial number") },
-                        placeholder = { Text("e.g. ${ord?.allocatedSerial ?: "BG-LHR-001"}") },
+                        placeholder = { Text("e.g. BG-LHR-0000") },
                         modifier = Modifier.fillMaxWidth(),
                         singleLine = true
                     )
@@ -955,7 +974,7 @@ fun RiderAppScreen(store: BlueGasStore) {
                             modifier = Modifier.fillMaxWidth()
                         ) {
                             Text(
-                                text = "HSE will be alerted immediately. Do not transport or connect an unsafe cylinder.",
+                                text = "HSE and Operations will be alerted. Follow the approved BLUE GAS safety procedure.",
                                 fontSize = 11.sp,
                                 color = Color(0xFF991B1B),
                                 modifier = Modifier.padding(8.dp)
@@ -1096,6 +1115,17 @@ fun RiderAppScreen(store: BlueGasStore) {
                             singleLine = true
                         )
 
+                        val currentDeclaredPaisa = (declaredRupees.trim().toLongOrNull() ?: 0L) * 100L
+                        val isDifference = declaredRupees.isNotBlank() && currentDeclaredPaisa != expectedPaisa
+                        if (isDifference) {
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Text(
+                                text = "The amount differs from what was collected. Please enter a reason.",
+                                fontSize = 11.sp,
+                                color = Color(0xFFB45309)
+                            )
+                        }
+
                         if (amountError != null) {
                             Spacer(modifier = Modifier.height(4.dp))
                             Text(
@@ -1109,8 +1139,8 @@ fun RiderAppScreen(store: BlueGasStore) {
                         OutlinedTextField(
                             value = notes,
                             onValueChange = { notes = it },
-                            label = { Text("Notes (optional)") },
-                            placeholder = { Text("e.g. Handed to distributor cashier") },
+                            label = { Text(if (isDifference) "Reason for difference *" else "Notes (optional)") },
+                            placeholder = { Text(if (isDifference) "Reason for difference..." else "e.g. Handed to distributor cashier") },
                             modifier = Modifier.fillMaxWidth(),
                             singleLine = true
                         )
@@ -1126,7 +1156,11 @@ fun RiderAppScreen(store: BlueGasStore) {
             },
             confirmButton = {
                 if (completedCodOrders.isNotEmpty()) {
+                    val currentDeclaredPaisa = (declaredRupees.trim().toLongOrNull() ?: 0L) * 100L
+                    val isDifference = declaredRupees.isNotBlank() && currentDeclaredPaisa != expectedPaisa
+                    val canSubmit = declaredRupees.isNotBlank() && currentDeclaredPaisa > 0L && (!isDifference || notes.trim().isNotBlank())
                     Button(
+                        enabled = canSubmit,
                         onClick = {
                             if (declaredRupees.trim().isBlank()) {
                                 amountError = "Enter the amount you are handing over."
@@ -1326,8 +1360,8 @@ private fun PendingOrderCard(
     val windowMs = snapshot.settings.riderAcceptanceWindowMins * 60 * 1000L
     val deadline = offeredTime + windowMs
     val remainingMs = (deadline - nowMillis).coerceAtLeast(0L)
-    val isExpired = remainingMs <= 0L
-    val isExpiringSoon = remainingMs in 1L..300000L
+    val isExpired = snapshot.settings.autoRaiseNoAcceptance && remainingMs <= 0L
+    val isExpiringSoon = snapshot.settings.autoRaiseNoAcceptance && remainingMs in 1L..300000L
 
     Card(
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
@@ -1356,48 +1390,80 @@ private fun PendingOrderCard(
 
             Spacer(modifier = Modifier.height(8.dp))
 
-            // Acceptance Countdown Chip
-            Surface(
-                color = when {
-                    isExpired -> Color(0xFFFEF3C7)
-                    isExpiringSoon -> Color(0xFFFEE2E2)
-                    else -> Color(0xFFEFF6FF)
-                },
-                shape = RoundedCornerShape(6.dp),
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Row(
-                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceBetween
+            // Acceptance Chip: calm neutral chip when autoRaiseNoAcceptance is false; live countdown when true (T2.3)
+            if (!snapshot.settings.autoRaiseNoAcceptance) {
+                Surface(
+                    color = Color(0xFFF1F5F9),
+                    shape = RoundedCornerShape(6.dp),
+                    modifier = Modifier.fillMaxWidth()
                 ) {
                     Row(
-                        modifier = Modifier.weight(1f),
-                        verticalAlignment = Alignment.CenterVertically
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
                     ) {
-                        Icon(
-                            imageVector = Icons.Default.Timer,
-                            contentDescription = null,
-                            tint = if (isExpired || isExpiringSoon) Color(0xFFDC2626) else BlueGasPrimary,
-                            modifier = Modifier.size(16.dp)
-                        )
-                        Spacer(modifier = Modifier.width(6.dp))
                         Text(
-                            text = if (isExpired) "Acceptance time is over" else "Acceptance Window: ${formatCountdown(remainingMs)} remaining",
+                            text = "Please accept or decline this delivery.",
                             fontSize = 11.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = if (isExpired || isExpiringSoon) Color(0xFFDC2626) else BlueGasDark,
+                            fontWeight = FontWeight.Medium,
+                            color = Color(0xFF334155),
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis
                         )
-                    }
 
-                    if (order.riderOfferedAt != null) {
-                        Text(
-                            text = "Offered ${formatTimeOnly(order.riderOfferedAt!!)}",
-                            fontSize = 10.sp,
-                            color = Color(0xFF64748B)
-                        )
+                        if (order.riderOfferedAt != null) {
+                            Text(
+                                text = "Offered ${formatTimeOnly(order.riderOfferedAt!!)}",
+                                fontSize = 10.sp,
+                                color = Color(0xFF64748B)
+                            )
+                        }
+                    }
+                }
+            } else {
+                // Acceptance Countdown Chip
+                Surface(
+                    color = when {
+                        isExpired -> Color(0xFFFEF3C7)
+                        isExpiringSoon -> Color(0xFFFEE2E2)
+                        else -> Color(0xFFEFF6FF)
+                    },
+                    shape = RoundedCornerShape(6.dp),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Row(
+                            modifier = Modifier.weight(1f),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Timer,
+                                contentDescription = null,
+                                tint = if (isExpired || isExpiringSoon) Color(0xFFDC2626) else BlueGasPrimary,
+                                modifier = Modifier.size(16.dp)
+                            )
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text(
+                                text = if (isExpired) "Acceptance time is over" else "Acceptance Window: ${formatCountdown(remainingMs)} remaining",
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = if (isExpired || isExpiringSoon) Color(0xFFDC2626) else BlueGasDark,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+
+                        if (order.riderOfferedAt != null) {
+                            Text(
+                                text = "Offered ${formatTimeOnly(order.riderOfferedAt!!)}",
+                                fontSize = 10.sp,
+                                color = Color(0xFF64748B)
+                            )
+                        }
                     }
                 }
             }
@@ -1419,15 +1485,15 @@ private fun PendingOrderCard(
             }
 
             Spacer(modifier = Modifier.height(4.dp))
-            // Cylinder & Depot lines (S1.4)
+            // Cylinder & Depot lines (T8)
             Text(
-                text = "Cylinder ${order.allocatedSerial ?: "allocated"} ready at the depot",
+                text = if (order.allocatedSerial != null) "Cylinder ${order.allocatedSerial} ready at the depot" else "Cylinder will be confirmed at the depot",
                 fontSize = 12.sp,
                 fontWeight = FontWeight.Medium,
                 color = BlueGasDark
             )
             Text(
-                text = "Depot: ${depotNode?.name ?: "Main Depot"}",
+                text = "Depot: ${depotNode?.name ?: "Not available"}",
                 fontSize = 11.sp,
                 color = Color(0xFF64748B)
             )

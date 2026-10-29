@@ -93,7 +93,7 @@ class BlueGasStore {
     val staffSectionByRole = mutableMapOf<StaffSubRole, String>()
     var staffDetailOrderId: String? = null
     var activeCustomerId = "CUST-001"
-    var activeRiderId = "RIDER-001"
+    var activeRiderId = ""
     var isRiderOffline = false
     var selectedOrderIdForDrawer: String? = null
     var outboxSequenceCounter = 1
@@ -113,6 +113,8 @@ class BlueGasStore {
 
     init {
         seedInitialData()
+        activeRiderId = riders.firstOrNull()?.id ?: ""
+        _appState.value = buildSnapshot()
     }
 
     fun buildSnapshot(): SharedAppState {

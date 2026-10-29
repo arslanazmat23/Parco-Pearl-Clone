@@ -318,27 +318,14 @@ fun BlueGasStore.processTimers() {
             changed = true
         }
 
-        // 2b. Rider Offer Expiry check (S1.4)
+        // 2b. Rider Offer Expiry check (S1.4, T2)
         val overdueRiderOffers = orders.filter {
             it.riderTaskStatus == RiderTaskStatus.OFFERED &&
                     it.riderOfferedAt != null &&
                     (now - it.riderOfferedAt!!) > (settings.riderAcceptanceWindowMins * 60000L)
         }
         for (ord in overdueRiderOffers) {
-            ord.riderTaskStatus = RiderTaskStatus.DECLINED
-            ord.assignedRiderId = null
-            ord.riderOfferedAt = null
-            ord.riderCylinderVerified = false
-            logAudit("Order", ord.id, "RIDER_OFFER_EXPIRED", "System Timer", AccountableRole.DISTRIBUTOR, "Rider offer expired without acceptance within ${settings.riderAcceptanceWindowMins}m window")
-            addNotification(
-                surface = AppSurface.STAFF,
-                title = "Rider Offer Expired",
-                message = "Rider did not accept in time for order ${ord.id}. Please reassign.",
-                canonicalStatus = ord.status.canonicalLabel,
-                orderId = ord.id,
-                code = "NTF-03",
-                staffRole = StaffSubRole.DISTRIBUTOR
-            )
+            expireRiderOffer(ord)
             changed = true
         }
     }
@@ -348,6 +335,36 @@ fun BlueGasStore.processTimers() {
     if (changed) {
         notifyChanged()
     }
+}
+
+/**
+ * Expires an offered delivery task when the acceptance window has elapsed without rider acceptance.
+ * Resets task status to DECLINED, unassigns the rider, notifies the distributor, and logs an audit trail.
+ *
+ * @param order Target order whose offer has timed out.
+ */
+fun BlueGasStore.expireRiderOffer(order: Order) {
+    order.riderTaskStatus = RiderTaskStatus.DECLINED
+    order.assignedRiderId = null
+    order.riderOfferedAt = null
+    order.riderCylinderVerified = false
+    logAudit(
+        "Order",
+        order.id,
+        "RIDER_OFFER_EXPIRED",
+        "System Timer",
+        AccountableRole.DISTRIBUTOR,
+        "Rider offer expired without acceptance within ${settings.riderAcceptanceWindowMins}m window"
+    )
+    addNotification(
+        surface = AppSurface.STAFF,
+        title = "Rider Offer Expired",
+        message = "Rider did not accept in time for order ${order.id}. Please reassign.",
+        canonicalStatus = order.status.canonicalLabel,
+        orderId = order.id,
+        code = "NTF-03",
+        staffRole = StaffSubRole.DISTRIBUTOR
+    )
 }
 
 fun BlueGasStore.cancelOrder(

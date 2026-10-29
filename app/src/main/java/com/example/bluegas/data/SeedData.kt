@@ -370,7 +370,7 @@ internal fun BlueGasStore.seedAll() {
         assignedDistributorId = "DIST-001",
         assignedRiderId = "RIDER-001",
         riderTaskStatus = RiderTaskStatus.OFFERED,
-        riderOfferedAt = now - 120000L,
+        riderOfferedAt = now,
         assignedAt = now - 900000L,
         acceptedAt = now - 600000L
     )

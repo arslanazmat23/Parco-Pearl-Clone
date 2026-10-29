@@ -11,7 +11,7 @@ data class SharedAppState(
     val activeSurface: AppSurface = AppSurface.CUSTOMER,
     val activeStaffSubRole: StaffSubRole = StaffSubRole.OPERATIONS,
     val activeCustomerId: String = "CUST-001",
-    val activeRiderId: String = "RIDER-001",
+    val activeRiderId: String = "",
     val isRiderOffline: Boolean = false,
     val selectedOrderIdForDrawer: String? = null,
 
