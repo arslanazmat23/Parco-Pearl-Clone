@@ -109,7 +109,8 @@ fun BlueGasStore.moveCase(
     target: L6Status,
     reason: String,
     refundAmountPaisa: Long? = null,
-    actor: String = "Customer Support"
+    actor: String = "Customer Support",
+    role: AccountableRole = AccountableRole.SUPPORT
 ): Pair<Boolean, String> {
     val caseItem = returnCases.find { it.id == caseId }
         ?: return Pair(false, "Return case $caseId not found.")
@@ -121,52 +122,85 @@ fun BlueGasStore.moveCase(
         return Pair(false, "REFUND_CONFIRMED cannot be set manually. It is automatically set when Finance executes the refund.")
     }
 
+    if (target == L6Status.RETURN_AUTHORIZED && caseItem.type == "CYLINDER_RETURN") {
+        if (caseItem.cylinderSerial.isNullOrBlank()) {
+            return Pair(false, "Cylinder serial is required to authorize cylinder return.")
+        }
+    }
+
     if (target == L6Status.REFUND_REQUESTED) {
         val amount = refundAmountPaisa ?: caseItem.requestedAmountPaisa
-        val payment = activePaymentFor(caseItem.orderId)
-            ?: return Pair(false, "No payment record found for order ${caseItem.orderId}.")
+        if (caseItem.type == "CYLINDER_RETURN") {
+            val refId = "REF-" + UUID.randomUUID().toString().take(6)
+            val ref = Refund(
+                id = refId,
+                paymentId = "PAY-DEP-$caseId",
+                orderId = caseItem.orderId,
+                linkedCaseId = caseId,
+                amountPaisa = amount,
+                reason = "Deposit refund: $reason",
+                executedBy = actor,
+                state = PaymentState.FULL_REFUND_PENDING,
+                kind = "DEPOSIT"
+            )
+            refunds.add(ref)
+            caseItem.linkedRefundId = refId
 
-        if (payment.state != PaymentState.SETTLED) {
-            return Pair(false, "Cash for this order has not been reconciled yet — refund not allowed before collection (BR).")
+            addNotification(
+                surface = AppSurface.STAFF,
+                title = "Deposit Refund Waiting for Finance",
+                message = "Case $caseId requested deposit refund of ${formatRupees(amount)}.",
+                canonicalStatus = "PENDING",
+                orderId = caseItem.orderId.ifBlank { null },
+                code = "NTF-11",
+                staffRole = StaffSubRole.FINANCE
+            )
+        } else {
+            val payment = activePaymentFor(caseItem.orderId)
+                ?: return Pair(false, "No payment record found for order ${caseItem.orderId}.")
+
+            if (payment.state != PaymentState.SETTLED) {
+                return Pair(false, "Cash for this order has not been reconciled yet — refund not allowed before collection (BR).")
+            }
+
+            val refId = "REF-" + UUID.randomUUID().toString().take(6)
+            val isFull = (amount >= payment.settledAmountPaisa)
+            val ref = Refund(
+                id = refId,
+                paymentId = payment.id,
+                orderId = caseItem.orderId,
+                linkedCaseId = caseId,
+                amountPaisa = amount,
+                reason = "L6 case refund: $reason",
+                executedBy = actor,
+                state = if (isFull) PaymentState.FULL_REFUND_PENDING else PaymentState.PARTIAL_REFUND_PENDING,
+                kind = if (isFull) "FULL" else "PARTIAL"
+            )
+            refunds.add(ref)
+            caseItem.linkedRefundId = refId
+
+            addNotification(
+                surface = AppSurface.STAFF,
+                title = "Refund Waiting for Finance",
+                message = "Case $caseId requested refund of ${formatRupees(amount)} for order ${caseItem.orderId}.",
+                canonicalStatus = "PENDING",
+                orderId = caseItem.orderId,
+                code = "NTF-11",
+                staffRole = StaffSubRole.FINANCE
+            )
         }
-
-        val refId = "REF-" + UUID.randomUUID().toString().take(6)
-        val isFull = (amount >= payment.settledAmountPaisa)
-        val ref = Refund(
-            id = refId,
-            paymentId = payment.id,
-            orderId = caseItem.orderId,
-            linkedCaseId = caseId,
-            amountPaisa = amount,
-            reason = "L6 case refund: $reason",
-            executedBy = actor,
-            state = if (isFull) PaymentState.FULL_REFUND_PENDING else PaymentState.PARTIAL_REFUND_PENDING,
-            kind = if (isFull) "FULL" else "PARTIAL"
-        )
-        refunds.add(ref)
-        caseItem.linkedRefundId = refId
-
-        addNotification(
-            surface = AppSurface.STAFF,
-            title = "Refund Waiting for Finance",
-            message = "Case $caseId requested refund of ${formatPaisaToPkr(amount)} for order ${caseItem.orderId}.",
-            canonicalStatus = "PENDING",
-            orderId = caseItem.orderId,
-            code = "NTF-11",
-            staffRole = StaffSubRole.FINANCE
-        )
     }
 
     val (ok, msg) = CaseLifecycles.transitionL6(
         returnCase = caseItem,
         target = target,
         actor = actor,
-        role = AccountableRole.SUPPORT,
+        role = role,
         reason = reason
     )
     if (!ok) return Pair(false, msg)
 
-    if (target == L6Status.CASE_CLOSED) {
+    if (target == L6Status.CASE_CLOSED || target == L6Status.RETURN_REJECTED) {
         caseItem.closedAt = System.currentTimeMillis()
     }
 
@@ -175,11 +209,11 @@ fun BlueGasStore.moveCase(
         title = "Case Status Updated",
         message = "Return case $caseId moved to ${target.name}. $reason",
         canonicalStatus = target.name,
-        orderId = caseItem.orderId,
+        orderId = caseItem.orderId.ifBlank { null },
         code = "NTF-10"
     )
 
-    logAudit("ReturnRefundCase", caseId, "MOVE_CASE_${target.name}", actor, AccountableRole.SUPPORT, reason)
+    logAudit("ReturnRefundCase", caseId, "MOVE_CASE_${target.name}", actor, role, reason)
     notifyChanged()
     return Pair(true, "Case $caseId transitioned to ${target.name}.")
 }
@@ -191,4 +225,4 @@ fun BlueGasStore.moveReturnCase(
     actor: String = "Customer Support",
     role: AccountableRole = AccountableRole.SUPPORT,
     refundAmountPaisa: Long? = null
-): Pair<Boolean, String> = moveCase(caseId, target, reason, refundAmountPaisa, actor)
+): Pair<Boolean, String> = moveCase(caseId, target, reason, refundAmountPaisa, actor, role)

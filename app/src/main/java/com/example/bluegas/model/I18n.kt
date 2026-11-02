@@ -15,7 +15,7 @@ object I18n {
         "surface_staff" to "Staff Portal",
         "role_operations" to "Operations",
         "role_finance" to "Finance",
-        "role_distributor" to "Distributor",
+        "role_hub" to "Hub Staff",
         "role_support" to "Customer Support",
         "role_admin" to "Admin & Config",
         "role_inventory" to "Inventory Control",

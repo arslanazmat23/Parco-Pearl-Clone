@@ -1,7 +1,7 @@
 package com.example.bluegas.model
 
 /**
- * Operations, Supply Chain, Finance, Case and Phase 2 models for Blue Gas v0.4.
+ * Operations, Supply Chain, Finance, Case and Phase 2 models for Blue Gas v0.5.
  */
 
 // --- Stock & Transfer Models ---
@@ -39,7 +39,7 @@ data class StockTransfer(
     val cylinderIds: List<String> = emptyList(),
     val cmrNo: String? = null,
     val filledBy: String? = null,
-    val requestedBy: String = "Distributor Lead",
+    val requestedBy: String = "Hub Staff",
     val requestedAt: Long = System.currentTimeMillis(),
     var dispatchedAt: Long? = null,
     var receivedAt: Long? = null,
@@ -80,7 +80,7 @@ data class DailyReconciliation(
 
 data class ReconciliationException(
     val id: String,
-    val code: String, // "EXC-18", "EXC-20", "EXC-21"
+    val code: String, // "EXC-18", "EXC-20", "EXC-21", "EXC-28"
     val description: String,
     val ownerRole: AccountableRole,
     var status: String = "OPEN", // "OPEN", "RESOLVED"
@@ -97,21 +97,11 @@ data class PriceList(
     val roundingRule: RoundingRule = RoundingRule.NEAREST,
     val perSizePaisa: Map<String, Long> = mapOf(
         "SKU-LPG-11-8" to 445000L,
-        "SKU-LPG-11-0" to 414800L,
-        "SKU-LPG-6-0"  to 226300L,
         "SKU-LPG-45-4" to 1712100L
     ),
     val depositPaisa: Map<String, Long> = mapOf(
         "SKU-LPG-11-8" to 750000L,
-        "SKU-LPG-11-0" to 700000L,
-        "SKU-LPG-6-0"  to 450000L,
         "SKU-LPG-45-4" to 1800000L
-    ),
-    val cylinderSalePaisa: Map<String, Long> = mapOf(
-        "SKU-LPG-11-8" to 950000L,
-        "SKU-LPG-11-0" to 900000L,
-        "SKU-LPG-6-0"  to 600000L,
-        "SKU-LPG-45-4" to 2200000L
     ),
     val accessoryPaisa: Map<String, Long> = mapOf(
         "SKU-REG-HOSE" to 145000L
@@ -122,16 +112,6 @@ data class PriceList(
     val publishedBy: String = "Commercial Manager",
     val ograNotificationRef: String? = "OGRA-LPG-OCT-2026 (demo)",
     val reviewedAt: Long? = System.currentTimeMillis()
-)
-
-data class TradePriceList(
-    val version: Int = 1,
-    val perSizePaisa: Map<String, Long> = mapOf(
-        "SKU-LPG-11-8" to 400000L,
-        "SKU-LPG-11-0" to 373000L,
-        "SKU-LPG-6-0"  to 203500L,
-        "SKU-LPG-45-4" to 1540000L
-    )
 )
 
 data class OgraNotice(
@@ -164,7 +144,7 @@ data class CashHandover(
     val id: String,
     val collectorType: String, // "RIDER" or "DEPOT"
     val collectorId: String,
-    val recipient: String, // "DISTRIBUTOR" or "FINANCE"
+    val recipient: String, // "HUB" or "FINANCE"
     val orderIds: List<String>,
     val expectedPaisa: Long,
     val declaredPaisa: Long,
@@ -172,24 +152,46 @@ data class CashHandover(
     var differencePaisa: Long? = null,
     var reason: String? = null,
     var approverName: String? = null,
-    var status: String = "SUBMITTED", // "SUBMITTED", "RECONCILED", "RECONCILED_WITH_DIFFERENCE"
+    var status: String = "SUBMITTED", // "SUBMITTED", "RECEIVED_BY_HUB", "RECONCILED", "RECONCILED_WITH_DIFFERENCE"
     val submittedAt: Long = System.currentTimeMillis(),
+    var hubReceivedPaisa: Long? = null,
+    var hubReceivedBy: String? = null,
+    var hubReceivedAt: Long? = null,
     var reconciledAt: Long? = null,
     var reconciledBy: String? = null
 )
 
-data class DistributorAccountEntry(
+// --- Deposit Models ---
+
+enum class DepositStatus(val label: String) {
+    HELD("Held"),
+    REFUND_IN_PROGRESS("Refund in progress"),
+    REFUNDED("Refunded"),
+    REDUCED_OR_FORFEITED("Reduced or forfeited")
+}
+
+data class DepositAccount(
     val id: String,
-    val distributorId: String,
-    val type: String, // "STOCK_RECEIVED", "PAYMENT", "ADJUSTMENT"
-    val transferId: String? = null,
-    val debitPaisa: Long = 0L,
-    val creditPaisa: Long = 0L,
-    val note: String,
-    val timestamp: Long = System.currentTimeMillis()
+    val customerId: String,
+    var cylinderSerial: String,
+    val skuId: String,
+    val amountPaisa: Long,
+    val orderId: String,
+    var status: DepositStatus = DepositStatus.HELD,
+    var deductionPaisa: Long = 0L,
+    var refundedPaisa: Long = 0L,
+    var refundCaseId: String? = null,
+    val createdAt: Long = System.currentTimeMillis(),
+    var settledAt: Long? = null
 )
 
 // --- Lifecycle 6: Return/Refund Cases ---
+
+enum class ReturnCondition(val label: String) {
+    GOOD("Good condition"),
+    DAMAGED("Damaged"),
+    NOT_HANDED_OVER("Not handed over")
+}
 
 data class CaseHistory(
     val fromStatus: L6Status,
@@ -204,12 +206,22 @@ data class ReturnRefundCase(
     val id: String,
     val orderId: String,
     val customerId: String,
-    val type: String, // "RETURN", "REFUND_ONLY"
+    val type: String, // "RETURN", "REFUND_ONLY", "CYLINDER_RETURN"
     val reason: String,
     val requestedAmountPaisa: Long,
     var status: L6Status = L6Status.CASE_OPENED,
     val history: MutableList<CaseHistory> = mutableListOf(),
     var linkedRefundId: String? = null,
+    var cylinderSerial: String? = null,
+    var depositId: String? = null,
+    var conditionResult: ReturnCondition? = null,
+    var conditionNote: String? = null,
+    var hazardSuspected: Boolean = false,
+    var deductionPaisa: Long = 0L,
+    var deductionReason: String? = null,
+    var rejectionReason: String? = null,
+    var collectionRiderId: String? = null,
+    var collectionTask: String? = null, // "OFFERED", "ACCEPTED", "DECLINED", "COMPLETED"
     val openedAt: Long = System.currentTimeMillis(),
     var closedAt: Long? = null
 )
@@ -238,15 +250,28 @@ data class SafetyIncident(
     var status: L7Status = L7Status.INCIDENT_RAISED,
     var authorizedDecision: String? = null,
     var authorizedBy: String? = null,
+    var cylinderOutcome: String? = null, // "CONDEMNED", "QUARANTINED", "RETURNED_TO_POOL", "NOT_APPLICABLE"
     val history: MutableList<IncidentHistory> = mutableListOf(),
     val raisedAt: Long = System.currentTimeMillis(),
     var closedAt: Long? = null
 )
 
-// --- Governance: Open Decisions Register (Q01-Q28) ---
+// --- Governance: Confirmed & Open Decisions ---
+
+data class ConfirmedDecision(val id: String, val title: String)
+
+val CONFIRMED_DECISIONS = listOf(
+    ConfirmedDecision("D3", "Direct hub model for Phase 1 (no distributors)"),
+    ConfirmedDecision("D4", "Customer never owns cylinders (deposit model)"),
+    ConfirmedDecision("D5", "Deposit amounts: 11.8 kg Rs. 7,500; 45.4 kg Rs. 18,000"),
+    ConfirmedDecision("D6", "Full refund when intact cylinder returned with record"),
+    ConfirmedDecision("D7", "45.4 kg domestic delivery scope: Ground floor and kitchen only"),
+    ConfirmedDecision("D8", "Two SKUs only: 11.8 kg and 45.4 kg"),
+    ConfirmedDecision("D9", "Plant operations run by plant staff; plant daily dip is out of Blue Gas scope")
+)
 
 data class OpenDecision(
-    val id: String, // "Q01".."Q28"
+    val id: String, // "Q01".."Q33"
     val title: String,
     val phase: String = "Phase 1",
     val blockingPhase1: Boolean = false,
@@ -262,12 +287,11 @@ data class PlatformSettings(
     val verificationLevel: String = "PHONE_OTP", // "NONE", "PHONE_OTP", "CNIC" (Q18)
     val enabledPaymentMethods: List<PaymentMethod> = listOf(PaymentMethod.CASH_ON_DELIVERY, PaymentMethod.ONLINE_HOSTED), // Q13
     val onlinePaymentMode: OnlinePaymentMode = OnlinePaymentMode.BRANCH_B_CAPTURE_UPFRONT, // Q15
-    val newCylinderModel: NewCylinderModel = NewCylinderModel.DEPOSIT, // Q03
     val refillModel: RefillModel = RefillModel.EMPTY_EXCHANGE, // Q20
     val cylinderIdMode: CylinderIdMode = CylinderIdMode.OPTION_A_TAGGED, // Q10
     val holdTtlMinutes: Int = 15,
-    val distributorAcceptanceWindowMins: Int = 20,
-    val riderAcceptanceWindowMins: Int = 10, // Configurable demo default for rider task acceptance (S1.1)
+    val hubAcceptanceWindowMins: Int = 20,
+    val riderAcceptanceWindowMins: Int = 10, // Configurable demo default for rider task acceptance
     val autoRaiseNoAcceptance: Boolean = false,
     val promisedHandoverMinutes: Int = 120, // KPI-02 demo
     val installationChecklistItems: List<String> = listOf(

@@ -15,19 +15,17 @@ internal fun BlueGasStore.seedAll() {
     serviceZones.add(ServiceZone("ZONE-LHR-2", "Lahore", "Lahore - DHA & Phase V", true, listOf("54792"), listOf("NODE-LHR-1")))
     serviceZones.add(ServiceZone("ZONE-ISB-1", "Islamabad", "Islamabad - Blue Area & F-6/F-7", true, listOf("44000"), listOf("NODE-ISB-1")))
 
-    // 2. Nodes
-    nodes.add(Node("NODE-LHR-1", "DIST-001", "Gulberg Dispatch Terminal", "ZONE-LHR-1", 150, FulfilmentPointType.DISTRIBUTOR, "Main Gulberg III, Lahore", true, listOf("ZONE-LHR-1", "ZONE-LHR-2"), "Lahore"))
-    nodes.add(Node("NODE-ISB-1", "DIST-002", "Blue Area Depot", "ZONE-ISB-1", 100, FulfilmentPointType.DISTRIBUTOR, "Blue Area, Sector F-6, Islamabad", true, listOf("ZONE-ISB-1"), "Islamabad"))
-    nodes.add(Node("PLANT-01", "BLUE-GAS", "BLUE GAS Plant", "ZONE-LHR-1", 5000, FulfilmentPointType.PLANT, "Plant site (demo)", false, emptyList(), "Lahore"))
+    // 2. Nodes (demo names; real fulfilment points are open decision Q29)
+    nodes.add(Node("NODE-LHR-1", "Lahore Hub", "ZONE-LHR-1", 150, FulfilmentPointType.HUB, "Main Gulberg III, Lahore", true, listOf("ZONE-LHR-1", "ZONE-LHR-2"), "Lahore"))
+    nodes.add(Node("NODE-ISB-1", "Islamabad Hub", "ZONE-ISB-1", 100, FulfilmentPointType.HUB, "Blue Area, Sector F-6, Islamabad", true, listOf("ZONE-ISB-1"), "Islamabad"))
+    nodes.add(Node("PLANT-01", "BLUE GAS Plant", "ZONE-LHR-1", 5000, FulfilmentPointType.PLANT, "Plant site (demo)", false, emptyList(), "Lahore"))
 
-    // 3. Distributors
-    distributors.add(Distributor("DIST-001", "Lahore Central LPG Gas Distribution", "Lahore", "Main Gulberg III, Lahore", "+92-300-1122334", "ACTIVE", listOf("ZONE-LHR-1", "ZONE-LHR-2"), "NODE-LHR-1"))
-    distributors.add(Distributor("DIST-002", "Islamabad Capital Gas Partners", "Islamabad", "Blue Area, Sector F-6, Islamabad", "+92-300-5566778", "ACTIVE", listOf("ZONE-ISB-1"), "NODE-ISB-1"))
+    // 3. Distributors removed – Later – Option C
 
     // 4. Riders
-    riders.add(Rider("RIDER-001", "Bilal Ahmed", "+92-321-4455667", "35201-1234567-1", "ZONE-LHR-1", "Gulberg & Cantt Central", "NODE-LHR-1", "LEN-4821", "ACTIVE", "APPROVED", "DIST-001", installationTrained = true))
-    riders.add(Rider("RIDER-002", "Usman Tariq", "+92-322-8899001", "35201-7654321-3", "ZONE-LHR-1", "Gulberg & Cantt Central", "NODE-LHR-1", "LEA-9012", "ACTIVE", "APPROVED", "DIST-001", installationTrained = true))
-    riders.add(Rider("RIDER-003", "Hamza Sheikh", "+92-333-1122334", "37405-3344556-5", "ZONE-ISB-1", "Islamabad Central", "NODE-ISB-1", "ICT-3312", "ACTIVE", "APPROVED", "DIST-002", installationTrained = true))
+    riders.add(Rider("RIDER-001", "Bilal Ahmed", "+92-321-4455667", "35201-1234567-1", "ZONE-LHR-1", "Gulberg & Cantt Central", "NODE-LHR-1", "LEN-4821", "ACTIVE", "APPROVED", pointId = "NODE-LHR-1", installationTrained = true))
+    riders.add(Rider("RIDER-002", "Usman Tariq", "+92-322-8899001", "35201-7654321-3", "ZONE-LHR-1", "Gulberg & Cantt Central", "NODE-LHR-1", "LEA-9012", "ACTIVE", "APPROVED", pointId = "NODE-LHR-1", installationTrained = true))
+    riders.add(Rider("RIDER-003", "Hamza Sheikh", "+92-333-1122334", "37405-3344556-5", "ZONE-ISB-1", "Islamabad Central", "NODE-ISB-1", "ICT-3312", "ACTIVE", "APPROVED", pointId = "NODE-ISB-1", installationTrained = true))
 
     // 5. Customers
     customers.add(Customer("CUST-001", "Ahmed Bilal", "+92-300-8451234", "35201-1122334-1", "ADDR-001"))
@@ -43,60 +41,46 @@ internal fun BlueGasStore.seedAll() {
     addresses.add(Address("ADDR-005", "CUST-004", "Residence (F-6)", "House 12, School Road", "Sector F-6/2", "Islamabad", "ZONE-ISB-1", true, "NODE-ISB-1", true))
     addresses.add(Address("ADDR-006", "CUST-001", "Farmhouse (Unserviceable)", "Bedian Road Rural Sector", "Rural Outskirts", "Lahore", "ZONE-RURAL-OUTSIDE", false, null, false))
 
-    // 7. Products
+    // 7. Products (11.8 kg and 45.4 kg only per BR-STK-06)
     productVariants.add(ProductVariant("PV-1", "SKU-LPG-11-8", "11.8kg Domestic Cylinder", "CYLINDER_REFILL", 11.8, true, "Standard domestic LPG cylinder", "BLUE GAS", true))
-    productVariants.add(ProductVariant("PV-2", "SKU-LPG-6-0", "6.0kg Compact Cylinder", "CYLINDER_REFILL", 6.0, true, "Compact portable cylinder", "BLUE GAS", true))
-    productVariants.add(ProductVariant("PV-3", "SKU-LPG-45-4", "45.4kg Commercial Cylinder", "CYLINDER_REFILL", 45.4, true, "Commercial catering cylinder", "BLUE GAS", false))
+    productVariants.add(ProductVariant("PV-3", "SKU-LPG-45-4", "45.4 kg Cylinder", "CYLINDER_REFILL", 45.4, true, "45.4 kg Domestic LPG Cylinder Refill", "BLUE GAS", true))
     productVariants.add(ProductVariant("PV-4", "SKU-REG-HOSE", "Regulator & Steel Hose", "ACCESSORY", null, false, "Regulator and steel hose", "BLUE GAS", true))
-    productVariants.add(ProductVariant("PV-5", "SKU-LPG-11-0", "11 kg Domestic Cylinder", "CYLINDER_REFILL", 11.0, true, "Difference from 11.8 kg to be confirmed (Q23)", "BLUE GAS", true))
 
     // 8. Stock Balances (filled, empty, held, reserved, openingFilled, openingEmpty)
     stockBalances.add(StockBalance("NODE-LHR-1", "SKU-LPG-11-8", 12, 4, 0, 0, 12, 4))
-    stockBalances.add(StockBalance("NODE-LHR-1", "SKU-LPG-11-0", 6, 2, 0, 0, 6, 2))
-    stockBalances.add(StockBalance("NODE-LHR-1", "SKU-LPG-6-0", 5, 1, 0, 0, 5, 1))
-    stockBalances.add(StockBalance("NODE-LHR-1", "SKU-LPG-45-4", 0, 0, 0, 0, 0, 0))
+    stockBalances.add(StockBalance("NODE-LHR-1", "SKU-LPG-45-4", 4, 1, 0, 0, 4, 1))
 
     stockBalances.add(StockBalance("NODE-ISB-1", "SKU-LPG-11-8", 6, 1, 0, 0, 6, 1))
-    stockBalances.add(StockBalance("NODE-ISB-1", "SKU-LPG-11-0", 0, 0, 0, 0, 0, 0))
-    stockBalances.add(StockBalance("NODE-ISB-1", "SKU-LPG-6-0", 4, 0, 0, 0, 4, 0))
+    stockBalances.add(StockBalance("NODE-ISB-1", "SKU-LPG-45-4", 2, 0, 0, 0, 2, 0))
 
     stockBalances.add(StockBalance("PLANT-01", "SKU-LPG-11-8", 40, 10, 0, 0, 40, 10))
-    stockBalances.add(StockBalance("PLANT-01", "SKU-LPG-11-0", 30, 6, 0, 0, 30, 6))
-    stockBalances.add(StockBalance("PLANT-01", "SKU-LPG-6-0", 20, 4, 0, 0, 20, 4))
     stockBalances.add(StockBalance("PLANT-01", "SKU-LPG-45-4", 8, 2, 0, 0, 8, 2))
 
     // 9. Cylinders
     // NODE-LHR-1
     cylinders.add(Cylinder("BG-LHR-001", "SKU-LPG-11-8", 11.8, InventoryState.INV_CONSUMED, CylinderCustody.CUSTOMER_PREMISES, "With Customer (CUST-001)"))
-    cylinders.add(Cylinder("BG-LHR-002", "SKU-LPG-11-8", 11.8, InventoryState.INV_SERIAL, CylinderCustody.DISTRIBUTOR_NODE, "Gulberg Dispatch Terminal", allocatedOrderId = "ORD-SEED-105"))
-    cylinders.add(Cylinder("BG-LHR-INC-001", "SKU-LPG-11-8", 11.8, InventoryState.INV_AVAIL, CylinderCustody.DISTRIBUTOR_NODE, "Gulberg Dispatch Terminal", hseHold = true, allocatedOrderId = "ORD-SEED-111"))
-    cylinders.add(Cylinder("BG-LHR-003", "SKU-LPG-11-8", 11.8, InventoryState.INV_SERIAL, CylinderCustody.DISTRIBUTOR_NODE, "Gulberg Dispatch Terminal", allocatedOrderId = "ORD-SEED-112"))
-    cylinders.add(Cylinder("BG-LHR-118-001", "SKU-LPG-11-8", 11.8, InventoryState.INV_SERIAL, CylinderCustody.DISTRIBUTOR_NODE, "Gulberg Dispatch Terminal", allocatedOrderId = "ORD-SEED-107"))
-    cylinders.add(Cylinder("BG-LHR-118-002", "SKU-LPG-11-8", 11.8, InventoryState.INV_AVAIL, CylinderCustody.DISTRIBUTOR_NODE, "Gulberg Dispatch Terminal"))
-    cylinders.add(Cylinder("BG-LHR-118-003", "SKU-LPG-11-8", 11.8, InventoryState.INV_SERIAL, CylinderCustody.DISTRIBUTOR_NODE, "Gulberg Dispatch Terminal", allocatedOrderId = "ORD-SEED-106"))
-    cylinders.add(Cylinder("BG-LHR-110-001", "SKU-LPG-11-0", 11.0, InventoryState.INV_AVAIL, CylinderCustody.DISTRIBUTOR_NODE, "Gulberg Dispatch Terminal"))
-    cylinders.add(Cylinder("BG-LHR-110-002", "SKU-LPG-11-0", 11.0, InventoryState.INV_AVAIL, CylinderCustody.DISTRIBUTOR_NODE, "Gulberg Dispatch Terminal"))
-    cylinders.add(Cylinder("BG-LHR-060-001", "SKU-LPG-6-0", 6.0, InventoryState.INV_AVAIL, CylinderCustody.DISTRIBUTOR_NODE, "Gulberg Dispatch Terminal"))
+    cylinders.add(Cylinder("BG-LHR-002", "SKU-LPG-11-8", 11.8, InventoryState.INV_SERIAL, CylinderCustody.HUB, "Lahore Hub", allocatedOrderId = "ORD-SEED-105"))
+    cylinders.add(Cylinder("BG-LHR-INC-001", "SKU-LPG-11-8", 11.8, InventoryState.INV_AVAIL, CylinderCustody.HUB, "Lahore Hub", hseHold = true, allocatedOrderId = "ORD-SEED-111"))
+    cylinders.add(Cylinder("BG-LHR-003", "SKU-LPG-11-8", 11.8, InventoryState.INV_SERIAL, CylinderCustody.HUB, "Lahore Hub", allocatedOrderId = "ORD-SEED-112"))
+    cylinders.add(Cylinder("BG-LHR-118-001", "SKU-LPG-11-8", 11.8, InventoryState.INV_SERIAL, CylinderCustody.HUB, "Lahore Hub", allocatedOrderId = "ORD-SEED-107"))
+    cylinders.add(Cylinder("BG-LHR-118-002", "SKU-LPG-11-8", 11.8, InventoryState.INV_AVAIL, CylinderCustody.HUB, "Lahore Hub"))
+    cylinders.add(Cylinder("BG-LHR-118-003", "SKU-LPG-11-8", 11.8, InventoryState.INV_SERIAL, CylinderCustody.HUB, "Lahore Hub", allocatedOrderId = "ORD-SEED-106"))
+    cylinders.add(Cylinder("BG-LHR-004", "SKU-LPG-11-8", 11.8, InventoryState.INV_CONSUMED, CylinderCustody.CUSTOMER_PREMISES, "With Customer (CUST-002)"))
     // 2 untagged cylinders at NODE-LHR-1 (EXC-22)
-    cylinders.add(Cylinder("BG-LHR-U01", "SKU-LPG-11-8", 11.8, InventoryState.INV_AVAIL, CylinderCustody.DISTRIBUTOR_NODE, "Gulberg Dispatch Terminal", isTagged = false))
-    cylinders.add(Cylinder("BG-LHR-U02", "SKU-LPG-11-8", 11.8, InventoryState.INV_AVAIL, CylinderCustody.DISTRIBUTOR_NODE, "Gulberg Dispatch Terminal", isTagged = false))
+    cylinders.add(Cylinder("BG-LHR-U01", "SKU-LPG-11-8", 11.8, InventoryState.INV_AVAIL, CylinderCustody.HUB, "Lahore Hub", isTagged = false))
+    cylinders.add(Cylinder("BG-LHR-U02", "SKU-LPG-11-8", 11.8, InventoryState.INV_AVAIL, CylinderCustody.HUB, "Lahore Hub", isTagged = false))
 
     // NODE-ISB-1
-    cylinders.add(Cylinder("BG-ISB-014", "SKU-LPG-11-8", 11.8, InventoryState.INV_AVAIL, CylinderCustody.DISTRIBUTOR_NODE, "Blue Area Depot"))
-    cylinders.add(Cylinder("BG-ISB-118-001", "SKU-LPG-11-8", 11.8, InventoryState.INV_AVAIL, CylinderCustody.DISTRIBUTOR_NODE, "Blue Area Depot"))
-    cylinders.add(Cylinder("BG-ISB-060-001", "SKU-LPG-6-0", 6.0, InventoryState.INV_AVAIL, CylinderCustody.DISTRIBUTOR_NODE, "Blue Area Depot"))
+    cylinders.add(Cylinder("BG-ISB-014", "SKU-LPG-11-8", 11.8, InventoryState.INV_AVAIL, CylinderCustody.HUB, "Islamabad Hub"))
+    cylinders.add(Cylinder("BG-ISB-118-001", "SKU-LPG-11-8", 11.8, InventoryState.INV_AVAIL, CylinderCustody.HUB, "Islamabad Hub"))
 
     // PLANT-01
     for (i in 1..12) {
         val s = String.format("BG-PLT-118-%03d", i)
         cylinders.add(Cylinder(s, "SKU-LPG-11-8", 11.8, InventoryState.INV_AVAIL, CylinderCustody.PLANT, "Plant Site"))
     }
-    for (i in 1..8) {
-        val s = String.format("BG-PLT-110-%03d", i)
-        cylinders.add(Cylinder(s, "SKU-LPG-11-0", 11.0, InventoryState.INV_AVAIL, CylinderCustody.PLANT, "Plant Site"))
-    }
 
-    // Customer holding for Ahmed Bilal
+    // Customer holdings & deposits (Ahmed Bilal: 11.8 kg on deposit; Usman Tariq: 11.8 kg loaned dealer cylinder)
     customerHoldings.add(
         CustomerCylinderHolding(
             id = "HOLD-001",
@@ -104,30 +88,57 @@ internal fun BlueGasStore.seedAll() {
             cylinderSerial = "BG-LHR-001",
             ownership = CylinderOwnership.DEPOSIT_HELD,
             depositPaisa = 750000L,
-            acquiredAt = now - 86400000L * 7L
+            acquiredAt = now - 86400000L * 7L,
+            noDepositOnRecord = false,
+            depositStatus = DepositStatus.HELD,
+            status = "ACTIVE"
+        )
+    )
+    depositAccounts.add(
+        DepositAccount(
+            id = "DEP-0001",
+            customerId = "CUST-001",
+            sku = "SKU-LPG-11-8",
+            cylinderSerial = "BG-LHR-001",
+            amountPaisa = 750000L,
+            paidAt = now - 86400000L * 7L,
+            orderId = "ORD-SEED-101",
+            paymentId = "PAY-SEED-101",
+            status = DepositStatus.HELD,
+            noDepositOnRecord = false
         )
     )
 
-    // 10. Partner Applications
-    partnerApplications.add(
-        PartnerApplication(
-            id = "APP-001",
-            type = "DISTRIBUTOR",
-            applicantName = "Rawal Gas Agencies",
-            city = "Islamabad",
-            cnic = "37405-8899001-1",
-            vehicleOrShopDetails = "Shop 14, Commercial Center, G-9",
-            status = "PENDING_APPROVAL",
-            phone = "+92 300 5544332",
-            documents = listOf(
-                PartnerDocument("CNIC Copy", true),
-                PartnerDocument("Shop/premises licence", true),
-                PartnerDocument("NTN Certificate", true),
-                PartnerDocument("Storage licence", true),
-                PartnerDocument("Bank details", true)
-            )
+    customerHoldings.add(
+        CustomerCylinderHolding(
+            id = "HOLD-002",
+            customerId = "CUST-002",
+            cylinderSerial = "BG-LHR-004",
+            ownership = CylinderOwnership.LOANED,
+            depositPaisa = 0L,
+            acquiredAt = now - 86400000L * 5L,
+            noDepositOnRecord = true,
+            depositStatus = DepositStatus.HELD,
+            status = "ACTIVE"
         )
     )
+    depositAccounts.add(
+        DepositAccount(
+            id = "DEP-0002",
+            customerId = "CUST-002",
+            sku = "SKU-LPG-11-8",
+            cylinderSerial = "BG-LHR-004",
+            amountPaisa = 0L,
+            paidAt = now - 86400000L * 5L,
+            orderId = "ORD-SEED-107",
+            paymentId = null,
+            status = DepositStatus.HELD,
+            noDepositOnRecord = true
+        )
+    )
+
+
+    // 10. Partner Applications (Distributor onboarding removed – Later – Option C)
     partnerApplications.add(
         PartnerApplication(
             id = "APP-002",
@@ -138,32 +149,13 @@ internal fun BlueGasStore.seedAll() {
             vehicleOrShopDetails = "Honda CG 125, Plate LEA-5544",
             status = "PENDING_APPROVAL",
             phone = "+92 321 4433221",
-            linkedDistributorId = "DIST-001",
+            homePointId = "NODE-LHR-1",
             documents = listOf(
                 PartnerDocument("CNIC Copy", true),
                 PartnerDocument("Driving licence", true),
                 PartnerDocument("Vehicle registration", true),
                 PartnerDocument("Photo", true),
                 PartnerDocument("Police character certificate", true)
-            )
-        )
-    )
-    partnerApplications.add(
-        PartnerApplication(
-            id = "APP-003",
-            type = "DISTRIBUTOR",
-            applicantName = "Shahid Traders",
-            city = "Lahore",
-            cnic = "35201-9988776-5",
-            vehicleOrShopDetails = "Plot 24, Badami Bagh Industrial Area",
-            status = "PENDING_APPROVAL",
-            phone = "+92 301 7766554",
-            documents = listOf(
-                PartnerDocument("CNIC Copy", true),
-                PartnerDocument("Shop/premises licence", false), // missing
-                PartnerDocument("NTN Certificate", true),
-                PartnerDocument("Storage licence", true),
-                PartnerDocument("Bank details", true)
             )
         )
     )
@@ -177,7 +169,7 @@ internal fun BlueGasStore.seedAll() {
             vehicleOrShopDetails = "Yamaha YBR, Plate ICT-8812 (Driving licence expired)",
             status = "PENDING_APPROVAL",
             phone = "+92 333 9988776",
-            linkedDistributorId = "DIST-002",
+            homePointId = "NODE-ISB-1",
             documents = listOf(
                 PartnerDocument("CNIC Copy", true),
                 PartnerDocument("Driving licence", true),
@@ -209,12 +201,12 @@ internal fun BlueGasStore.seedAll() {
                     trigger = to.displayName,
                     actor = when (to) {
                         OrderStatus.ORD_COMP, OrderStatus.ORD_ATHO, OrderStatus.ORD_DISP -> "Bilal Ahmed"
-                        OrderStatus.ORD_ASGN, OrderStatus.ORD_PREP, OrderStatus.ORD_ACPT -> "Distributor Lead"
+                        OrderStatus.ORD_ASGN, OrderStatus.ORD_PREP, OrderStatus.ORD_ACPT -> "Hub Staff"
                         else -> "Customer"
                     },
                     role = when (to) {
-                        OrderStatus.ORD_COMP, OrderStatus.ORD_ATHO, OrderStatus.ORD_DISP -> AccountableRole.DISTRIBUTOR
-                        OrderStatus.ORD_ASGN, OrderStatus.ORD_PREP, OrderStatus.ORD_ACPT -> AccountableRole.DISTRIBUTOR
+                        OrderStatus.ORD_COMP, OrderStatus.ORD_ATHO, OrderStatus.ORD_DISP -> AccountableRole.HUB
+                        OrderStatus.ORD_ASGN, OrderStatus.ORD_PREP, OrderStatus.ORD_ACPT -> AccountableRole.HUB
                         else -> AccountableRole.OPERATIONS
                     },
                     timestamp = t
@@ -241,7 +233,6 @@ internal fun BlueGasStore.seedAll() {
         totalAmountPaisa = q101.totalAmountPaisa,
         paymentMethod = PaymentMethod.ONLINE_HOSTED,
         allocatedSerial = "BG-LHR-001",
-        assignedDistributorId = "DIST-001",
         assignedRiderId = "RIDER-001",
         podReference = "POD-SEED-981",
         fbrStatus = "POSTED",
@@ -296,7 +287,6 @@ internal fun BlueGasStore.seedAll() {
         taxPaisa = q102.taxPaisa,
         totalAmountPaisa = q102.totalAmountPaisa,
         paymentMethod = PaymentMethod.CASH_ON_DELIVERY,
-        assignedDistributorId = "DIST-001",
         exceptionReason = ExceptionReason.SERIAL_UNAVAILABLE_OR_PREP_FAILURE,
         exceptionDetails = "Valve seal leak detected during pre-delivery inspection",
         confirmedAt = now - 5400000L
@@ -321,7 +311,6 @@ internal fun BlueGasStore.seedAll() {
         taxPaisa = q103.taxPaisa,
         totalAmountPaisa = q103.totalAmountPaisa,
         paymentMethod = PaymentMethod.CASH_ON_DELIVERY,
-        assignedDistributorId = "DIST-002",
         confirmedAt = now - 1800000L
     )
     orders.add(o103)
@@ -367,7 +356,6 @@ internal fun BlueGasStore.seedAll() {
         totalAmountPaisa = q105.totalAmountPaisa,
         paymentMethod = PaymentMethod.CASH_ON_DELIVERY,
         allocatedSerial = "BG-LHR-002",
-        assignedDistributorId = "DIST-001",
         assignedRiderId = "RIDER-001",
         riderTaskStatus = RiderTaskStatus.OFFERED,
         riderOfferedAt = now,
@@ -395,7 +383,6 @@ internal fun BlueGasStore.seedAll() {
         totalAmountPaisa = q106.totalAmountPaisa,
         paymentMethod = PaymentMethod.CASH_ON_DELIVERY,
         allocatedSerial = "BG-LHR-118-003",
-        assignedDistributorId = "DIST-001",
         assignedRiderId = "RIDER-001",
         riderTaskStatus = RiderTaskStatus.ACCEPTED,
         riderCylinderVerified = false,
@@ -423,13 +410,12 @@ internal fun BlueGasStore.seedAll() {
         taxPaisa = q107.taxPaisa,
         totalAmountPaisa = q107.totalAmountPaisa,
         paymentMethod = PaymentMethod.CASH_ON_DELIVERY,
-        assignedDistributorId = "DIST-001",
         allocatedSerial = "BG-LHR-118-001",
         handoverPin = "4821"
     )
     orders.add(o107)
     payments.add(Payment("PAY-SEED-107", "ORD-SEED-107", PaymentMethod.CASH_ON_DELIVERY, PaymentState.COD_PENDING, o107.totalAmountPaisa, o107.totalAmountPaisa, 0L, 0L, "PKR", "IDEMP-PAY-107"))
-    deliveries.add(Delivery("DEL-SEED-107", "ORD-SEED-107", "DIST-001"))
+    deliveries.add(Delivery("DEL-SEED-107", "ORD-SEED-107", "NODE-LHR-1"))
     seedOrderHistory("ORD-SEED-107", listOf(OrderStatus.ORD_DRAFT, OrderStatus.ORD_CONF, OrderStatus.ORD_ASGN, OrderStatus.ORD_ACPT, OrderStatus.ORD_PREP, OrderStatus.ORD_RDYPU), 40)
 
     // ORD-SEED-108 (Completed today, Cash Collected, not handed over)
@@ -449,7 +435,6 @@ internal fun BlueGasStore.seedAll() {
         totalAmountPaisa = q108.totalAmountPaisa,
         paymentMethod = PaymentMethod.CASH_ON_DELIVERY,
         amountReceivedPaisa = q108.totalAmountPaisa,
-        assignedDistributorId = "DIST-001",
         assignedRiderId = "RIDER-001",
         allocatedSerial = "BG-LHR-118-002",
         podReference = "POD-SEED-108",
@@ -546,7 +531,6 @@ internal fun BlueGasStore.seedAll() {
         taxPaisa = q111.taxPaisa,
         totalAmountPaisa = q111.totalAmountPaisa,
         paymentMethod = PaymentMethod.CASH_ON_DELIVERY,
-        assignedDistributorId = "DIST-001",
         assignedRiderId = "RIDER-001",
         allocatedSerial = "BG-LHR-INC-001",
         exceptionReason = ExceptionReason.DELIVERY_FAILURE_OR_CUSTOMER_UNAVAILABLE,
@@ -587,7 +571,6 @@ internal fun BlueGasStore.seedAll() {
         taxPaisa = q112.taxPaisa,
         totalAmountPaisa = q112.totalAmountPaisa,
         paymentMethod = PaymentMethod.CASH_ON_DELIVERY,
-        assignedDistributorId = "DIST-001",
         allocatedSerial = "BG-LHR-003"
     )
     orders.add(o112)
@@ -611,7 +594,6 @@ internal fun BlueGasStore.seedAll() {
         totalAmountPaisa = q113.totalAmountPaisa,
         paymentMethod = PaymentMethod.CASH_ON_DELIVERY,
         amountReceivedPaisa = q113.totalAmountPaisa,
-        assignedDistributorId = "DIST-002",
         assignedRiderId = "RIDER-003",
         podReference = "POD-SEED-113",
         completedAt = now - 86400000L
@@ -675,40 +657,6 @@ internal fun BlueGasStore.seedAll() {
     postLedger("ORD-SEED-113", "REVENUE_GAS", debitPaisa = o113.subtotalPaisa, description = "LPG refill gas revenue")
     postLedger("ORD-SEED-113", "SETTLEMENT", debitPaisa = o113.totalAmountPaisa, description = "COD settled after cash reconciliation (CSH-SEED-01)")
 
-    // Distributor Account Entries
-    distributorAccountEntries.add(
-        DistributorAccountEntry(
-            id = "ENTRY-SEED-01",
-            distributorId = "DIST-001",
-            type = "STOCK_RECEIVED",
-            transferId = "TRF-0001",
-            debitPaisa = 4000000L, // 10 x Rs 4,000
-            note = "Stock received transfer TRF-0001",
-            timestamp = now - 86400000L * 2L
-        )
-    )
-    distributorAccountEntries.add(
-        DistributorAccountEntry(
-            id = "ENTRY-SEED-02",
-            distributorId = "DIST-001",
-            type = "PAYMENT",
-            creditPaisa = 2500000L,
-            note = "Bank transfer ref HBL-9921",
-            timestamp = now - 86400000L
-        )
-    )
-    distributorAccountEntries.add(
-        DistributorAccountEntry(
-            id = "ENTRY-SEED-03",
-            distributorId = "DIST-002",
-            type = "STOCK_RECEIVED",
-            transferId = "TRF-0005",
-            debitPaisa = 2400000L,
-            note = "Opening stock allocation",
-            timestamp = now - 86400000L * 3L
-        )
-    )
-
     // 13. Stock Transfers
     stockTransfers.add(
         StockTransfer(
@@ -740,12 +688,11 @@ internal fun BlueGasStore.seedAll() {
             driverName = "Naveed",
             driverPhone = "+92 322 9988112",
             lines = listOf(
-                TransferLine("SKU-LPG-11-8", 8),
-                TransferLine("SKU-LPG-11-0", 4)
+                TransferLine("SKU-LPG-11-8", 12)
             ),
-            cylinderIds = listOf("BG-PLT-118-001", "BG-PLT-118-002", "BG-PLT-118-003", "BG-PLT-118-004", "BG-PLT-110-001", "BG-PLT-110-002"),
+            cylinderIds = listOf("BG-PLT-118-001", "BG-PLT-118-002", "BG-PLT-118-003", "BG-PLT-118-004"),
             dispatchedAt = now - 3600000L,
-            tonnesEquivalent = (8 * 11.8 + 4 * 11.0) / 1000.0
+            tonnesEquivalent = (12 * 11.8) / 1000.0
         )
     )
     stockTransfers.add(
@@ -757,7 +704,7 @@ internal fun BlueGasStore.seedAll() {
             status = "REQUESTED",
             lines = listOf(
                 TransferLine("SKU-LPG-11-8", 6),
-                TransferLine("SKU-LPG-6-0", 4)
+                TransferLine("SKU-LPG-45-4", 2)
             ),
             requestedAt = now - 1800000L
         )

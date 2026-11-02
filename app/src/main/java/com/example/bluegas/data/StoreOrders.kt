@@ -94,7 +94,6 @@ fun BlueGasStore.createOrder(
         discountPaisa = quote.discountPaisa,
         gstPaisa = quote.gstPaisa,
         furtherTaxPaisa = quote.furtherTaxPaisa,
-        newCylinderModel = if (orderType == OrderType.NEW_CYLINDER) settings.newCylinderModel else null,
         holdExpiresAt = System.currentTimeMillis() + (settings.holdTtlMinutes * 60000L),
         handoverPin = (1000..9999).random().toString()
     )
@@ -208,13 +207,13 @@ fun BlueGasStore.onConfirmed(order: Order) {
         }
     }
 
-    // 2. Assign to Distributor (Reserved -> Assigned, RACI-06)
+    // 2. Assign to Hub (Reserved -> Assigned, RACI-06)
     val servingPointId = order.fulfilmentPointId ?: "NODE-LHR-1"
-    val distributor = distributors.find { it.pointId == servingPointId && it.status == "ACTIVE" }
-        ?: distributors.firstOrNull { it.status == "ACTIVE" }
+    val hub = nodes.find { it.id == servingPointId && it.type == FulfilmentPointType.HUB && it.status == "ACTIVE" }
+        ?: nodes.firstOrNull { it.type == FulfilmentPointType.HUB && it.status == "ACTIVE" }
 
-    if (distributor != null) {
-        order.assignedDistributorId = distributor.id
+    if (hub != null) {
+        order.fulfilmentPointId = hub.id
         order.assignedAt = System.currentTimeMillis()
 
         val tAsgn = OrderStateMachine.transition(
@@ -222,14 +221,14 @@ fun BlueGasStore.onConfirmed(order: Order) {
             targetStatus = OrderStatus.ORD_ASGN,
             actor = "Auto Dispatch Engine",
             role = AccountableRole.OPERATIONS,
-            trigger = "Assigned to distributor ${distributor.name}"
+            trigger = "Assigned to ${hub.name}"
         )
         if (tAsgn is TransitionResult.Success) {
             recordHistory(tAsgn)
             orderAssignments.add(
                 OrderAssignment(
                     orderId = order.id,
-                    distributorId = distributor.id,
+                    pointId = hub.id,
                     riderId = null,
                     assignedAt = System.currentTimeMillis()
                 )
@@ -237,8 +236,8 @@ fun BlueGasStore.onConfirmed(order: Order) {
 
             addNotification(
                 surface = AppSurface.CUSTOMER,
-                title = "Distributor Assigned",
-                message = "Your order has been assigned to ${distributor.name}.",
+                title = "Order received at hub",
+                message = "Your order is with the ${hub.name} team and will be prepared shortly.",
                 canonicalStatus = order.status.canonicalLabel,
                 orderId = order.id,
                 code = "NTF-03"
@@ -246,19 +245,19 @@ fun BlueGasStore.onConfirmed(order: Order) {
             addNotification(
                 surface = AppSurface.STAFF,
                 title = "New Order Assigned",
-                message = "Order ${order.id} assigned to ${distributor.name}. Acceptance SLA active.",
+                message = "Order ${order.id} assigned to ${hub.name}.",
                 canonicalStatus = order.status.canonicalLabel,
                 orderId = order.id,
                 code = "NTF-03",
-                staffRole = StaffSubRole.DISTRIBUTOR
+                staffRole = StaffSubRole.HUB
             )
         }
     } else {
-        // No distributor found -> Fulfilment Exception EXC-05
+        // No active hub found -> Fulfilment Exception EXC-05
         raiseException(
             orderId = order.id,
             reason = ExceptionReason.NO_ACCEPTANCE,
-            details = "No active distributor serving node $servingPointId available for assignment"
+            details = "No active BLUE GAS hub serves this address"
         )
     }
 }
@@ -311,10 +310,10 @@ fun BlueGasStore.processTimers() {
     if (settings.autoRaiseNoAcceptance) {
         val overdueAssigned = orders.filter {
             it.status == OrderStatus.ORD_ASGN && it.assignedAt != null &&
-                    (now - it.assignedAt!!) > (settings.distributorAcceptanceWindowMins * 60000L)
+                    (now - it.assignedAt!!) > (settings.hubAcceptanceWindowMins * 60000L)
         }
         for (ord in overdueAssigned) {
-            raiseException(ord.id, ExceptionReason.NO_ACCEPTANCE, "Distributor SLA expired without acceptance")
+            raiseException(ord.id, ExceptionReason.NO_ACCEPTANCE, "Hub SLA expired without acceptance")
             changed = true
         }
 
@@ -339,7 +338,7 @@ fun BlueGasStore.processTimers() {
 
 /**
  * Expires an offered delivery task when the acceptance window has elapsed without rider acceptance.
- * Resets task status to DECLINED, unassigns the rider, notifies the distributor, and logs an audit trail.
+ * Resets task status to DECLINED, unassigns the rider, notifies the hub, and logs an audit trail.
  *
  * @param order Target order whose offer has timed out.
  */
@@ -353,7 +352,7 @@ fun BlueGasStore.expireRiderOffer(order: Order) {
         order.id,
         "RIDER_OFFER_EXPIRED",
         "System Timer",
-        AccountableRole.DISTRIBUTOR,
+        AccountableRole.HUB,
         "Rider offer expired without acceptance within ${settings.riderAcceptanceWindowMins}m window"
     )
     addNotification(
@@ -363,7 +362,7 @@ fun BlueGasStore.expireRiderOffer(order: Order) {
         canonicalStatus = order.status.canonicalLabel,
         orderId = order.id,
         code = "NTF-03",
-        staffRole = StaffSubRole.DISTRIBUTOR
+        staffRole = StaffSubRole.HUB
     )
 }
 
@@ -598,8 +597,7 @@ fun BlueGasStore.raiseException(
 fun BlueGasStore.recoverException(
     orderId: String,
     target: OrderStatus,
-    reason: String,
-    extraDistributorId: String? = null
+    reason: String
 ): Pair<Boolean, String> {
     val order = orders.find { it.id == orderId } ?: return Pair(false, "Order not found")
     if (order.status != OrderStatus.ORD_EXC) {
@@ -651,9 +649,6 @@ fun BlueGasStore.recoverException(
     recordHistory(tRec, "RECOVERED")
 
     if (target == OrderStatus.ORD_ASGN) {
-        if (extraDistributorId != null) {
-            order.assignedDistributorId = extraDistributorId
-        }
         order.assignedAt = System.currentTimeMillis()
     } else if (target == OrderStatus.ORD_PREP) {
         // Release previous cylinder to allow re-allocation

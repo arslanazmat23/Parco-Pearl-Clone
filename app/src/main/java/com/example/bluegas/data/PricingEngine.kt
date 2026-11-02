@@ -32,8 +32,6 @@ object PricingEngine {
         // REFERENCE_11_8_BY_WEIGHT: reference * sizeKg / 11.8
         val sizeKg = when (sku) {
             "SKU-LPG-11-8" -> 11.8
-            "SKU-LPG-11-0" -> 11.0
-            "SKU-LPG-6-0"  -> 6.0
             "SKU-LPG-45-4" -> 45.4
             else -> return priceList.perSizePaisa[sku] ?: 0L
         }
@@ -87,9 +85,7 @@ object PricingEngine {
             val lineSubtotal = pubPrice * quantity
             val productName = when (sku) {
                 "SKU-LPG-11-8" -> "11.8 kg Domestic LPG Cylinder Refill"
-                "SKU-LPG-11-0" -> "11.0 kg Domestic LPG Cylinder Refill"
-                "SKU-LPG-6-0"  -> "6.0 kg Compact LPG Cylinder Refill"
-                "SKU-LPG-45-4" -> "45.4 kg Commercial LPG Cylinder Refill"
+                "SKU-LPG-45-4" -> "45.4 kg Domestic LPG Cylinder Refill"
                 else -> "LPG Refill"
             }
             lines.add(
@@ -110,57 +106,21 @@ object PricingEngine {
         // 2. Cylinder Line (if NEW_CYLINDER)
         var depositTotal = 0L
         if (orderType == OrderType.NEW_CYLINDER) {
-            val model = settings.newCylinderModel
-            when (model) {
-                NewCylinderModel.SOLD -> {
-                    val salePrice = roundToRupees(priceList.cylinderSalePaisa[sku] ?: 0L, priceList.roundingRule)
-                    lines.add(
-                        OrderLine(
-                            sku = "$sku-BODY",
-                            productName = "Cylinder Body (Purchase - Customer Owned)",
-                            quantity = quantity,
-                            unitPricePaisa = salePrice,
-                            unitDepositPaisa = 0L,
-                            subtotalPaisa = salePrice * quantity,
-                            depositTotalPaisa = 0L,
-                            lineType = "CYLINDER",
-                            unitPriceExactPaisa = salePrice
-                        )
-                    )
-                }
-                NewCylinderModel.DEPOSIT -> {
-                    val depPrice = roundToRupees(priceList.depositPaisa[sku] ?: 0L, priceList.roundingRule)
-                    depositTotal = depPrice * quantity
-                    lines.add(
-                        OrderLine(
-                            sku = "$sku-DEP",
-                            productName = "Cylinder Security Deposit",
-                            quantity = quantity,
-                            unitPricePaisa = 0L,
-                            unitDepositPaisa = depPrice,
-                            subtotalPaisa = 0L,
-                            depositTotalPaisa = depositTotal,
-                            lineType = "DEPOSIT",
-                            unitPriceExactPaisa = depPrice
-                        )
-                    )
-                }
-                NewCylinderModel.LOAN -> {
-                    lines.add(
-                        OrderLine(
-                            sku = "$sku-LOAN",
-                            productName = "Loaned Cylinder (BLUE GAS Asset)",
-                            quantity = quantity,
-                            unitPricePaisa = 0L,
-                            unitDepositPaisa = 0L,
-                            subtotalPaisa = 0L,
-                            depositTotalPaisa = 0L,
-                            lineType = "LOAN",
-                            unitPriceExactPaisa = 0L
-                        )
-                    )
-                }
-            }
+            val depPrice = roundToRupees(priceList.depositPaisa[sku] ?: 0L, priceList.roundingRule)
+            depositTotal = depPrice * quantity
+            lines.add(
+                OrderLine(
+                    sku = "$sku-DEP",
+                    productName = "Refundable cylinder security deposit",
+                    quantity = quantity,
+                    unitPricePaisa = 0L,
+                    unitDepositPaisa = depPrice,
+                    subtotalPaisa = 0L,
+                    depositTotalPaisa = depositTotal,
+                    lineType = "DEPOSIT",
+                    unitPriceExactPaisa = depPrice
+                )
+            )
         }
 
         // 3. Accessories

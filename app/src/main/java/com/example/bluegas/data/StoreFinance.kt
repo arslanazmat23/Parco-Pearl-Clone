@@ -21,7 +21,8 @@ fun BlueGasStore.processRefund(
         return Pair(false, "Refund $refundId is in state ${refund.state.displayName} and cannot be processed.")
     }
 
-    val isFull = refund.kind == "FULL" || refund.state == PaymentState.FULL_REFUND_PENDING
+    val isDeposit = refund.kind == "DEPOSIT"
+    val isFull = refund.kind == "FULL" || refund.state == PaymentState.FULL_REFUND_PENDING || isDeposit
     val targetState = if (succeed) {
         if (isFull) PaymentState.FULLY_REFUNDED else PaymentState.PARTIAL_REFUND_COMPLETED
     } else {
@@ -47,44 +48,92 @@ fun BlueGasStore.processRefund(
         // If linked to an L6 Return/Refund case
         if (!refund.linkedCaseId.isNullOrBlank()) {
             val caseItem = returnCases.find { it.id == refund.linkedCaseId }
-            if (caseItem != null && caseItem.status == L6Status.REFUND_REQUESTED) {
-                CaseLifecycles.transitionL6(
-                    caseItem,
-                    L6Status.REFUND_CONFIRMED,
-                    "Platform",
-                    AccountableRole.FINANCE,
-                    "Refund completed by Finance"
-                )
+            if (caseItem != null) {
+                if (isDeposit) {
+                    val dep = depositAccounts.find { it.id == caseItem.depositId }
+                        ?: depositAccounts.find { it.cylinderSerial == caseItem.cylinderSerial && it.customerId == caseItem.customerId }
+                    if (dep != null) {
+                        dep.refundedPaisa = refund.amountPaisa
+                        dep.deductionPaisa = caseItem.deductionPaisa
+                        dep.refundCaseId = caseItem.id
+                        dep.settledAt = System.currentTimeMillis()
+                        dep.status = if (caseItem.deductionPaisa > 0L) DepositStatus.REDUCED_OR_FORFEITED else DepositStatus.REFUNDED
+                    }
+
+                    val holding = customerHoldings.find { it.customerId == caseItem.customerId && it.cylinderSerial == caseItem.cylinderSerial && it.status == "ACTIVE" }
+                    if (holding != null) {
+                        holding.status = "RETURNED"
+                        holding.depositStatus = dep?.status ?: DepositStatus.REFUNDED
+                    }
+
+                    postLedger(caseItem.orderId.ifBlank { null }, "DEPOSIT_REFUND", debitPaisa = refund.amountPaisa, description = "Deposit refund for case ${caseItem.id}")
+                    if (caseItem.deductionPaisa > 0L) {
+                        postLedger(caseItem.orderId.ifBlank { null }, "DEPOSIT_DEDUCTION", creditPaisa = caseItem.deductionPaisa, description = "Deposit deduction (${caseItem.deductionReason ?: "Damage"}) for case ${caseItem.id}")
+                    }
+
+                    addNotification(
+                        surface = AppSurface.CUSTOMER,
+                        title = "Deposit Refund Processed",
+                        message = "Your deposit refund of ${formatRupees(refund.amountPaisa)} has been processed.${if (caseItem.deductionPaisa > 0L) " Deductions: ${formatRupees(caseItem.deductionPaisa)}." else ""}",
+                        canonicalStatus = "REFUNDED",
+                        orderId = caseItem.orderId.ifBlank { null },
+                        code = "NTF-21"
+                    )
+                }
+
+                if (caseItem.status == L6Status.REFUND_REQUESTED) {
+                    CaseLifecycles.transitionL6(
+                        caseItem,
+                        L6Status.REFUND_CONFIRMED,
+                        "Platform",
+                        AccountableRole.FINANCE,
+                        "Refund completed by Finance"
+                    )
+                }
             }
         }
 
-        postLedger(refund.orderId, "REFUND", debitPaisa = refund.amountPaisa, description = "Refund processed: ${refund.reason ?: "Approved refund"}")
-        logAudit("Refund", refundId, "PROCESS_REFUND_SUCCESS", actor, AccountableRole.FINANCE, "Refund of ${formatPaisaToPkr(refund.amountPaisa)} processed successfully")
+        if (!isDeposit) {
+            postLedger(refund.orderId, "REFUND", debitPaisa = refund.amountPaisa, description = "Refund processed: ${refund.reason ?: "Approved refund"}")
+        }
+        logAudit("Refund", refundId, "PROCESS_REFUND_SUCCESS", actor, AccountableRole.FINANCE, "Refund of ${formatRupees(refund.amountPaisa)} processed successfully")
 
-        addNotification(
-            surface = AppSurface.CUSTOMER,
-            title = "Refund Processed",
-            message = "Refund of ${formatPaisaToPkr(refund.amountPaisa)} completed for order ${refund.orderId}.",
-            canonicalStatus = targetState.displayName,
-            orderId = refund.orderId,
-            code = "NTF-11"
-        )
+        if (!isDeposit) {
+            addNotification(
+                surface = AppSurface.CUSTOMER,
+                title = "Refund Processed",
+                message = "Refund of ${formatRupees(refund.amountPaisa)} completed for order ${refund.orderId}.",
+                canonicalStatus = targetState.displayName,
+                orderId = refund.orderId,
+                code = "NTF-11"
+            )
+        }
         addNotification(
             surface = AppSurface.STAFF,
             title = "Refund Completed",
-            message = "Refund $refundId for order ${refund.orderId} completed by $actor.",
+            message = "Refund $refundId completed by $actor.",
             canonicalStatus = targetState.displayName,
-            orderId = refund.orderId,
+            orderId = refund.orderId.ifBlank { null },
             code = "NTF-11",
             staffRole = StaffSubRole.FINANCE
         )
         notifyChanged()
-        return Pair(true, "Refund of ${formatPaisaToPkr(refund.amountPaisa)} completed successfully.")
+        return Pair(true, "Refund of ${formatRupees(refund.amountPaisa)} completed successfully.")
     } else {
         if (payment != null && payment.state == PaymentState.FULL_REFUND_PENDING) {
             PaymentStateMachine.transition(payment, PaymentState.FULL_REFUND_FAILED, actor, "Gateway declined refund", paymentHistory)
         }
-        logAudit("Refund", refundId, "PROCESS_REFUND_FAILED", actor, AccountableRole.FINANCE, "Gateway declined refund of ${formatPaisaToPkr(refund.amountPaisa)}")
+        if (isDeposit) {
+            reconExceptions.add(
+                ReconciliationException(
+                    id = "EXC27-" + UUID.randomUUID().toString().take(6),
+                    code = "EXC-27",
+                    description = "Deposit refund payment failed for case ${refund.linkedCaseId ?: refundId}: gateway declined transaction.",
+                    ownerRole = AccountableRole.FINANCE
+                )
+            )
+        }
+        logAudit("Refund", refundId, "PROCESS_REFUND_FAILED", actor, AccountableRole.FINANCE, "Gateway declined refund of ${formatRupees(refund.amountPaisa)}")
         notifyChanged()
         return Pair(true, "Gateway declined the refund (demo). It stays in the queue for retry.")
     }
@@ -128,7 +177,7 @@ fun BlueGasStore.reconcileCashHandover(
     val handover = cashHandovers.find { it.id == handoverId }
         ?: return Pair(false, "Cash handover $handoverId not found.")
 
-    if (handover.status != "SUBMITTED") {
+    if (handover.status != "SUBMITTED" && handover.status != "RECEIVED_BY_HUB") {
         return Pair(false, "Handover $handoverId is already ${handover.status}.")
     }
 
@@ -157,20 +206,20 @@ fun BlueGasStore.reconcileCashHandover(
     }
 
     if (difference != 0L) {
-        postLedger(null, "CASH_SHORT_OVER", debitPaisa = if (difference < 0) -difference else 0L, creditPaisa = if (difference > 0) difference else 0L, description = "Cash reconciliation difference on $handoverId: ${formatPaisaToPkr(difference)}")
+        postLedger(null, "CASH_SHORT_OVER", debitPaisa = if (difference < 0) -difference else 0L, creditPaisa = if (difference > 0) difference else 0L, description = "Cash reconciliation difference on $handoverId: ${formatRupees(difference)}")
         val excId = "EXC21-" + UUID.randomUUID().toString().take(6)
         reconExceptions.add(
             ReconciliationException(
                 id = excId,
                 code = "EXC-21",
-                description = "Cash difference on hand-over $handoverId: ${formatPaisaToPkr(difference)}. Reason: ${reason ?: "Count difference"}",
+                description = "Cash difference on hand-over $handoverId: ${formatRupees(difference)}. Reason: ${reason ?: "Count difference"}",
                 ownerRole = AccountableRole.FINANCE
             )
         )
         addNotification(
             surface = AppSurface.STAFF,
             title = "Cash Hand-over Difference (EXC-21)",
-            message = "Hand-over $handoverId reconciled with difference ${formatPaisaToPkr(difference)}.",
+            message = "Hand-over $handoverId reconciled with difference ${formatRupees(difference)}.",
             canonicalStatus = "RECONCILED_WITH_DIFFERENCE",
             orderId = handover.orderIds.firstOrNull(),
             code = "NTF-15",
@@ -178,7 +227,7 @@ fun BlueGasStore.reconcileCashHandover(
         )
     }
 
-    logAudit("CashHandover", handoverId, "RECONCILE_CASH", actor, AccountableRole.FINANCE, "Reconciled with counted ${formatPaisaToPkr(countedPaisa)} (diff: ${formatPaisaToPkr(difference)})")
+    logAudit("CashHandover", handoverId, "RECONCILE_CASH", actor, AccountableRole.FINANCE, "Reconciled with counted ${formatRupees(countedPaisa)} (diff: ${formatRupees(difference)})")
     notifyChanged()
     return Pair(true, "Handover $handoverId ${handover.status}. ${handover.orderIds.size} orders settled.")
 }
@@ -298,31 +347,6 @@ fun BlueGasStore.setTaxConfig(
     return Pair(true, "Tax settings saved. New orders use the new rates; existing orders keep theirs.")
 }
 
-fun BlueGasStore.recordDistributorPayment(
-    distributorId: String,
-    amountPaisa: Long,
-    note: String
-): Pair<Boolean, String> {
-    if (amountPaisa <= 0L) {
-        return Pair(false, "Payment amount must be greater than zero.")
-    }
-    val dist = distributors.find { it.id == distributorId }
-        ?: return Pair(false, "Distributor $distributorId not found.")
-
-    val entry = DistributorAccountEntry(
-        id = "ENTRY-" + UUID.randomUUID().toString().take(6),
-        distributorId = distributorId,
-        type = "PAYMENT",
-        creditPaisa = amountPaisa,
-        note = note,
-        timestamp = System.currentTimeMillis()
-    )
-    distributorAccountEntries.add(entry)
-    logAudit("DistributorAccount", distributorId, "RECORD_PAYMENT", "Finance Lead", AccountableRole.FINANCE, "Payment of ${formatPaisaToPkr(amountPaisa)} recorded: $note")
-    notifyChanged()
-    return Pair(true, "Payment of ${formatPaisaToPkr(amountPaisa)} recorded for ${dist.name}.")
-}
-
 fun BlueGasStore.retryCapture(paymentId: String): Pair<Boolean, String> {
     val payment = payments.find { it.id == paymentId }
         ?: return Pair(false, "Payment $paymentId not found.")
@@ -339,7 +363,7 @@ fun BlueGasStore.retryCapture(paymentId: String): Pair<Boolean, String> {
     payment.capturedAmountPaisa = payment.finalAmountPaisa
     postLedger(payment.orderId, "SETTLEMENT", debitPaisa = payment.settledAmountPaisa, description = "Online capture retry settlement")
 
-    logAudit("Payment", paymentId, "RETRY_CAPTURE_SUCCESS", "Finance Lead", AccountableRole.FINANCE, "Capture retried and settled for ${formatPaisaToPkr(payment.settledAmountPaisa)}")
+    logAudit("Payment", paymentId, "RETRY_CAPTURE_SUCCESS", "Finance Lead", AccountableRole.FINANCE, "Capture retried and settled for ${formatRupees(payment.settledAmountPaisa)}")
     notifyChanged()
     return Pair(true, "Capture retried and payment settled.")
 }
@@ -379,7 +403,7 @@ fun BlueGasStore.reconcileGatewayPout(
     actor: String = "Finance Lead"
 ): Pair<Boolean, String> {
     val diff = (expectedPaisa - feePaisa) - settledPaisa
-    logAudit("GatewayPayout", batchRef, "RECONCILE_PAYOUT", actor, AccountableRole.FINANCE, "Reconciled $gateway batch $batchRef: Expected=${formatPaisaToPkr(expectedPaisa)}, Settled=${formatPaisaToPkr(settledPaisa)}, Fee=${formatPaisaToPkr(feePaisa)}, Diff=${formatPaisaToPkr(diff)}")
+    logAudit("GatewayPayout", batchRef, "RECONCILE_PAYOUT", actor, AccountableRole.FINANCE, "Reconciled $gateway batch $batchRef: Expected=${formatRupees(expectedPaisa)}, Settled=${formatRupees(settledPaisa)}, Fee=${formatRupees(feePaisa)}, Diff=${formatRupees(diff)}")
     notifyChanged()
     return Pair(true, "Gateway payout batch $batchRef reconciled successfully.")
 }

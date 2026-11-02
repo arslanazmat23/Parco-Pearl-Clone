@@ -3,7 +3,7 @@ package com.example.bluegas.data
 import com.example.bluegas.model.*
 
 /**
- * Immutable centralized snapshot representing the single source of truth for Blue Gas v0.4.
+ * Immutable centralized snapshot representing the single source of truth for Blue Gas v0.5.
  * Shared across Customer App, Rider App, and Staff Portal.
  */
 data class SharedAppState(
@@ -15,18 +15,16 @@ data class SharedAppState(
     val isRiderOffline: Boolean = false,
     val selectedOrderIdForDrawer: String? = null,
 
-    // Hoisted UI state (WP0.6)
+    // Hoisted UI state
     val customerTab: String = "HOME",
     val trackedOrderId: String? = null,
     val riderTab: String = "TASKS",
-    val selectedDistributorId: String = "DIST-001",
     val isCustomerSignedIn: Boolean = true,
 
     // Entities
     val customers: List<Customer> = emptyList(),
     val addresses: List<Address> = emptyList(),
     val serviceZones: List<ServiceZone> = emptyList(),
-    val distributors: List<Distributor> = emptyList(),
     val nodes: List<Node> = emptyList(),
     val riders: List<Rider> = emptyList(),
     val productVariants: List<ProductVariant> = emptyList(),
@@ -40,6 +38,7 @@ data class SharedAppState(
     val cylinders: List<Cylinder> = emptyList(),
     val cylinderCustodyEvents: List<CylinderCustodyEvent> = emptyList(),
     val customerHoldings: List<CustomerCylinderHolding> = emptyList(),
+    val depositAccounts: List<DepositAccount> = emptyList(),
     val payments: List<Payment> = emptyList(),
     val paymentHistory: List<PaymentStatusHistory> = emptyList(),
     val paymentAttempts: List<PaymentAttempt> = emptyList(),
@@ -52,7 +51,7 @@ data class SharedAppState(
     val auditLogs: List<AuditLog> = emptyList(),
     val evidenceAccessLogs: List<EvidenceAccessLog> = emptyList(),
 
-    // Operations, Supply Chain & Finance (v0.4)
+    // Operations, Supply Chain & Finance (v0.5)
     val stockBalances: List<StockBalance> = emptyList(),
     val stockTransfers: List<StockTransfer> = emptyList(),
     val plantReports: List<PlantDailyReport> = emptyList(),
@@ -60,12 +59,10 @@ data class SharedAppState(
     val reconExceptions: List<ReconciliationException> = emptyList(),
     val priceLists: List<PriceList> = listOf(PriceList(version = 1)),
     val draftPriceList: PriceList? = null,
-    val tradePriceLists: List<TradePriceList> = listOf(TradePriceList(version = 1)),
     val ograNotices: List<OgraNotice> = emptyList(),
     val taxConfig: TaxConfig = TaxConfig(),
     val fbrPostings: List<FbrPosting> = emptyList(),
     val cashHandovers: List<CashHandover> = emptyList(),
-    val distributorAccountEntries: List<DistributorAccountEntry> = emptyList(),
     val returnCases: List<ReturnRefundCase> = emptyList(),
     val safetyIncidents: List<SafetyIncident> = emptyList(),
     val openDecisions: List<OpenDecision> = emptyList(),
@@ -85,7 +82,6 @@ data class SharedAppState(
     val opsConflictQueue: List<SerialConflictItem> = emptyList()
 ) {
     val currentPriceList: PriceList get() = priceLists.maxByOrNull { it.version } ?: PriceList(version = 1)
-    val currentTradePriceList: TradePriceList get() = tradePriceLists.maxByOrNull { it.version } ?: TradePriceList(version = 1)
     val unreadNotificationCount: Int get() = notifications.count { !it.isRead }
     val selectedOrder: Order? get() = orders.find { it.id == selectedOrderIdForDrawer } ?: orders.firstOrNull()
     val activeCustomer: Customer? get() = customers.find { it.id == activeCustomerId } ?: customers.firstOrNull()
@@ -97,8 +93,9 @@ data class SharedAppState(
         }
     }
 
-    fun distributorBalance(distributorId: String): Long {
-        return distributorAccountEntries.filter { it.distributorId == distributorId }
-            .sumOf { it.debitPaisa - it.creditPaisa }
-    }
+    fun depositFor(customerId: String, serial: String): DepositAccount? =
+        depositAccounts.firstOrNull { it.customerId == customerId && it.cylinderSerial == serial && it.status == DepositStatus.HELD }
+
+    fun totalDepositsHeldPaisa(): Long =
+        depositAccounts.filter { it.status == DepositStatus.HELD }.sumOf { it.amountPaisa - it.deductionPaisa }
 }

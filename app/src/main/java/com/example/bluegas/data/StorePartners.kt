@@ -8,9 +8,9 @@ import com.example.bluegas.model.*
 
 fun BlueGasStore.approvePartner(
     appId: String,
-    zoneId: String?,
-    linkedDistributorId: String?,
-    trainingDone: Boolean,
+    zoneId: String? = null,
+    homePointId: String? = null,
+    trainingDone: Boolean = true,
     actor: String = "Operations Lead"
 ): Pair<Boolean, String> {
     val app = partnerApplications.find { it.id == appId }
@@ -26,89 +26,23 @@ fun BlueGasStore.approvePartner(
     }
 
     if (app.type == "DISTRIBUTOR") {
-        if (zoneId.isNullOrBlank()) {
-            return Pair(false, "Service zone selection is required for distributor onboarding.")
-        }
-        val distCount = distributors.size + 1
-        val newDistId = String.format("DIST-%03d", distCount)
-        val newNodeId = "NODE-" + app.city.take(3).uppercase() + "-$distCount"
-
-        val newDist = Distributor(
-            id = newDistId,
-            name = app.applicantName,
-            city = app.city,
-            address = app.vehicleOrShopDetails,
-            phone = app.phone,
-            status = "ACTIVE",
-            zoneIds = listOf(zoneId),
-            pointId = newNodeId,
-            approvedAt = System.currentTimeMillis()
-        )
-        distributors.add(newDist)
-
-        val newNode = Node(
-            id = newNodeId,
-            distributorId = newDistId,
-            name = "${app.applicantName} Terminal",
-            zoneId = zoneId,
-            capacity = 150,
-            type = FulfilmentPointType.DISTRIBUTOR,
-            address = app.vehicleOrShopDetails,
-            pickupEnabled = true,
-            servesZoneIds = listOf(zoneId),
-            city = app.city
-        )
-        nodes.add(newNode)
-
-        val zone = serviceZones.find { it.id == zoneId }
-        if (zone != null && !zone.servingPointIds.contains(newNodeId)) {
-            val zIdx = serviceZones.indexOf(zone)
-            serviceZones[zIdx] = zone.copy(servingPointIds = zone.servingPointIds + newNodeId)
-        }
-
-        // Initialize zero stock balances for household approved cylinders
-        productVariants.filter { it.isCylinder && it.isHouseholdApproved }.forEach { pv ->
-            stockBalances.add(
-                StockBalance(
-                    pointId = newNodeId,
-                    skuId = pv.sku,
-                    filledQty = 0,
-                    emptyQty = 0
-                )
-            )
-        }
-
-        app.status = "APPROVED"
-        app.decidedBy = actor
-        app.decidedAt = System.currentTimeMillis()
-
-        addNotification(
-            surface = AppSurface.STAFF,
-            title = "Distributor Partner Approved",
-            message = "Distributor ${app.applicantName} approved and active at $newNodeId.",
-            canonicalStatus = "APPROVED",
-            orderId = null,
-            code = "NTF-14",
-            staffRole = StaffSubRole.OPERATIONS
-        )
-        logAudit("PartnerApplication", appId, "APPROVE_DISTRIBUTOR", actor, AccountableRole.OPERATIONS, "Approved distributor $newDistId ($newNodeId)")
-        notifyChanged()
-        return Pair(true, "Distributor ${app.applicantName} ($newDistId) approved and active.")
+        return Pair(false, "Distributor onboarding is planned for a later phase.")
     } else {
         // RIDER
-        if (linkedDistributorId.isNullOrBlank()) {
-            return Pair(false, "Linked distributor is required for rider onboarding.")
+        val targetPointId = homePointId ?: app.homePointId
+        if (targetPointId.isNullOrBlank()) {
+            return Pair(false, "Home hub selection is required for rider onboarding.")
         }
         if (!trainingDone) {
             return Pair(false, "Record installation training first (Q27)")
         }
 
-        val dist = distributors.find { it.id == linkedDistributorId }
-            ?: return Pair(false, "Linked distributor $linkedDistributorId not found.")
+        val hub = nodes.find { it.id == targetPointId && it.type == FulfilmentPointType.HUB }
+            ?: return Pair(false, "Serving hub $targetPointId not found or is not a hub.")
 
         val riderCount = riders.size + 1
         val newRiderId = String.format("RIDER-%03d", riderCount)
-        val zone = dist.zoneIds.firstOrNull() ?: "ZONE-LHR-1"
+        val zone = hub.servesZoneIds.firstOrNull() ?: zoneId ?: "ZONE-LHR-1"
         val zoneName = serviceZones.find { it.id == zone }?.name ?: "Pilot Service Zone"
 
         val newRider = Rider(
@@ -118,11 +52,11 @@ fun BlueGasStore.approvePartner(
             cnic = app.cnic,
             zoneId = zone,
             zoneName = zoneName,
-            nodeId = dist.pointId,
+            nodeId = hub.id,
+            pointId = hub.id,
             vehicleNumber = app.vehicleOrShopDetails,
             status = "ACTIVE",
             onboardingStatus = "APPROVED",
-            distributorId = linkedDistributorId,
             installationTrained = true
         )
         riders.add(newRider)
@@ -134,15 +68,15 @@ fun BlueGasStore.approvePartner(
         addNotification(
             surface = AppSurface.STAFF,
             title = "Rider Partner Approved",
-            message = "Rider ${app.applicantName} approved for $linkedDistributorId.",
+            message = "Rider ${app.applicantName} approved for ${hub.name}.",
             canonicalStatus = "APPROVED",
             orderId = null,
             code = "NTF-14",
             staffRole = StaffSubRole.OPERATIONS
         )
-        logAudit("PartnerApplication", appId, "APPROVE_RIDER", actor, AccountableRole.OPERATIONS, "Approved rider $newRiderId for distributor $linkedDistributorId")
+        logAudit("PartnerApplication", appId, "APPROVE_RIDER", actor, AccountableRole.OPERATIONS, "Approved rider $newRiderId for hub ${hub.id}")
         notifyChanged()
-        return Pair(true, "Rider ${app.applicantName} ($newRiderId) approved and active.")
+        return Pair(true, "Rider ${app.applicantName} ($newRiderId) approved and active at ${hub.name}.")
     }
 }
 

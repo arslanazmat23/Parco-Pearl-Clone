@@ -27,7 +27,6 @@ class BlueGasStore {
     val customers = mutableListOf<Customer>()
     val addresses = mutableListOf<Address>()
     val serviceZones = mutableListOf<ServiceZone>()
-    val distributors = mutableListOf<Distributor>()
     val nodes = mutableListOf<Node>()
     val riders = mutableListOf<Rider>()
     val productVariants = mutableListOf<ProductVariant>()
@@ -42,6 +41,7 @@ class BlueGasStore {
     val cylinders = mutableListOf<Cylinder>()
     val cylinderCustodyEvents = mutableListOf<CylinderCustodyEvent>()
     val customerHoldings = mutableListOf<CustomerCylinderHolding>()
+    val depositAccounts = mutableListOf<DepositAccount>()
     val payments = mutableListOf<Payment>()
     val paymentHistory = mutableListOf<PaymentStatusHistory>()
     val paymentAttempts = mutableListOf<PaymentAttempt>()
@@ -55,7 +55,7 @@ class BlueGasStore {
     val evidenceAccessLogs = mutableListOf<EvidenceAccessLog>()
     val idempotencyKeys = mutableSetOf<String>()
 
-    // Operations & Supply Chain v0.4 Collections
+    // Operations & Supply Chain v0.5 Collections
     val stockBalances = mutableListOf<StockBalance>()
     val stockTransfers = mutableListOf<StockTransfer>()
     val plantReports = mutableListOf<PlantDailyReport>()
@@ -65,14 +65,10 @@ class BlueGasStore {
     val currentPriceList: PriceList
         get() = priceLists.maxByOrNull { it.version } ?: PriceList(version = 1)
     var draftPriceList: PriceList? = null
-    val tradePriceLists = mutableListOf<TradePriceList>(TradePriceList(version = 1))
-    val currentTradePriceList: TradePriceList
-        get() = tradePriceLists.maxByOrNull { it.version } ?: TradePriceList(version = 1)
     val ograNotices = mutableListOf<OgraNotice>()
     var taxConfig = TaxConfig()
     val fbrPostings = mutableListOf<FbrPosting>()
     val cashHandovers = mutableListOf<CashHandover>()
-    val distributorAccountEntries = mutableListOf<DistributorAccountEntry>()
     val returnCases = mutableListOf<ReturnRefundCase>()
     val safetyIncidents = mutableListOf<SafetyIncident>()
     val openDecisions = mutableListOf<OpenDecision>()
@@ -87,7 +83,7 @@ class BlueGasStore {
     val riderOutbox = mutableListOf<OfflineOutboxEvent>()
     val opsConflictQueue = mutableListOf<SerialConflictItem>()
 
-    // Hoisted UI State (WP0.6 & S0.6)
+    // Hoisted UI State
     var activeSurface = AppSurface.CUSTOMER
     var activeStaffSubRole = StaffSubRole.OPERATIONS
     val staffSectionByRole = mutableMapOf<StaffSubRole, String>()
@@ -103,8 +99,6 @@ class BlueGasStore {
     var trackedOrderId: String? = null
         private set
     var riderTab: String = "TASKS"
-        private set
-    var selectedDistributorId: String = "DIST-001"
         private set
     var isCustomerSignedIn = true
 
@@ -129,12 +123,10 @@ class BlueGasStore {
             customerTab = customerTab,
             trackedOrderId = trackedOrderId,
             riderTab = riderTab,
-            selectedDistributorId = selectedDistributorId,
             isCustomerSignedIn = isCustomerSignedIn,
             customers = customers.toList(),
             addresses = addresses.toList(),
             serviceZones = serviceZones.toList(),
-            distributors = distributors.toList(),
             nodes = nodes.toList(),
             riders = riders.toList(),
             productVariants = productVariants.toList(),
@@ -148,6 +140,7 @@ class BlueGasStore {
             cylinders = cylinders.toList(),
             cylinderCustodyEvents = cylinderCustodyEvents.toList(),
             customerHoldings = customerHoldings.toList(),
+            depositAccounts = depositAccounts.toList(),
             payments = payments.toList(),
             paymentHistory = paymentHistory.toList(),
             paymentAttempts = paymentAttempts.toList(),
@@ -166,12 +159,10 @@ class BlueGasStore {
             reconExceptions = reconExceptions.toList(),
             priceLists = priceLists.toList(),
             draftPriceList = draftPriceList,
-            tradePriceLists = tradePriceLists.toList(),
             ograNotices = ograNotices.toList(),
             taxConfig = taxConfig,
             fbrPostings = fbrPostings.toList(),
             cashHandovers = cashHandovers.toList(),
-            distributorAccountEntries = distributorAccountEntries.toList(),
             returnCases = returnCases.toList(),
             safetyIncidents = safetyIncidents.toList(),
             openDecisions = openDecisions.toList(),
@@ -345,10 +336,6 @@ class BlueGasStore {
         notifyChanged()
     }
 
-    fun setSelectedDistributorId(id: String) {
-        selectedDistributorId = id
-        notifyChanged()
-    }
 
     fun logEvidenceAccess(orderId: String, evidenceType: String, staffName: String, role: AccountableRole) {
         evidenceAccessLogs.add(
@@ -441,7 +428,6 @@ class BlueGasStore {
         customers.clear()
         addresses.clear()
         serviceZones.clear()
-        distributors.clear()
         nodes.clear()
         riders.clear()
         productVariants.clear()
@@ -454,6 +440,7 @@ class BlueGasStore {
         cylinders.clear()
         cylinderCustodyEvents.clear()
         customerHoldings.clear()
+        depositAccounts.clear()
         payments.clear()
         paymentHistory.clear()
         paymentAttempts.clear()
@@ -475,13 +462,10 @@ class BlueGasStore {
         priceLists.clear()
         priceLists.add(PriceList(version = 1))
         draftPriceList = null
-        tradePriceLists.clear()
-        tradePriceLists.add(TradePriceList(version = 1))
         ograNotices.clear()
         taxConfig = TaxConfig()
         fbrPostings.clear()
         cashHandovers.clear()
-        distributorAccountEntries.clear()
         returnCases.clear()
         safetyIncidents.clear()
         openDecisions.clear()

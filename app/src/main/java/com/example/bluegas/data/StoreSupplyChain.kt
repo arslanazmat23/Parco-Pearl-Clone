@@ -12,7 +12,7 @@ import kotlin.math.abs
 fun BlueGasStore.requestStock(
     pointId: String,
     lines: Map<String, Int>,
-    actor: String = "Distributor Lead"
+    actor: String = "Hub Staff"
 ): Pair<Boolean, String> {
     val validLines = lines.filter { it.value > 0 }
     if (validLines.isEmpty()) {
@@ -50,7 +50,7 @@ fun BlueGasStore.requestStock(
         code = "NTF-15",
         staffRole = StaffSubRole.PLANT_INVENTORY
     )
-    logAudit("StockTransfer", id, "REQUEST_STOCK", actor, AccountableRole.DISTRIBUTOR, "Requested stock transfer for $pointId")
+    logAudit("StockTransfer", id, "REQUEST_STOCK", actor, AccountableRole.HUB, "Requested stock transfer for $pointId")
     notifyChanged()
     return Pair(true, "Stock request $id created.")
 }
@@ -62,8 +62,8 @@ fun BlueGasStore.recordPlantDispatch(
     driverName: String,
     driverPhone: String,
     cylinderIds: List<String>,
-    cmrNo: String?,
-    filledBy: String?,
+    cmrNo: String? = null,
+    filledBy: String? = null,
     actor: String = "Plant Manager"
 ): Pair<Boolean, String> {
     val trf = stockTransfers.find { it.id == transferId }
@@ -137,7 +137,7 @@ fun BlueGasStore.recordPlantDispatch(
         canonicalStatus = "DISPATCHED",
         orderId = null,
         code = "NTF-15",
-        staffRole = StaffSubRole.DISTRIBUTOR
+        staffRole = StaffSubRole.HUB
     )
     logAudit("StockTransfer", transferId, "DISPATCH_TRANSFER", actor, AccountableRole.PLANT, "Dispatched on GP $gatePassNo with ${assignedCylinders.size} cylinders scanned")
     notifyChanged()
@@ -147,7 +147,7 @@ fun BlueGasStore.recordPlantDispatch(
 fun BlueGasStore.confirmTransferReceipt(
     transferId: String,
     received: Map<String, Int>,
-    actor: String = "Distributor Lead"
+    actor: String = "Hub Staff"
 ): Pair<Boolean, String> {
     val trf = stockTransfers.find { it.id == transferId }
         ?: return Pair(false, "Transfer $transferId not found.")
@@ -157,7 +157,6 @@ fun BlueGasStore.confirmTransferReceipt(
     }
 
     var hasDifference = false
-    var totalReceivedTradePaisa = 0L
     val diffDetails = mutableListOf<String>()
 
     val updatedLines = trf.lines.map { line ->
@@ -177,9 +176,6 @@ fun BlueGasStore.confirmTransferReceipt(
             stockBalances.add(StockBalance(trf.toPointId, line.skuId, filledQty = recQty, emptyQty = 0))
         }
 
-        val tradePrice = currentTradePriceList.perSizePaisa[line.skuId] ?: 0L
-        totalReceivedTradePaisa += (recQty * tradePrice)
-
         line.copy(qtyReceived = recQty)
     }
 
@@ -195,7 +191,7 @@ fun BlueGasStore.confirmTransferReceipt(
             if (allocatedToDestCount < totalRec) {
                 cylinders[cIdx] = cyl.copy(
                     status = InventoryState.INV_AVAIL,
-                    custody = CylinderCustody.DISTRIBUTOR_NODE,
+                    custody = CylinderCustody.HUB,
                     currentLocationLabel = nodeName
                 )
                 cylinderCustodyEvents.add(
@@ -203,7 +199,7 @@ fun BlueGasStore.confirmTransferReceipt(
                         id = "EVT-" + UUID.randomUUID().toString().take(6),
                         serialNumber = cid,
                         fromCustody = CylinderCustody.RIDER_VAN,
-                        toCustody = CylinderCustody.DISTRIBUTOR_NODE,
+                        toCustody = CylinderCustody.HUB,
                         orderId = null,
                         actor = actor
                     )
@@ -225,18 +221,6 @@ fun BlueGasStore.confirmTransferReceipt(
         status = newStatus,
         lines = updatedLines,
         receivedAt = System.currentTimeMillis()
-    )
-
-    val distId = nodes.find { it.id == trf.toPointId }?.distributorId ?: distributors.firstOrNull()?.id ?: "DIST-001"
-    distributorAccountEntries.add(
-        DistributorAccountEntry(
-            id = "ENTRY-" + UUID.randomUUID().toString().take(6),
-            distributorId = distId,
-            type = "STOCK_RECEIVED",
-            transferId = transferId,
-            debitPaisa = totalReceivedTradePaisa,
-            note = "Stock received on transfer $transferId ($newStatus)"
-        )
     )
 
     if (hasDifference) {
@@ -269,7 +253,7 @@ fun BlueGasStore.confirmTransferReceipt(
         )
     }
 
-    logAudit("StockTransfer", transferId, "CONFIRM_RECEIPT", actor, AccountableRole.INVENTORY, "Confirmed receipt: $newStatus")
+    logAudit("StockTransfer", transferId, "CONFIRM_RECEIPT", actor, AccountableRole.HUB, "Confirmed receipt: $newStatus")
     notifyChanged()
     return Pair(true, if (hasDifference) "Transfer received with difference. Shortfall exception logged." else "Transfer $transferId received in full.")
 }
@@ -280,7 +264,7 @@ fun BlueGasStore.requestEmptiesReturn(
     gatePassNo: String,
     vehicleNo: String,
     driverName: String,
-    actor: String = "Distributor Lead"
+    actor: String = "Hub Staff"
 ): Pair<Boolean, String> {
     val validLines = lines.filter { it.value > 0 }
     if (validLines.isEmpty()) {
@@ -328,7 +312,7 @@ fun BlueGasStore.requestEmptiesReturn(
         code = "NTF-15",
         staffRole = StaffSubRole.PLANT_INVENTORY
     )
-    logAudit("StockTransfer", id, "RETURN_EMPTIES", actor, AccountableRole.DISTRIBUTOR, "Dispatched empties return to plant on GP $gatePassNo")
+    logAudit("StockTransfer", id, "RETURN_EMPTIES", actor, AccountableRole.HUB, "Dispatched empties return to plant on GP $gatePassNo")
     notifyChanged()
     return Pair(true, "Empties return transfer $id dispatched.")
 }
@@ -564,6 +548,16 @@ fun BlueGasStore.runDailyReconciliation(
         )
     )
 
+    // Area 6: Security deposits check (EXC-28)
+    val depositLine = runDepositCheck()
+    lines.add(depositLine)
+    if (depositLine.difference != "0" && depositLine.difference != "Rs. 0") {
+        val exc = reconExceptions.lastOrNull { it.code == "EXC-28" }
+        if (exc != null && !excIds.contains(exc.id)) {
+            excIds.add(exc.id)
+        }
+    }
+
     val overallStatus = if (excIds.isEmpty()) "MATCHED" else "DIFFERENCES_FOUND"
     val recon = DailyReconciliation(
         id = "RECON-" + (1000..9999).random(),
@@ -649,89 +643,40 @@ fun BlueGasStore.tagCylinder(
     return Pair(true, "Cylinder $serialNumber tagged with QR identifier.")
 }
 
-fun BlueGasStore.logBulkLpgReceipt(
-    supplier: String,
-    blNumber: String,
-    tankerNumber: String,
-    netWeightTonnes: Double,
-    specificGravity: Double = 0.510,
-    density: Double = 510.0,
-    temperatureC: Double = 25.0,
-    actor: String = "Plant Manager"
-): Pair<Boolean, String> {
-    val today = "2026-10-20"
-    val existing = plantReports.find { it.date == today }
-    val openTonnes = existing?.openingTonnes ?: 45.0
-    val purchases = (existing?.purchasesTonnes ?: 0.0) + netWeightTonnes
-    val rpt = PlantDailyReport(
-        date = today,
-        openingTonnes = openTonnes,
-        purchasesTonnes = purchases,
-        issuedTonnes = existing?.issuedTonnes ?: 0.0,
-        closingTonnes = openTonnes + purchases - (existing?.issuedTonnes ?: 0.0),
-        source = "BOWZER_RECEIPT"
-    )
-    savePlantDailyReport(rpt, actor)
-    logAudit("PlantDailyReport", blNumber, "LOG_BULK_RECEIPT", actor, AccountableRole.PLANT, "Received $netWeightTonnes tonnes from $supplier (Tanker $tankerNumber)")
-    notifyChanged()
-    return Pair(true, "Bulk LPG decanting logged: $netWeightTonnes tonnes from $supplier.")
-}
+fun BlueGasStore.runDepositCheck(): ReconLine {
+    val heldAccountsPaisa = depositAccounts.filter { it.status == DepositStatus.HELD }.sumOf { it.amountPaisa - it.deductionPaisa }
+    val activeHoldingsPaisa = customerHoldings.filter { it.status == "ACTIVE" && it.depositStatus == DepositStatus.HELD && !it.noDepositOnRecord }.sumOf { it.depositPaisa }
+    val diffPaisa = heldAccountsPaisa - activeHoldingsPaisa
 
-fun BlueGasStore.recordDailyPlantDip(
-    tankId: String,
-    liquidLevelCm: Double,
-    pressureBar: Double,
-    temperatureC: Double,
-    calculatedTonnes: Double,
-    actor: String = "Plant Shift Supervisor"
-): Pair<Boolean, String> {
-    val today = "2026-10-20"
-    val existing = plantReports.find { it.date == today }
-    val rpt = PlantDailyReport(
-        date = today,
-        openingTonnes = existing?.openingTonnes ?: 45.0,
-        purchasesTonnes = existing?.purchasesTonnes ?: 0.0,
-        issuedTonnes = existing?.issuedTonnes ?: 0.0,
-        closingTonnes = calculatedTonnes,
-        source = "DAILY_DIP"
-    )
-    savePlantDailyReport(rpt, actor)
-    logAudit("PlantDailyReport", tankId, "RECORD_DAILY_DIP", actor, AccountableRole.PLANT, "Tank dip reading: $liquidLevelCm cm ($calculatedTonnes T) at $pressureBar bar")
-    notifyChanged()
-    return Pair(true, "Daily tank dip recorded: $calculatedTonnes metric tonnes.")
-}
-
-fun BlueGasStore.recordCylinderTesting(
-    serialNumber: String,
-    nextRetestDate: String,
-    certificateNo: String,
-    testPressureBar: Double = 30.0,
-    actor: String = "Certified HSE Tester"
-): Pair<Boolean, String> {
-    val cyl = cylinders.find { it.serialNumber == serialNumber }
-    if (cyl != null) {
-        val idx = cylinders.indexOf(cyl)
-        cylinders[idx] = cyl.copy(lastInspectionDate = nextRetestDate, hseHold = false)
+    if (diffPaisa != 0L) {
+        val excId = "EXC28-" + UUID.randomUUID().toString().take(6)
+        reconExceptions.add(
+            ReconciliationException(
+                id = excId,
+                code = "EXC-28",
+                description = "Deposit liability mismatch between deposit accounts and customer cylinder holdings: ${formatRupees(diffPaisa)}",
+                ownerRole = AccountableRole.FINANCE
+            )
+        )
     }
-    logAudit("Cylinder", serialNumber, "HYDRO_TEST_CERTIFICATION", actor, AccountableRole.HSE, "Hydro-test cert $certificateNo passed, next retest $nextRetestDate")
-    notifyChanged()
-    return Pair(true, "Cylinder $serialNumber certified under certificate $certificateNo.")
+
+    return ReconLine(
+        area = "6. Security Deposits Held",
+        skuId = "DEPOSIT_ACCOUNTS",
+        expected = formatRupees(heldAccountsPaisa),
+        actual = formatRupees(activeHoldingsPaisa),
+        difference = formatRupees(diffPaisa),
+        note = if (diffPaisa == 0L) "Deposits reconciled" else "Deposit mismatch (EXC-28)"
+    )
 }
 
-fun BlueGasStore.recordCylinderScrap(
-    serialNumber: String,
-    reason: String,
-    scrapCertificateNo: String,
-    actor: String = "HSE Inspection Lead"
-): Pair<Boolean, String> {
-    val cyl = cylinders.find { it.serialNumber == serialNumber }
-    if (cyl != null) {
-        val idx = cylinders.indexOf(cyl)
-        cylinders[idx] = cyl.copy(status = InventoryState.INV_WRITEOFF, hseHold = true)
-    }
-    logAudit("Cylinder", serialNumber, "CONDEMN_SCRAP", actor, AccountableRole.HSE, "Scrap cert $scrapCertificateNo: $reason")
+fun BlueGasStore.simulateDepositMismatch(): Pair<Boolean, String> {
+    val firstHeld = depositAccounts.firstOrNull { it.status == DepositStatus.HELD }
+        ?: return Pair(false, "No active held deposit account found to modify.")
+    val original = firstHeld.amountPaisa
+    depositAccounts[depositAccounts.indexOf(firstHeld)] = firstHeld.copy(amountPaisa = (original - 50000L).coerceAtLeast(0L))
     notifyChanged()
-    return Pair(true, "Cylinder $serialNumber condemned and scrapped.")
+    return Pair(true, "Deposit account ${firstHeld.id} reduced by Rs. 500 to simulate EXC-28 mismatch.")
 }
 
 fun BlueGasStore.submitPhysicalStockAudit(

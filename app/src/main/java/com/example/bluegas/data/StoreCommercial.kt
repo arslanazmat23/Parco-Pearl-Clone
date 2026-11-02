@@ -77,7 +77,7 @@ fun BlueGasStore.publishPriceList(
         canonicalStatus = "PUBLISHED",
         orderId = null,
         code = "NTF-16",
-        staffRole = StaffSubRole.DISTRIBUTOR
+        staffRole = StaffSubRole.HUB
     )
 
     logAudit("PriceList", "v$newVersion", "PUBLISH_PRICE_LIST", reviewerName, AccountableRole.COMMERCIAL, "Published v$newVersion with OGRA ref: $ograRef")
@@ -121,36 +121,3 @@ fun BlueGasStore.recordOgraNotice(reference: String): Pair<Boolean, String> {
     return Pair(true, "OGRA notice recorded. Commercial review required (EXC-19).")
 }
 
-fun BlueGasStore.setHouseholdApproved(sku: String, approved: Boolean): Pair<Boolean, String> {
-    if (sku == "SKU-LPG-11-8" && !approved) {
-        return Pair(false, "The 11.8 kg reference size cannot be un-approved for household consumption (regulatory baseline).")
-    }
-
-    val pv = productVariants.find { it.sku == sku }
-        ?: return Pair(false, "Product variant $sku not found.")
-
-    val idx = productVariants.indexOf(pv)
-    productVariants[idx] = pv.copy(isHouseholdApproved = approved)
-
-    logAudit("ProductVariant", sku, "SET_HOUSEHOLD_APPROVAL", "Commercial Manager", AccountableRole.COMMERCIAL, "Household approval set to $approved")
-    notifyChanged()
-    return Pair(true, "Household approval for ${pv.name} set to $approved.")
-}
-
-fun BlueGasStore.updateTradePrice(sku: String, paisa: Long): Pair<Boolean, String> {
-    if (paisa <= 0) return Pair(false, "Trade price must be positive.")
-
-    val current = currentTradePriceList
-    val updatedMap = current.perSizePaisa.toMutableMap()
-    updatedMap[sku] = paisa
-
-    val newList = TradePriceList(
-        version = current.version + 1,
-        perSizePaisa = updatedMap
-    )
-    tradePriceLists.add(newList)
-
-    logAudit("TradePriceList", "v${newList.version}", "UPDATE_TRADE_PRICE", "Commercial Manager", AccountableRole.COMMERCIAL, "Updated $sku to ${formatPaisaToPkr(paisa)}")
-    notifyChanged()
-    return Pair(true, "Trade price for $sku updated to ${formatPaisaToPkr(paisa)}.")
-}

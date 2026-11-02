@@ -35,7 +35,7 @@ enum class OrderStatus(val code: String, val displayName: String, val isTerminal
         ORD_VALPEND -> "Checking your order"
         ORD_PAYPEND -> "Awaiting payment"
         ORD_CONF, ORD_RSVD -> "Order confirmed"
-        ORD_ASGN -> "Distributor assigned"
+        ORD_ASGN -> "Rider assigned"
         ORD_ACPT, ORD_PREP -> "Being prepared"
         ORD_DISP -> "On the way"
         ORD_RDYPU -> "Ready to collect"
@@ -46,7 +46,7 @@ enum class OrderStatus(val code: String, val displayName: String, val isTerminal
         ORD_EXC -> "We're sorting out a problem with your order"
         ORD_COMP -> "Completed"
         ORD_CANC -> "Cancelled"
-        ORD_SUPS -> "Replaced by order"
+        ORD_SUPS -> "Replaced by order no. …"
         ORD_FCLO -> "Could not be completed"
     }
 
@@ -79,7 +79,7 @@ enum class ExceptionReason(
         listOf("EXC-02", "EXC-03")
     ),
     NO_ACCEPTANCE(
-        "Not accepted by distributor or rider in time",
+        "Not accepted by the hub or rider in time",
         listOf("EXC-05")
     ),
     SERIAL_UNAVAILABLE_OR_PREP_FAILURE(
@@ -128,12 +128,6 @@ enum class OrderType {
     SWITCH_AND_SAVE
 }
 
-enum class NewCylinderModel {
-    SOLD,
-    DEPOSIT,
-    LOAN
-}
-
 enum class RefillModel {
     EMPTY_EXCHANGE,
     REORDER,
@@ -169,8 +163,7 @@ enum class InstallationResult(val displayName: String) {
 
 enum class FulfilmentPointType {
     PLANT,
-    DEPOT,
-    DISTRIBUTOR
+    HUB
 }
 
 enum class RiderTaskStatus {
@@ -250,7 +243,6 @@ enum class InventoryState(val code: String, val label: String) {
 }
 
 enum class CylinderOwnership(val label: String) {
-    OWNED_BY_CUSTOMER("Owned by customer"),
     DEPOSIT_HELD("Deposit held"),
     LOANED("Loaned"),
     RETURNED("Returned/Released"),
@@ -258,7 +250,7 @@ enum class CylinderOwnership(val label: String) {
 }
 
 enum class CylinderCustody(val label: String) {
-    DISTRIBUTOR_NODE("With BLUE GAS / distributor"),
+    HUB("At BLUE GAS hub"),
     RIDER_VAN("In transit"),
     CUSTOMER_PREMISES("With customer"),
     PLANT("At plant"),
@@ -310,7 +302,7 @@ enum class PaymentState(val displayName: String, val isTerminal: Boolean = false
 enum class AccountableRole(val displayName: String) {
     OPERATIONS("Operations Lead"),
     FINANCE("Finance Lead"),
-    DISTRIBUTOR("Distributor Lead"),
+    HUB("Hub Staff"),
     SUPPORT("Customer Support"),
     INVENTORY("Inventory Controller"),
     ADMIN("System Administrator"),
@@ -330,12 +322,12 @@ enum class AppSurface {
 
 enum class StaffSubRole(val displayName: String) {
     OPERATIONS("Operations"),
-    DISTRIBUTOR("Distributor"),
+    HUB("Hub"),
     PLANT_INVENTORY("Plant & Stock"),
     FINANCE("Finance"),
-    COMMERCIAL("Pricing"),
+    COMMERCIAL("Commercial"),
     SUPPORT("Support"),
-    SAFETY_HSE("Safety (HSE)"),
+    SAFETY_HSE("Safety & HSE"),
     ADMIN("Admin"),
     PHASE2_PREVIEW("Phase 2")
 }
@@ -377,27 +369,12 @@ data class ServiceZone(
     val servingPointIds: List<String> = emptyList()
 )
 
-data class Distributor(
-    val id: String,
-    val name: String,
-    val city: String,
-    val address: String,
-    val phone: String,
-    val status: String = "ACTIVE", // "ACTIVE", "PENDING_APPROVAL"
-    val zoneIds: List<String> = emptyList(),
-    val pointId: String = "NODE-LHR-1",
-    val isExistingDealer: Boolean = true,
-    val creditLimitPaisa: Long = 0L, // Q25: Credit off by default
-    val approvedAt: Long? = System.currentTimeMillis()
-)
-
 data class Node(
     val id: String,
-    val distributorId: String,
     val name: String,
     val zoneId: String,
     val capacity: Int,
-    val type: FulfilmentPointType = FulfilmentPointType.DISTRIBUTOR,
+    val type: FulfilmentPointType = FulfilmentPointType.HUB,
     val address: String = "Plot 14, Industrial Area",
     val pickupEnabled: Boolean = true,
     val servesZoneIds: List<String> = emptyList(),
@@ -415,7 +392,7 @@ data class Rider(
     val vehicleNumber: String,
     val status: String, // "ACTIVE", "INACTIVE"
     val onboardingStatus: String = "APPROVED",
-    val distributorId: String? = "DIST-001",
+    val pointId: String = "NODE-LHR-1",
     val installationTrained: Boolean = true,
     val deviceId: String = "DEV-RIDER-01"
 )
@@ -437,15 +414,11 @@ data class ProductVariant(
 data class PriceBookConfig(
     val productPricesPaisa: Map<String, Long> = mapOf(
         "SKU-LPG-11-8" to 445000L,
-        "SKU-LPG-11-0" to 414800L,
-        "SKU-LPG-6-0"  to 226300L,
         "SKU-LPG-45-4" to 1712100L,
         "SKU-REG-HOSE" to 145000L
     ),
     val depositAmountPaisa: Map<String, Long> = mapOf(
         "SKU-LPG-11-8" to 750000L,
-        "SKU-LPG-11-0" to 700000L,
-        "SKU-LPG-6-0"  to 450000L,
         "SKU-LPG-45-4" to 1800000L,
         "SKU-REG-HOSE" to 0L
     ),
@@ -453,7 +426,7 @@ data class PriceBookConfig(
     val deliveryFeePaisa: Long = 30000L,
     val taxRateBps: Int = 500,
     val holdTtlMinutes: Int = 15,
-    val distributorAcceptanceWindowMins: Int = 20,
+    val hubAcceptanceWindowMins: Int = 20,
     val verificationLevel: String = "PHONE_OTP",
     val enabledPaymentMethods: List<PaymentMethod> = listOf(PaymentMethod.CASH_ON_DELIVERY, PaymentMethod.ONLINE_HOSTED)
 )
@@ -486,7 +459,7 @@ data class OrderStatusHistory(
 
 data class OrderAssignment(
     val orderId: String,
-    val distributorId: String,
+    val pointId: String,
     val riderId: String?,
     val assignedAt: Long,
     val acceptedAt: Long? = null
@@ -568,11 +541,16 @@ data class CylinderCustodyEvent(
 data class CustomerCylinderHolding(
     val id: String,
     val customerId: String,
-    val cylinderSerial: String,
-    val ownership: CylinderOwnership,
-    val depositPaisa: Long,
-    val acquiredAt: Long
-)
+    var cylinderSerial: String,
+    var ownership: CylinderOwnership,
+    var depositPaisa: Long,
+    val acquiredAt: Long,
+    var noDepositOnRecord: Boolean = false,
+    var depositStatus: DepositStatus = DepositStatus.HELD,
+    var status: String = "ACTIVE"
+) {
+    val amountPaisa: Long get() = depositPaisa
+}
 
 data class PaymentStatusHistory(
     val id: String,
@@ -677,7 +655,7 @@ data class PartnerApplication(
         PartnerDocument("Premises / Vehicle Photo", true)
     ),
     val zoneId: String? = null,
-    val linkedDistributorId: String? = null,
+    val homePointId: String? = null,
     var decisionReason: String? = null,
     var decidedAt: Long? = null,
     var decidedBy: String? = null
@@ -748,7 +726,6 @@ data class Order(
     val totalAmountPaisa: Long,
     var paymentMethod: PaymentMethod,
     var allocatedSerial: String? = null,
-    var assignedDistributorId: String? = null,
     var assignedRiderId: String? = null,
     var exceptionReason: ExceptionReason? = null,
     var exceptionDetails: String? = null,
@@ -757,7 +734,7 @@ data class Order(
     var assignedAt: Long? = null,
     var acceptedAt: Long? = null,
     var podReference: String? = null,
-    // v0.4 properties
+    // v0.5 properties
     val orderType: OrderType = OrderType.REFILL_EXCHANGE,
     var fulfilmentPointId: String? = "NODE-LHR-1",
     var pickupPointId: String? = null,
@@ -766,7 +743,6 @@ data class Order(
     val discountPaisa: Long = 0L,
     val gstPaisa: Long = taxPaisa,
     val furtherTaxPaisa: Long = 0L,
-    val newCylinderModel: NewCylinderModel? = null,
     val handoverPin: String = "4821",
     var riderTaskStatus: RiderTaskStatus? = null,
     var riderOfferedAt: Long? = null,

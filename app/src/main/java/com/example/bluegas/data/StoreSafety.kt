@@ -116,45 +116,53 @@ fun BlueGasStore.moveIncident(
         return Pair(false, "Notes/procedure reference must be provided.")
     }
 
-    if (target == L7Status.AUTHORIZED_ACTION_TAKEN && authorizedBy.isNullOrBlank()) {
-        return Pair(false, "Authorizer name is required for authorized action.")
+    if (target == L7Status.AUTHORIZED_ACTION_TAKEN) {
+        if (authorizedBy.isNullOrBlank()) {
+            return Pair(false, "Authorizer name is required for authorized action.")
+        }
+        inc.authorizedBy = authorizedBy
+        inc.authorizedDecision = notes
+        if (!cylinderOutcome.isNullOrBlank()) {
+            inc.cylinderOutcome = cylinderOutcome
+        }
     }
 
-    if (target == L7Status.INCIDENT_CLOSED && !inc.cylinderId.isNullOrBlank()) {
-        if (cylinderOutcome.isNullOrBlank()) {
-            return Pair(false, "Cylinder outcome ('RELEASE' or 'WRITE_OFF') is required to close this incident.")
-        }
-        val cyl = cylinders.find { it.serialNumber == inc.cylinderId }
-        if (cyl != null) {
-            val idx = cylinders.indexOf(cyl)
-            if (cylinderOutcome == "RELEASE") {
-                cylinders[idx] = cyl.copy(hseHold = false)
-                cylinderCustodyEvents.add(
-                    CylinderCustodyEvent(
-                        id = "EVT-" + UUID.randomUUID().toString().take(6),
-                        serialNumber = cyl.serialNumber,
-                        fromCustody = cyl.custody,
-                        toCustody = cyl.custody,
-                        orderId = inc.orderId,
-                        actor = actor
+    if (target == L7Status.INCIDENT_CLOSED) {
+        inc.closedAt = System.currentTimeMillis()
+        val effectiveOutcome = cylinderOutcome ?: inc.cylinderOutcome
+        if (!inc.cylinderId.isNullOrBlank()) {
+            val cyl = cylinders.find { it.serialNumber == inc.cylinderId }
+            if (cyl != null) {
+                val idx = cylinders.indexOf(cyl)
+                if (effectiveOutcome == "RELEASE") {
+                    cylinders[idx] = cyl.copy(hseHold = false)
+                    cylinderCustodyEvents.add(
+                        CylinderCustodyEvent(
+                            id = "EVT-" + UUID.randomUUID().toString().take(6),
+                            serialNumber = cyl.serialNumber,
+                            fromCustody = cyl.custody,
+                            toCustody = cyl.custody,
+                            orderId = inc.orderId,
+                            actor = actor
+                        )
                     )
-                )
-            } else if (cylinderOutcome == "WRITE_OFF") {
-                cylinders[idx] = cyl.copy(
-                    status = InventoryState.INV_WRITEOFF,
-                    hseHold = false,
-                    currentLocationLabel = "Decommissioned / Written Off"
-                )
-                cylinderCustodyEvents.add(
-                    CylinderCustodyEvent(
-                        id = "EVT-" + UUID.randomUUID().toString().take(6),
-                        serialNumber = cyl.serialNumber,
-                        fromCustody = cyl.custody,
-                        toCustody = CylinderCustody.PLANT,
-                        orderId = inc.orderId,
-                        actor = actor
+                } else if (effectiveOutcome == "WRITE_OFF") {
+                    cylinders[idx] = cyl.copy(
+                        status = InventoryState.INV_WRITEOFF,
+                        hseHold = false,
+                        currentLocationLabel = "Decommissioned / Written Off"
                     )
-                )
+                    cylinderCustodyEvents.add(
+                        CylinderCustodyEvent(
+                            id = "EVT-" + UUID.randomUUID().toString().take(6),
+                            serialNumber = cyl.serialNumber,
+                            fromCustody = cyl.custody,
+                            toCustody = CylinderCustody.PLANT,
+                            orderId = inc.orderId,
+                            actor = actor
+                        )
+                    )
+                }
             }
         }
     }

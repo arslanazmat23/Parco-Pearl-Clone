@@ -34,15 +34,15 @@ import java.util.UUID
 // =========================================================================
 
 /**
- * Accepts an assigned delivery or pickup order on behalf of the distributor (RACI-05).
+ * Accepts an assigned delivery or pickup order on behalf of the hub (RACI-05).
  *
  * Transitions order from ORD_ASGN to ORD_ACPT, recording SLA acceptance timestamp.
  *
  * @param orderId Target order identifier.
- * @param distributorId Optional distributor identifier for multi-distributor tenancy checks.
+ * @param pointId Optional hub point identifier.
  * @return Success flag and human-readable feedback.
  */
-fun BlueGasStore.distributorAccept(orderId: String, distributorId: String? = null): Pair<Boolean, String> {
+fun BlueGasStore.hubAccept(orderId: String, pointId: String? = null): Pair<Boolean, String> {
     val order = orders.find { it.id == orderId } ?: return Pair(false, "Order not found.")
     if (order.status != OrderStatus.ORD_ASGN) {
         return Pair(false, "Order is not in Assigned status (Status: ${order.status.displayName}).")
@@ -52,42 +52,44 @@ fun BlueGasStore.distributorAccept(orderId: String, distributorId: String? = nul
     val tAcpt = OrderStateMachine.transition(
         order = order,
         targetStatus = OrderStatus.ORD_ACPT,
-        actor = "Distributor Lead",
-        role = AccountableRole.DISTRIBUTOR,
-        trigger = "Distributor accepted SLA"
+        actor = "Hub Staff",
+        role = AccountableRole.HUB,
+        trigger = "Hub accepted SLA"
     )
     if (tAcpt is TransitionResult.Failure) {
         return Pair(false, tAcpt.errorMessage)
     }
-    recordHistory(tAcpt, "DISTRIBUTOR_ACCEPTED")
+    recordHistory(tAcpt, "HUB_ACCEPTED")
     notifyChanged()
     return Pair(true, "Order ${order.id} accepted. Ready to start preparation.")
 }
 
-/**
- * Convenient wrapper for [distributorAccept] with custom actor name.
- *
- * @param orderId Target order identifier.
- * @param actor Name of the distributor representative accepting the order.
- * @return Success flag and message.
- */
-fun BlueGasStore.distributorAcceptOrder(orderId: String, actor: String = "Distributor"): Pair<Boolean, String> =
-    distributorAccept(orderId)
+fun BlueGasStore.distributorAccept(orderId: String, distributorId: String? = null): Pair<Boolean, String> =
+    hubAccept(orderId, distributorId)
+
+fun BlueGasStore.hubAcceptOrder(orderId: String, actor: String = "Hub Staff"): Pair<Boolean, String> =
+    hubAccept(orderId)
+
+fun BlueGasStore.distributorAcceptOrder(orderId: String, actor: String = "Hub Staff"): Pair<Boolean, String> =
+    hubAccept(orderId)
 
 /**
- * Declines an assigned order on behalf of the distributor and raises an exception.
+ * Declines an assigned order on behalf of the hub and raises an exception.
  *
  * @param orderId Target order identifier.
  * @param reason Human-readable explanation for declining.
  * @return Exception recording result.
  */
-fun BlueGasStore.distributorDecline(orderId: String, reason: String): Pair<Boolean, String> {
+fun BlueGasStore.hubDecline(orderId: String, reason: String): Pair<Boolean, String> {
     val order = orders.find { it.id == orderId } ?: return Pair(false, "Order not found.")
     if (order.status != OrderStatus.ORD_ASGN) {
         return Pair(false, "Order is not in Assigned status.")
     }
-    return raiseException(orderId, ExceptionReason.NO_ACCEPTANCE, "Distributor declined order: $reason")
+    return raiseException(orderId, ExceptionReason.NO_ACCEPTANCE, "Hub declined order: $reason")
 }
+
+fun BlueGasStore.distributorDecline(orderId: String, reason: String): Pair<Boolean, String> =
+    hubDecline(orderId, reason)
 
 /**
  * Initiates physical preparation of the cylinder at the depot (ORD_ACPT -> ORD_PREP).
@@ -104,9 +106,9 @@ fun BlueGasStore.startPreparing(orderId: String): Pair<Boolean, String> {
     val tPrep = OrderStateMachine.transition(
         order = order,
         targetStatus = OrderStatus.ORD_PREP,
-        actor = "Distributor Lead",
-        role = AccountableRole.DISTRIBUTOR,
-        trigger = "Distributor initiated cylinder preparation"
+        actor = "Hub Staff",
+        role = AccountableRole.HUB,
+        trigger = "Hub initiated cylinder preparation"
     )
     if (tPrep is TransitionResult.Failure) {
         return Pair(false, tPrep.errorMessage)
@@ -161,7 +163,7 @@ fun BlueGasStore.allocateCylinder(orderId: String, cylinderId: String): Pair<Boo
     )
     order.allocatedSerial = cylinderId
 
-    logAudit("Cylinder", cylinderId, "ALLOCATE_SERIAL", "Distributor Lead", AccountableRole.INVENTORY, "Bound physical cylinder $cylinderId to order $orderId")
+    logAudit("Cylinder", cylinderId, "ALLOCATE_SERIAL", "Hub Staff", AccountableRole.INVENTORY, "Bound physical cylinder $cylinderId to order $orderId")
     notifyChanged()
     return Pair(true, "Cylinder $cylinderId allocated to order $orderId.")
 }
@@ -174,7 +176,7 @@ fun BlueGasStore.allocateCylinder(orderId: String, cylinderId: String): Pair<Boo
  * @param actor Name of the user performing the allocation.
  * @return Success flag and message.
  */
-fun BlueGasStore.allocateCylinderSerial(orderId: String, serialNumber: String, actor: String = "Distributor"): Pair<Boolean, String> =
+fun BlueGasStore.allocateCylinderSerial(orderId: String, serialNumber: String, actor: String = "Hub Staff"): Pair<Boolean, String> =
     allocateCylinder(orderId, serialNumber)
 
 /**
@@ -221,11 +223,8 @@ fun BlueGasStore.assignRider(orderId: String, riderId: String): Pair<Boolean, St
     if (rider.status != "ACTIVE") {
         return Pair(false, "Rider is off shift.")
     }
-    if (!rider.installationTrained) {
-        return Pair(false, "Rider is not trained for installation.")
-    }
-    if (rider.distributorId != order.assignedDistributorId) {
-        return Pair(false, "Rider belongs to another distributor.")
+    if (rider.pointId != order.fulfilmentPointId) {
+        return Pair(false, "Rider belongs to another fulfilment point.")
     }
 
     order.assignedRiderId = riderId
@@ -242,7 +241,7 @@ fun BlueGasStore.assignRider(orderId: String, riderId: String): Pair<Boolean, St
         code = "NTF-03"
     )
 
-    logAudit("Order", orderId, "ASSIGN_RIDER", "Distributor Lead", AccountableRole.DISTRIBUTOR, "Offered delivery task to rider ${rider.name} (${rider.id})")
+    logAudit("Order", orderId, "ASSIGN_RIDER", AccountableRole.OPERATIONS.displayName, AccountableRole.OPERATIONS, "Offered delivery task to rider ${rider.name} (${rider.id})")
     notifyChanged()
     return Pair(true, "Task offered to rider ${rider.name}.")
 }
@@ -269,8 +268,8 @@ fun BlueGasStore.markReadyForPickup(orderId: String): Pair<Boolean, String> {
     val tRdy = OrderStateMachine.transition(
         order = order,
         targetStatus = OrderStatus.ORD_RDYPU,
-        actor = "Distributor Lead",
-        role = AccountableRole.DISTRIBUTOR,
+        actor = "Hub Staff",
+        role = AccountableRole.HUB,
         trigger = "Staged at counter for pickup"
     )
     if (tRdy is TransitionResult.Failure) {
@@ -348,11 +347,11 @@ fun BlueGasStore.completeCounterHandover(
     }
 
     // Handover Complete -> Completed
-    val tHoc = OrderStateMachine.transition(order, OrderStatus.ORD_HOC, "Counter Staff", AccountableRole.DISTRIBUTOR, "Counter handover checks passed")
+    val tHoc = OrderStateMachine.transition(order, OrderStatus.ORD_HOC, "Counter Staff", AccountableRole.HUB, "Counter handover checks passed")
     if (tHoc is TransitionResult.Failure) return Pair(false, tHoc.errorMessage)
     recordHistory(tHoc, "HANDOVER_COMPLETE")
 
-    val tComp = OrderStateMachine.transition(order, OrderStatus.ORD_COMP, "Counter Staff", AccountableRole.DISTRIBUTOR, "Counter collection finalized")
+    val tComp = OrderStateMachine.transition(order, OrderStatus.ORD_COMP, "Counter Staff", AccountableRole.HUB, "Counter collection finalized")
     if (tComp is TransitionResult.Failure) return Pair(false, tComp.errorMessage)
     recordHistory(tComp, "COMPLETED")
 
@@ -401,7 +400,7 @@ fun BlueGasStore.completeCounterHandover(
         }
     }
 
-    // Update cylinder custody
+    // Update cylinder custody & deposit
     order.allocatedSerial?.let { s ->
         val cyl = cylinders.find { it.serialNumber == s }
         cyl?.let {
@@ -412,6 +411,7 @@ fun BlueGasStore.completeCounterHandover(
                 currentLocationLabel = "With Customer (${order.customerId})"
             )
         }
+        onCylinderHandedToCustomer(order, s, emptyCylinderId)
     }
 
     // Post Revenue Ledger
@@ -452,18 +452,17 @@ fun BlueGasStore.completeDepotPickup(orderId: String): Pair<Boolean, String> {
 }
 
 /**
- * Submits counter-collected COD cash from a depot point to Finance for reconciliation.
+ * Submits counter-collected COD cash from a hub point to Finance for reconciliation.
  *
- * @param distributorId Distributor managing the depot counter.
+ * @param pointId Hub node identifier.
  * @param declaredPaisa Cash amount physically presented to Finance.
  * @return Success flag and hand-over reference ID.
  */
-fun BlueGasStore.depotSubmitCashHandover(distributorId: String, declaredPaisa: Long): Pair<Boolean, String> {
-    val dist = distributors.find { it.id == distributorId }
+fun BlueGasStore.hubSubmitCashHandover(pointId: String, declaredPaisa: Long): Pair<Boolean, String> {
     val unhandedOrders = orders.filter {
         it.fulfilmentMode == FulfilmentMode.PICKUP && it.paymentMethod == PaymentMethod.CASH_ON_DELIVERY &&
                 it.status == OrderStatus.ORD_COMP &&
-                (dist == null || (it.pickupPointId ?: it.fulfilmentPointId) == dist.pointId) &&
+                (it.pickupPointId ?: it.fulfilmentPointId) == pointId &&
                 activePaymentFor(it.id)?.state == PaymentState.CASH_COLLECTED &&
                 cashHandovers.none { ch -> ch.orderIds.contains(it.id) }
     }
@@ -471,12 +470,12 @@ fun BlueGasStore.depotSubmitCashHandover(distributorId: String, declaredPaisa: L
         return Pair(false, "No counter cash waiting for hand-over.")
     }
     val expected = unhandedOrders.sumOf { it.amountReceivedPaisa ?: it.totalAmountPaisa }
-    val id = "CSH-DEP-" + UUID.randomUUID().toString().take(6)
+    val id = "CSH-HUB-" + UUID.randomUUID().toString().take(6)
     cashHandovers.add(
         CashHandover(
             id = id,
             collectorType = "DEPOT",
-            collectorId = distributorId,
+            collectorId = pointId,
             recipient = "FINANCE",
             orderIds = unhandedOrders.map { it.id },
             expectedPaisa = expected,
@@ -486,16 +485,19 @@ fun BlueGasStore.depotSubmitCashHandover(distributorId: String, declaredPaisa: L
     addNotification(
         surface = AppSurface.STAFF,
         title = "Cash hand-over submitted",
-        message = "Depot counter cash hand-over $id (${formatRupees(declaredPaisa)}) submitted for $distributorId.",
+        message = "Hub counter cash hand-over $id (${formatRupees(declaredPaisa)}) submitted for $pointId.",
         canonicalStatus = "SUBMITTED",
         orderId = unhandedOrders.firstOrNull()?.id,
         code = "NTF-15",
         staffRole = StaffSubRole.FINANCE
     )
-    logAudit("CashHandover", id, "SUBMIT_CASH_HANDOVER", distributorId, AccountableRole.DISTRIBUTOR, "Submitted depot cash handover of ${formatRupees(declaredPaisa)} for ${unhandedOrders.size} orders")
+    logAudit("CashHandover", id, "SUBMIT_CASH_HANDOVER", pointId, AccountableRole.HUB, "Submitted hub cash handover of ${formatRupees(declaredPaisa)} for ${unhandedOrders.size} orders")
     notifyChanged()
-    return Pair(true, "Depot cash handover $id submitted to Finance.")
+    return Pair(true, "Hub cash handover $id submitted to Finance.")
 }
+
+fun BlueGasStore.depotSubmitCashHandover(pointId: String, declaredPaisa: Long): Pair<Boolean, String> =
+    hubSubmitCashHandover(pointId, declaredPaisa)
 
 // =========================================================================
 // 3. RIDER FULFILMENT FUNCTIONS (RACI-06/07)
@@ -534,7 +536,7 @@ fun BlueGasStore.riderAcceptTask(orderId: String, riderId: String? = null): Pair
         if (System.currentTimeMillis() - offeredAt > windowMs) {
             expireRiderOffer(order)
             notifyChanged()
-            return Pair(false, "This offer has expired and was returned to the distributor.")
+            return Pair(false, "This offer has expired and was returned to the hub.")
         }
     }
 
@@ -545,7 +547,7 @@ fun BlueGasStore.riderAcceptTask(orderId: String, riderId: String? = null): Pair
 }
 
 /**
- * Declines an offered delivery task and returns it to the distributor for reassignment.
+ * Declines an offered delivery task and returns it to the hub for reassignment.
  *
  * @param orderId Target order identifier.
  * @param reason Plain-language explanation for declining.
@@ -566,7 +568,7 @@ fun BlueGasStore.riderDeclineTask(orderId: String, reason: String): Pair<Boolean
     order.riderOfferedAt = null
     order.riderCylinderVerified = false
 
-    logAudit("Order", orderId, "RIDER_DECLINE_TASK", getActiveRider()?.name ?: "Rider", AccountableRole.DISTRIBUTOR, "Rider declined task: $reason")
+    logAudit("Order", orderId, "RIDER_DECLINE_TASK", getActiveRider()?.name ?: "Rider", AccountableRole.HUB, "Rider declined task: $reason")
 
     addNotification(
         surface = AppSurface.STAFF,
@@ -575,11 +577,11 @@ fun BlueGasStore.riderDeclineTask(orderId: String, reason: String): Pair<Boolean
         canonicalStatus = order.status.canonicalLabel,
         orderId = order.id,
         code = "NTF-03",
-        staffRole = StaffSubRole.DISTRIBUTOR
+        staffRole = StaffSubRole.HUB
     )
 
     notifyChanged()
-    return Pair(true, "Task declined. Distributor notified to reassign.")
+    return Pair(true, "Task declined. Hub notified to reassign.")
 }
 
 /**
@@ -619,7 +621,7 @@ fun BlueGasStore.riderVerifyCylinder(orderId: String, scannedId: String, riderId
             (settings.cylinderIdMode == CylinderIdMode.OPTION_B_PHASE_IN && cylinders.find { it.serialNumber == allocated }?.isTagged == false)
 
     if (!isMatch) {
-        return Pair(false, "This is not the cylinder allocated to this order. Contact your distributor.")
+        return Pair(false, "This is not the cylinder allocated to this order. Contact your hub.")
     }
 
     order.riderCylinderVerified = true
@@ -1131,16 +1133,7 @@ fun BlueGasStore.completeHandover(
                 currentLocationLabel = "With Customer (${order.customerId})"
             )
         }
-        customerHoldings.add(
-            CustomerCylinderHolding(
-                id = "HOLDING-" + UUID.randomUUID().toString().take(6),
-                customerId = order.customerId,
-                cylinderSerial = s,
-                ownership = if (order.orderType == OrderType.NEW_CYLINDER && settings.newCylinderModel == NewCylinderModel.SOLD) CylinderOwnership.OWNED_BY_CUSTOMER else CylinderOwnership.DEPOSIT_HELD,
-                depositPaisa = order.depositTotalPaisa,
-                acquiredAt = System.currentTimeMillis()
-            )
-        )
+        onCylinderHandedToCustomer(order, s, actualEmptySerial)
     }
 
     // Post Revenue Ledger
@@ -1201,17 +1194,17 @@ fun BlueGasStore.ridersCashWaiting(riderId: String): List<Order> {
 }
 
 /**
- * Submits collected COD cash from a rider to either Distributor or Finance for reconciliation.
+ * Submits collected COD cash from a rider to either Hub or Finance for reconciliation.
  *
  * @param riderId Identifier of the submitting rider.
- * @param recipient Target department ("DISTRIBUTOR" or "FINANCE").
+ * @param recipient Target department ("HUB" or "FINANCE").
  * @param declaredPaisa Cash amount physically presented by the rider in integer paisa.
  * @param reason Discrepancy reason if declared amount differs from expected collection.
  * @return Success flag and hand-over reference ID.
  */
 fun BlueGasStore.riderSubmitCashHandover(
     riderId: String,
-    recipient: String = "DISTRIBUTOR",
+    recipient: String = "HUB",
     declaredPaisa: Long,
     reason: String? = null,
     notes: String? = null,
@@ -1221,7 +1214,7 @@ fun BlueGasStore.riderSubmitCashHandover(
         return Pair(false, "Enter the amount you are handing over.")
     }
     val effectiveRecipient = (recipientType ?: recipient).uppercase().let {
-        if (it.contains("FINANCE")) "FINANCE" else "DISTRIBUTOR"
+        if (it.contains("FINANCE")) "FINANCE" else "HUB"
     }
     val effectiveReason = reason ?: notes
     val unhandedOrders = ridersCashWaiting(riderId)
@@ -1245,6 +1238,8 @@ fun BlueGasStore.riderSubmitCashHandover(
             reason = effectiveReason
         )
     )
+    val staffRole = if (effectiveRecipient == "HUB") StaffSubRole.HUB else StaffSubRole.FINANCE
+    val auditRole = if (effectiveRecipient == "HUB") AccountableRole.HUB else AccountableRole.FINANCE
     addNotification(
         surface = AppSurface.STAFF,
         title = "Cash hand-over submitted",
@@ -1252,11 +1247,45 @@ fun BlueGasStore.riderSubmitCashHandover(
         canonicalStatus = "SUBMITTED",
         orderId = unhandedOrders.firstOrNull()?.id,
         code = "NTF-15",
-        staffRole = StaffSubRole.FINANCE
+        staffRole = staffRole
     )
-    logAudit("CashHandover", id, "SUBMIT_CASH_HANDOVER", riderId, AccountableRole.DISTRIBUTOR, "Submitted cash handover of ${formatRupees(declaredPaisa)} for ${unhandedOrders.size} orders")
+    logAudit("CashHandover", id, "SUBMIT_CASH_HANDOVER", riderId, auditRole, "Submitted cash handover of ${formatRupees(declaredPaisa)} for ${unhandedOrders.size} orders")
     notifyChanged()
     return Pair(true, "Cash handover $id submitted for reconciliation.")
+}
+
+fun BlueGasStore.hubReceiveRiderCash(
+    handoverId: String,
+    countedPaisa: Long,
+    reason: String? = null,
+    actor: String = AccountableRole.HUB.displayName
+): Pair<Boolean, String> {
+    val handover = cashHandovers.find { it.id == handoverId }
+        ?: return Pair(false, "Cash handover $handoverId not found.")
+
+    if (handover.status != "SUBMITTED") {
+        return Pair(false, "Handover $handoverId is already ${handover.status}.")
+    }
+
+    handover.hubReceivedPaisa = countedPaisa
+    handover.hubReceivedBy = actor
+    handover.hubReceivedAt = System.currentTimeMillis()
+    handover.status = "RECEIVED_BY_HUB"
+    if (!reason.isNullOrBlank()) {
+        handover.reason = reason
+    }
+
+    logAudit("CashHandover", handoverId, "HUB_RECEIVE_CASH", actor, AccountableRole.HUB, "Hub received cash: ${formatRupees(countedPaisa)}")
+    addNotification(
+        surface = AppSurface.STAFF,
+        title = "Cash Received by Hub",
+        message = "Handover $handoverId received by hub staff ($actor). Ready for Finance reconciliation.",
+        canonicalStatus = "RECEIVED_BY_HUB",
+        orderId = handover.orderIds.firstOrNull(),
+        staffRole = StaffSubRole.FINANCE
+    )
+    notifyChanged()
+    return Pair(true, "Cash received by hub staff.")
 }
 
 /**

@@ -13,8 +13,8 @@ fun BlueGasStore.updateSettings(
     if (new.holdTtlMinutes !in 1..120) {
         return Pair(false, "Hold TTL must be between 1 and 120 minutes.")
     }
-    if (new.distributorAcceptanceWindowMins !in 1..240) {
-        return Pair(false, "Acceptance window must be between 1 and 240 minutes.")
+    if (new.hubAcceptanceWindowMins !in 1..240) {
+        return Pair(false, "Hub acceptance window must be between 1 and 240 minutes.")
     }
     if (new.riderAcceptanceWindowMins !in 1..240) {
         return Pair(false, "Rider acceptance window must be between 1 and 240 minutes.")
@@ -41,12 +41,11 @@ fun BlueGasStore.updateSettings(
     val old = settings
     val changedFields = mutableListOf<String>()
     if (old.holdTtlMinutes != new.holdTtlMinutes) changedFields.add("holdTtl: ${old.holdTtlMinutes} -> ${new.holdTtlMinutes}m")
-    if (old.distributorAcceptanceWindowMins != new.distributorAcceptanceWindowMins) changedFields.add("acceptanceWindow: ${old.distributorAcceptanceWindowMins} -> ${new.distributorAcceptanceWindowMins}m")
+    if (old.hubAcceptanceWindowMins != new.hubAcceptanceWindowMins) changedFields.add("hubAcceptanceWindow: ${old.hubAcceptanceWindowMins} -> ${new.hubAcceptanceWindowMins}m")
     if (old.riderAcceptanceWindowMins != new.riderAcceptanceWindowMins) changedFields.add("riderAcceptanceWindow: ${old.riderAcceptanceWindowMins} -> ${new.riderAcceptanceWindowMins}m")
     if (old.promisedHandoverMinutes != new.promisedHandoverMinutes) changedFields.add("promisedHandover: ${old.promisedHandoverMinutes} -> ${new.promisedHandoverMinutes}m")
     if (old.cashHandoverHours != new.cashHandoverHours) changedFields.add("cashHandoverHours: ${old.cashHandoverHours} -> ${new.cashHandoverHours}h")
     if (old.evidenceRetentionDays != new.evidenceRetentionDays) changedFields.add("retentionDays: ${old.evidenceRetentionDays} -> ${new.evidenceRetentionDays}d")
-    if (old.newCylinderModel != new.newCylinderModel) changedFields.add("newCylinderModel: ${old.newCylinderModel} -> ${new.newCylinderModel}")
     if (old.refillModel != new.refillModel) changedFields.add("refillModel: ${old.refillModel} -> ${new.refillModel}")
     if (old.cylinderIdMode != new.cylinderIdMode) changedFields.add("cylinderIdMode: ${old.cylinderIdMode} -> ${new.cylinderIdMode}")
     if (old.phase2PreviewEnabled != new.phase2PreviewEnabled) changedFields.add("phase2Preview: ${old.phase2PreviewEnabled} -> ${new.phase2PreviewEnabled}")
