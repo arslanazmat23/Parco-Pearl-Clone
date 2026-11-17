@@ -88,6 +88,7 @@ class BlueGasStore {
     var activeStaffSubRole = StaffSubRole.OPERATIONS
     val staffSectionByRole = mutableMapOf<StaffSubRole, String>()
     var staffDetailOrderId: String? = null
+    var selectedHubId: String? = null
     var activeCustomerId = "CUST-001"
     var activeRiderId = ""
     var isRiderOffline = false
@@ -194,6 +195,16 @@ class BlueGasStore {
 
     fun openStaffOrderDetail(orderId: String?) {
         staffDetailOrderId = orderId
+        notifyChanged()
+    }
+
+    /**
+     * Selects the active fulfilment hub in the Hub Staff workspace.
+     *
+     * @param pointId Identifier of the selected hub node.
+     */
+    fun setSelectedHub(pointId: String) {
+        selectedHubId = pointId
         notifyChanged()
     }
 
@@ -501,6 +512,7 @@ class BlueGasStore {
         staffDetailOrderId = null
 
         seedAll()
+        selectedHubId = nodes.firstOrNull { it.type == FulfilmentPointType.HUB }?.id
         notifyChanged()
     }
 }

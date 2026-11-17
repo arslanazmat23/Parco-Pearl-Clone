@@ -490,7 +490,8 @@ fun BlueGasStore.runDailyReconciliation(
                 expected = "F:${stock.filledQty} E:${stock.emptyQty}",
                 actual = "F:$countedFilled E:$countedEmpty",
                 difference = if (filledDiff == 0 && emptyDiff == 0) "0" else "F:${if (filledDiff > 0) "+$filledDiff" else "$filledDiff"} E:${if (emptyDiff > 0) "+$emptyDiff" else "$emptyDiff"}",
-                note = if (filledDiff == 0 && emptyDiff == 0) "Count matched" else "Physical count variance (EXC-18)"
+                note = (if (filledDiff == 0 && emptyDiff == 0) "Count matched" else "Physical count variance (EXC-18)") +
+                    " · Out with riders: ${stock.outWithRidersQty}"
             )
         )
     }

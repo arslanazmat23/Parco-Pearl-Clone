@@ -132,6 +132,22 @@ fun BlueGasStore.allocateCylinder(orderId: String, cylinderId: String): Pair<Boo
         return Pair(false, "Cylinder $cylinderId is on HSE safety hold and cannot be allocated.")
     }
 
+    if (cyl.isTestDue()) {
+        return Pair(false, "This cylinder is due for its safety test. Send it to the plant.")
+    }
+
+    if (cyl.pendingHubScanIn) {
+        return Pair(false, "Cylinder $cylinderId is awaiting hub scan-in before it can be allocated.")
+    }
+
+    if (cyl.custody != CylinderCustody.HUB) {
+        return Pair(false, "Cylinder $cylinderId is not at the hub (${cyl.custody.label}).")
+    }
+
+    if (order.fulfilmentPointId != null && cyl.pointId != null && cyl.pointId != order.fulfilmentPointId) {
+        return Pair(false, "Cylinder $cylinderId belongs to a different hub.")
+    }
+
     if (cyl.allocatedOrderId != null && cyl.allocatedOrderId != orderId) {
         return Pair(false, "Collision: Serial $cylinderId is already allocated to order ${cyl.allocatedOrderId}.")
     }
@@ -154,7 +170,7 @@ fun BlueGasStore.allocateCylinder(orderId: String, cylinderId: String): Pair<Boo
     )
     order.allocatedSerial = cylinderId
 
-    logAudit("Cylinder", cylinderId, "ALLOCATE_SERIAL", "Hub Staff", AccountableRole.INVENTORY, "Bound physical cylinder $cylinderId to order $orderId")
+    logAudit("Cylinder", cylinderId, "ALLOCATE_SERIAL", AccountableRole.INVENTORY.displayName, AccountableRole.INVENTORY, "Bound physical cylinder $cylinderId to order $orderId")
     notifyChanged()
     return Pair(true, "Cylinder $cylinderId allocated to order $orderId.")
 }
@@ -216,6 +232,9 @@ fun BlueGasStore.assignRider(orderId: String, riderId: String): Pair<Boolean, St
     }
     if (rider.pointId != order.fulfilmentPointId) {
         return Pair(false, "Rider belongs to another fulfilment point.")
+    }
+    if (!rider.installationTrained) {
+        return Pair(false, "This rider has not completed installation training.")
     }
 
     order.assignedRiderId = riderId
@@ -337,6 +356,15 @@ fun BlueGasStore.completeCounterHandover(
         return Pair(false, "Order is not at counter handover.")
     }
 
+    val allocated = order.allocatedSerial
+        ?: return Pair(false, "No cylinder is bound to this order.")
+    if (!scannedCylinderId.trim().equals(allocated.trim(), ignoreCase = true)) {
+        return Pair(false, "This is not the cylinder bound to the order.")
+    }
+    if (order.orderType == OrderType.REFILL_EXCHANGE && emptyBrand != null && !settings.approvedEmptyBrands.contains(emptyBrand)) {
+        return Pair(false, "Only BLUE GAS cylinders can be accepted as empties (BR-STK-07).")
+    }
+
     // Handover Complete -> Completed
     val tHoc = OrderStateMachine.transition(order, OrderStatus.ORD_HOC, "Counter Staff", AccountableRole.HUB, "Counter handover checks passed")
     if (tHoc is TransitionResult.Failure) return Pair(false, tHoc.errorMessage)
@@ -404,6 +432,7 @@ fun BlueGasStore.completeCounterHandover(
         }
         onCylinderHandedToCustomer(order, s, emptyCylinderId)
     }
+    stockLeavesHub(order)
 
     // Post Revenue Ledger
     postLedger(orderId, "REVENUE_GAS", debitPaisa = order.subtotalPaisa, description = "Counter gas sale revenue")
@@ -683,6 +712,7 @@ fun BlueGasStore.riderStartTrip(orderId: String, riderId: String? = null, isRepl
         return Pair(false, tDisp.errorMessage)
     }
     recordHistory(tDisp, "DISPATCHED")
+    stockLeavesHub(order)
 
     // Update cylinder custody to Rider Van
     order.allocatedSerial?.let { s ->
@@ -1126,6 +1156,7 @@ fun BlueGasStore.completeHandover(
         }
         onCylinderHandedToCustomer(order, s, actualEmptySerial)
     }
+    stockHandedOver(order)
 
     // Post Revenue Ledger
     postLedger(orderId, "REVENUE_GAS", debitPaisa = order.subtotalPaisa, description = "LPG refill gas revenue")

@@ -29,11 +29,42 @@ import com.example.bluegas.ui.components.CanonicalStatusChip
 import com.example.bluegas.ui.components.OpenSequencingDecisionBadge
 import com.example.ui.theme.BlueGasPrimary
 
+/**
+ * Callback for staff screens to display a feedback banner with success or error styling.
+ */
+typealias StaffBanner = (message: String, isError: Boolean) -> Unit
+
+/**
+ * Reports a store operation Pair(success, message) to this [StaffBanner].
+ *
+ * @param r Result pair where first is true on success and second is the message.
+ */
+fun StaffBanner.report(r: Pair<Boolean, String>) = invoke(r.second, !r.first)
+
+private data class StaffBannerState(
+    val message: String,
+    val isError: Boolean,
+    val id: Long
+)
+
 @Composable
 fun StaffPortalScreen(store: BlueGasStore) {
     val snapshot by store.appState.collectAsStateWithLifecycle()
-    var bannerMessage by remember { mutableStateOf<String?>(null) }
+    var bannerCounter by remember { mutableLongStateOf(0L) }
+    var bannerState by remember { mutableStateOf<StaffBannerState?>(null) }
     var selectedOrderForDetail by remember { mutableStateOf<Order?>(null) }
+
+    val showBanner: StaffBanner = { msg, isError ->
+        bannerCounter++
+        bannerState = StaffBannerState(message = msg, isError = isError, id = bannerCounter)
+    }
+
+    LaunchedEffect(bannerState?.id) {
+        if (bannerState != null) {
+            kotlinx.coroutines.delay(4000L)
+            bannerState = null
+        }
+    }
 
     // If detail order ID was set from notification or store
     LaunchedEffect(snapshot.staffDetailOrderId) {
@@ -143,95 +174,117 @@ fun StaffPortalScreen(store: BlueGasStore) {
             }
         }
 
-        // Action banner
-        if (bannerMessage != null) {
-            Surface(
-                color = Color(0xFFFEF3C7),
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .testTag("staff_action_banner")
-            ) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
-                ) {
-                    Text(
-                        text = bannerMessage ?: "",
-                        fontSize = 11.sp,
-                        color = Color(0xFF92400E),
-                        modifier = Modifier.weight(1f)
-                    )
-                    IconButton(
-                        onClick = { bannerMessage = null },
-                        modifier = Modifier.size(24.dp)
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.Close,
-                            contentDescription = "Dismiss banner",
-                            modifier = Modifier.size(14.dp),
-                            tint = Color(0xFF92400E)
-                        )
-                    }
-                }
-            }
-        }
-
-        // Role-Scoped Content (All 9 Sub-Roles Fully Mapped)
+        // Role-Scoped Content (All 9 Sub-Roles Fully Mapped) with overlay banner
         Box(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(12.dp)
         ) {
-            when (snapshot.activeStaffSubRole) {
-                StaffSubRole.OPERATIONS -> StaffOperationsScreen(
-                    store = store,
-                    snapshot = snapshot,
-                    onBanner = { bannerMessage = it },
-                    onSelectOrder = { selectedOrderForDetail = it }
-                )
-                StaffSubRole.HUB -> StaffHubScreen(
-                    store = store,
-                    snapshot = snapshot,
-                    onBanner = { bannerMessage = it },
-                    onSelectOrder = { selectedOrderForDetail = it }
-                )
-                StaffSubRole.PLANT_INVENTORY -> StaffPlantInventoryScreen(
-                    store = store,
-                    snapshot = snapshot,
-                    onBanner = { bannerMessage = it }
-                )
-                StaffSubRole.FINANCE -> StaffFinanceScreen(
-                    store = store,
-                    snapshot = snapshot,
-                    onBanner = { bannerMessage = it },
-                    onSelectOrder = { selectedOrderForDetail = it }
-                )
-                StaffSubRole.COMMERCIAL -> StaffCommercialScreen(
-                    store = store,
-                    snapshot = snapshot,
-                    onBanner = { bannerMessage = it }
-                )
-                StaffSubRole.SUPPORT -> StaffSupportScreen(
-                    store = store,
-                    snapshot = snapshot,
-                    onBanner = { bannerMessage = it },
-                    onSelectOrder = { selectedOrderForDetail = it }
-                )
-                StaffSubRole.SAFETY_HSE -> StaffSafetyHseScreen(
-                    store = store,
-                    snapshot = snapshot,
-                    onBanner = { bannerMessage = it }
-                )
-                StaffSubRole.ADMIN -> StaffAdminScreen(
-                    store = store,
-                    snapshot = snapshot,
-                    onBanner = { bannerMessage = it }
-                )
-                StaffSubRole.PHASE2_PREVIEW -> StaffPhase2Screen(
-                    store = store,
-                    snapshot = snapshot,
-                    onBanner = { bannerMessage = it }
-                )
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(12.dp)
+            ) {
+                when (snapshot.activeStaffSubRole) {
+                    StaffSubRole.OPERATIONS -> StaffOperationsScreen(
+                        store = store,
+                        snapshot = snapshot,
+                        onBanner = showBanner,
+                        onSelectOrder = { selectedOrderForDetail = it }
+                    )
+                    StaffSubRole.HUB -> StaffHubScreen(
+                        store = store,
+                        snapshot = snapshot,
+                        onBanner = showBanner,
+                        onSelectOrder = { selectedOrderForDetail = it }
+                    )
+                    StaffSubRole.PLANT_INVENTORY -> StaffPlantInventoryScreen(
+                        store = store,
+                        snapshot = snapshot,
+                        onBanner = { msg -> showBanner(msg, false) }
+                    )
+                    StaffSubRole.FINANCE -> StaffFinanceScreen(
+                        store = store,
+                        snapshot = snapshot,
+                        onBanner = { msg -> showBanner(msg, false) },
+                        onSelectOrder = { selectedOrderForDetail = it }
+                    )
+                    StaffSubRole.COMMERCIAL -> StaffCommercialScreen(
+                        store = store,
+                        snapshot = snapshot,
+                        onBanner = { msg -> showBanner(msg, false) }
+                    )
+                    StaffSubRole.SUPPORT -> StaffSupportScreen(
+                        store = store,
+                        snapshot = snapshot,
+                        onBanner = { msg -> showBanner(msg, false) },
+                        onSelectOrder = { selectedOrderForDetail = it }
+                    )
+                    StaffSubRole.SAFETY_HSE -> StaffSafetyHseScreen(
+                        store = store,
+                        snapshot = snapshot,
+                        onBanner = { msg -> showBanner(msg, false) }
+                    )
+                    StaffSubRole.ADMIN -> StaffAdminScreen(
+                        store = store,
+                        snapshot = snapshot,
+                        onBanner = { msg -> showBanner(msg, false) }
+                    )
+                    StaffSubRole.PHASE2_PREVIEW -> StaffPhase2Screen(
+                        store = store,
+                        snapshot = snapshot,
+                        onBanner = { msg -> showBanner(msg, false) }
+                    )
+                }
+            }
+
+            // Overlay action banner (never pushes content down)
+            val currentBanner = bannerState
+            if (currentBanner != null) {
+                val bgColor = if (currentBanner.isError) Color(0xFFFEF3C7) else Color(0xFFDCFCE7)
+                val fgColor = if (currentBanner.isError) Color(0xFF92400E) else Color(0xFF166534)
+                val borderColor = if (currentBanner.isError) Color(0xFFF59E0B) else Color(0xFF22C55E)
+                Surface(
+                    color = bgColor,
+                    shape = RoundedCornerShape(8.dp),
+                    shadowElevation = 6.dp,
+                    border = androidx.compose.foundation.BorderStroke(1.dp, borderColor),
+                    modifier = Modifier
+                        .align(Alignment.TopCenter)
+                        .fillMaxWidth()
+                        .padding(horizontal = 12.dp, vertical = 8.dp)
+                        .testTag("staff_action_banner")
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)
+                    ) {
+                        Icon(
+                            imageVector = if (currentBanner.isError) Icons.Default.Warning else Icons.Default.CheckCircle,
+                            contentDescription = null,
+                            tint = fgColor,
+                            modifier = Modifier.size(16.dp)
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            text = currentBanner.message,
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Medium,
+                            color = fgColor,
+                            modifier = Modifier.weight(1f)
+                        )
+                        IconButton(
+                            onClick = { bannerState = null },
+                            modifier = Modifier.size(32.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Close,
+                                contentDescription = "Dismiss banner",
+                                modifier = Modifier.size(16.dp),
+                                tint = fgColor
+                            )
+                        }
+                    }
+                }
             }
         }
     }

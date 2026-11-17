@@ -604,10 +604,11 @@ fun BlueGasStore.recoverException(
         return Pair(false, "Order is not in Fulfilment Exception.")
     }
 
+    val opsActor = AccountableRole.OPERATIONS.displayName
     order.exceptionRetryCount++
 
     if (target == OrderStatus.ORD_CANC) {
-        return cancelOrder(orderId, "Cancelled from exception recovery: $reason", "Operations Lead", AccountableRole.OPERATIONS)
+        return cancelOrder(orderId, "Cancelled from exception recovery: $reason", opsActor, AccountableRole.OPERATIONS)
     }
 
     if (target == OrderStatus.ORD_FCLO) {
@@ -616,14 +617,33 @@ fun BlueGasStore.recoverException(
             val cyl = cylinders.find { it.serialNumber == s }
             cyl?.let {
                 val idx = cylinders.indexOf(it)
-                cylinders[idx] = it.copy(status = InventoryState.INV_AVAIL, allocatedOrderId = null)
+                if (it.custody == CylinderCustody.RIDER_VAN) {
+                    cylinders[idx] = it.copy(
+                        allocatedOrderId = null,
+                        pendingHubScanIn = true,
+                        pointId = order.fulfilmentPointId ?: it.pointId
+                    )
+                    cylinderCustodyEvents.add(
+                        CylinderCustodyEvent(
+                            id = "EVT-" + UUID.randomUUID().toString().take(6),
+                            serialNumber = s,
+                            fromCustody = CylinderCustody.RIDER_VAN,
+                            toCustody = CylinderCustody.RIDER_VAN,
+                            orderId = order.id,
+                            actor = opsActor
+                        )
+                    )
+                    logAudit("Cylinder", s, "PENDING_HUB_SCAN_IN", opsActor, AccountableRole.OPERATIONS, "Cylinder $s released on fail-closed of order $orderId; awaiting hub scan-in")
+                } else {
+                    cylinders[idx] = it.copy(status = InventoryState.INV_AVAIL, allocatedOrderId = null)
+                }
             }
             order.allocatedSerial = null
         }
         val tFclo = OrderStateMachine.transition(
             order = order,
             targetStatus = OrderStatus.ORD_FCLO,
-            actor = "Operations Lead",
+            actor = opsActor,
             role = AccountableRole.OPERATIONS,
             trigger = "Failed closed: $reason"
         )
@@ -639,7 +659,7 @@ fun BlueGasStore.recoverException(
     val tRec = OrderStateMachine.transition(
         order = order,
         targetStatus = target,
-        actor = "Operations Lead",
+        actor = opsActor,
         role = AccountableRole.OPERATIONS,
         trigger = "Recovered: $reason"
     )
@@ -650,13 +670,74 @@ fun BlueGasStore.recoverException(
 
     if (target == OrderStatus.ORD_ASGN) {
         order.assignedAt = System.currentTimeMillis()
+        order.allocatedSerial?.let { s ->
+            val cyl = cylinders.find { it.serialNumber == s }
+            cyl?.let {
+                val idx = cylinders.indexOf(it)
+                when (it.custody) {
+                    CylinderCustody.HUB -> {
+                        cylinders[idx] = it.copy(
+                            status = InventoryState.INV_AVAIL,
+                            allocatedOrderId = null
+                        )
+                        cylinderCustodyEvents.add(
+                            CylinderCustodyEvent(
+                                id = "EVT-" + UUID.randomUUID().toString().take(6),
+                                serialNumber = s,
+                                fromCustody = CylinderCustody.HUB,
+                                toCustody = CylinderCustody.HUB,
+                                orderId = order.id,
+                                actor = opsActor
+                            )
+                        )
+                        logAudit("Cylinder", s, "RELEASE_ALLOCATION", opsActor, AccountableRole.OPERATIONS, "Released cylinder $s back to hub pool on exception recovery of $orderId")
+                    }
+                    CylinderCustody.RIDER_VAN -> {
+                        cylinders[idx] = it.copy(
+                            status = InventoryState.INV_TRANSIT,
+                            custody = CylinderCustody.RIDER_VAN,
+                            allocatedOrderId = null,
+                            pendingHubScanIn = true,
+                            pointId = order.fulfilmentPointId ?: it.pointId
+                        )
+                        cylinderCustodyEvents.add(
+                            CylinderCustodyEvent(
+                                id = "EVT-" + UUID.randomUUID().toString().take(6),
+                                serialNumber = s,
+                                fromCustody = CylinderCustody.RIDER_VAN,
+                                toCustody = CylinderCustody.RIDER_VAN,
+                                orderId = order.id,
+                                actor = opsActor
+                            )
+                        )
+                        logAudit("Cylinder", s, "PENDING_HUB_SCAN_IN", opsActor, AccountableRole.OPERATIONS, "Cylinder $s in rider van released from $orderId; awaiting hub scan-in")
+                    }
+                    else -> {
+                        cylinders[idx] = it.copy(allocatedOrderId = null)
+                    }
+                }
+            }
+        }
+        order.allocatedSerial = null
+        order.assignedRiderId = null
+        order.riderTaskStatus = null
+        order.riderCylinderVerified = false
+        order.riderOfferedAt = null
     } else if (target == OrderStatus.ORD_PREP) {
         // Release previous cylinder to allow re-allocation
         order.allocatedSerial?.let { s ->
             val cyl = cylinders.find { it.serialNumber == s }
             cyl?.let {
                 val idx = cylinders.indexOf(it)
-                cylinders[idx] = it.copy(status = InventoryState.INV_AVAIL, allocatedOrderId = null)
+                if (it.custody == CylinderCustody.RIDER_VAN) {
+                    cylinders[idx] = it.copy(
+                        allocatedOrderId = null,
+                        pendingHubScanIn = true,
+                        pointId = order.fulfilmentPointId ?: it.pointId
+                    )
+                } else {
+                    cylinders[idx] = it.copy(status = InventoryState.INV_AVAIL, allocatedOrderId = null)
+                }
             }
             order.allocatedSerial = null
         }
