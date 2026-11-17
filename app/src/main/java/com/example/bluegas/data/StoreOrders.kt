@@ -26,7 +26,7 @@ fun BlueGasStore.createOrder(
     // 1. Validate serviceability / pickup
     if (fulfilmentMode == FulfilmentMode.DELIVERY && !address.isServiceable) {
         val pickupOption = nodes.find { it.pickupEnabled && it.city == address.city }
-        val hint = if (pickupOption != null) " Depot pickup is available at ${pickupOption.name}." else ""
+        val hint = if (pickupOption != null) " You can collect from ${pickupOption.name} instead." else ""
         return Pair(null, "Address is outside the delivery pilot area.$hint")
     }
 
@@ -53,8 +53,8 @@ fun BlueGasStore.createOrder(
         val otherSize = stockBalances.filter { it.pointId == servingPointId && it.skuId != sku && it.availableQty >= quantity }
             .mapNotNull { b -> productVariants.find { it.sku == b.skuId && it.isHouseholdApproved }?.name }
             .firstOrNull()
-        val altHint = if (otherSize != null) " Consider $otherSize or depot pickup." else " Please check back shortly."
-        return Pair(null, "Size currently out of stock at this depot.$altHint")
+        val altHint = if (otherSize != null) " Consider $otherSize or collect from a hub." else " Please check back shortly."
+        return Pair(null, "This size is out of stock at your hub right now.$altHint")
     }
 
     // 4. Build Quote

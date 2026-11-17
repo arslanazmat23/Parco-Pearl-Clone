@@ -517,11 +517,26 @@ fun NotificationCenterDialog(store: BlueGasStore, onDismiss: () -> Unit) {
                             Column(modifier = Modifier.padding(8.dp)) {
                                 Row(
                                     modifier = Modifier.fillMaxWidth(),
-                                    horizontalArrangement = Arrangement.SpaceBetween
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
                                 ) {
-                                    Text(item.title, fontWeight = FontWeight.Bold, fontSize = 12.sp)
-                                    Surface(color = Color(0xFFDBEAFE), shape = RoundedCornerShape(4.dp)) {
-                                        Text(item.canonicalStatus, fontSize = 9.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(4.dp, 2.dp))
+                                    Text(item.title, fontWeight = FontWeight.Bold, fontSize = 12.sp, modifier = Modifier.weight(1f))
+                                    Spacer(modifier = Modifier.width(4.dp))
+                                    Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                                        if (item.channels.contains(NotifyChannel.SMS)) {
+                                            Surface(color = Color(0xFFE2E8F0), shape = RoundedCornerShape(4.dp)) {
+                                                Text(
+                                                    text = "SMS sent",
+                                                    fontSize = 9.sp,
+                                                    fontWeight = FontWeight.Medium,
+                                                    color = Color(0xFF475569),
+                                                    modifier = Modifier.padding(4.dp, 2.dp)
+                                                )
+                                            }
+                                        }
+                                        Surface(color = Color(0xFFDBEAFE), shape = RoundedCornerShape(4.dp)) {
+                                            Text(item.canonicalStatus, fontSize = 9.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(4.dp, 2.dp))
+                                        }
                                     }
                                 }
                                 Text(item.message, fontSize = 11.sp, color = Color(0xFF1E293B))

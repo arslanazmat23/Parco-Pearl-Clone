@@ -56,28 +56,47 @@ internal fun BlueGasStore.seedAll() {
     stockBalances.add(StockBalance("PLANT-01", "SKU-LPG-11-8", 40, 10, 0, 0, 40, 10))
     stockBalances.add(StockBalance("PLANT-01", "SKU-LPG-45-4", 8, 2, 0, 0, 8, 2))
 
+    val dateFmt = SimpleDateFormat("yyyy-MM-dd", Locale.US)
+    fun fillDateDaysAgo(daysAgo: Int): String = dateFmt.format(Date(now - daysAgo * 86400000L))
+
     // 9. Cylinders
     // NODE-LHR-1
-    cylinders.add(Cylinder("BG-LHR-001", "SKU-LPG-11-8", 11.8, InventoryState.INV_CONSUMED, CylinderCustody.CUSTOMER_PREMISES, "With Customer (CUST-001)"))
-    cylinders.add(Cylinder("BG-LHR-002", "SKU-LPG-11-8", 11.8, InventoryState.INV_SERIAL, CylinderCustody.HUB, "Lahore Hub", allocatedOrderId = "ORD-SEED-105"))
-    cylinders.add(Cylinder("BG-LHR-INC-001", "SKU-LPG-11-8", 11.8, InventoryState.INV_AVAIL, CylinderCustody.HUB, "Lahore Hub", hseHold = true, allocatedOrderId = "ORD-SEED-111"))
-    cylinders.add(Cylinder("BG-LHR-003", "SKU-LPG-11-8", 11.8, InventoryState.INV_SERIAL, CylinderCustody.HUB, "Lahore Hub", allocatedOrderId = "ORD-SEED-112"))
-    cylinders.add(Cylinder("BG-LHR-118-001", "SKU-LPG-11-8", 11.8, InventoryState.INV_SERIAL, CylinderCustody.HUB, "Lahore Hub", allocatedOrderId = "ORD-SEED-107"))
-    cylinders.add(Cylinder("BG-LHR-118-002", "SKU-LPG-11-8", 11.8, InventoryState.INV_AVAIL, CylinderCustody.HUB, "Lahore Hub"))
-    cylinders.add(Cylinder("BG-LHR-118-003", "SKU-LPG-11-8", 11.8, InventoryState.INV_SERIAL, CylinderCustody.HUB, "Lahore Hub", allocatedOrderId = "ORD-SEED-106"))
-    cylinders.add(Cylinder("BG-LHR-004", "SKU-LPG-11-8", 11.8, InventoryState.INV_CONSUMED, CylinderCustody.CUSTOMER_PREMISES, "With Customer (CUST-002)"))
+    cylinders.add(Cylinder("BG-LHR-001", "SKU-LPG-11-8", 11.8, InventoryState.INV_CONSUMED, CylinderCustody.CUSTOMER_PREMISES, "With Customer (CUST-001)", pointId = "NODE-LHR-1", lastFillDate = fillDateDaysAgo(8), lastFillWeightKg = 11.8, nextTestDueDate = "2029-03-15"))
+    cylinders.add(Cylinder("BG-LHR-002", "SKU-LPG-11-8", 11.8, InventoryState.INV_SERIAL, CylinderCustody.HUB, "Lahore Hub", allocatedOrderId = "ORD-SEED-105", pointId = "NODE-LHR-1", lastFillDate = fillDateDaysAgo(2), lastFillWeightKg = 11.8, nextTestDueDate = "2029-08-20"))
+    cylinders.add(Cylinder("BG-LHR-INC-001", "SKU-LPG-11-8", 11.8, InventoryState.INV_AVAIL, CylinderCustody.HUB, "Lahore Hub", allocatedOrderId = "ORD-SEED-111", pointId = "NODE-LHR-1", hseHold = true, lastFillDate = fillDateDaysAgo(5), lastFillWeightKg = 11.8, nextTestDueDate = "2028-11-10"))
+    cylinders.add(Cylinder("BG-LHR-003", "SKU-LPG-11-8", 11.8, InventoryState.INV_SERIAL, CylinderCustody.HUB, "Lahore Hub", allocatedOrderId = "ORD-SEED-112", pointId = "NODE-LHR-1", lastFillDate = fillDateDaysAgo(3), lastFillWeightKg = 11.8, nextTestDueDate = "2030-01-12"))
+    cylinders.add(Cylinder("BG-LHR-118-001", "SKU-LPG-11-8", 11.8, InventoryState.INV_SERIAL, CylinderCustody.HUB, "Lahore Hub", allocatedOrderId = "ORD-SEED-107", pointId = "NODE-LHR-1", lastFillDate = fillDateDaysAgo(4), lastFillWeightKg = 11.8, nextTestDueDate = "2030-05-18"))
+    cylinders.add(Cylinder("BG-LHR-118-002", "SKU-LPG-11-8", 11.8, InventoryState.INV_AVAIL, CylinderCustody.HUB, "Lahore Hub", pointId = "NODE-LHR-1", lastFillDate = fillDateDaysAgo(6), lastFillWeightKg = 11.8, nextTestDueDate = "2029-09-30"))
+    cylinders.add(Cylinder("BG-LHR-118-003", "SKU-LPG-11-8", 11.8, InventoryState.INV_SERIAL, CylinderCustody.HUB, "Lahore Hub", allocatedOrderId = "ORD-SEED-106", pointId = "NODE-LHR-1", lastFillDate = fillDateDaysAgo(1), lastFillWeightKg = 11.8, nextTestDueDate = "2031-02-14"))
+    cylinders.add(Cylinder("BG-LHR-118-004", "SKU-LPG-11-8", 11.8, InventoryState.INV_AVAIL, CylinderCustody.HUB, "Lahore Hub", pointId = "NODE-LHR-1", lastFillDate = fillDateDaysAgo(14), lastFillWeightKg = 11.8, nextTestDueDate = "2025-06-15"))
+    cylinders.add(Cylinder("BG-LHR-004", "SKU-LPG-11-8", 11.8, InventoryState.INV_CONSUMED, CylinderCustody.CUSTOMER_PREMISES, "With Customer (CUST-002)", pointId = "NODE-LHR-1", lastFillDate = fillDateDaysAgo(12), lastFillWeightKg = 11.8, nextTestDueDate = "2028-07-22"))
     // 2 untagged cylinders at NODE-LHR-1 (EXC-22)
-    cylinders.add(Cylinder("BG-LHR-U01", "SKU-LPG-11-8", 11.8, InventoryState.INV_AVAIL, CylinderCustody.HUB, "Lahore Hub", isTagged = false))
-    cylinders.add(Cylinder("BG-LHR-U02", "SKU-LPG-11-8", 11.8, InventoryState.INV_AVAIL, CylinderCustody.HUB, "Lahore Hub", isTagged = false))
+    cylinders.add(Cylinder("BG-LHR-U01", "SKU-LPG-11-8", 11.8, InventoryState.INV_AVAIL, CylinderCustody.HUB, "Lahore Hub", isTagged = false, pointId = "NODE-LHR-1", lastFillDate = fillDateDaysAgo(9), lastFillWeightKg = 11.8, nextTestDueDate = "2029-12-01"))
+    cylinders.add(Cylinder("BG-LHR-U02", "SKU-LPG-11-8", 11.8, InventoryState.INV_AVAIL, CylinderCustody.HUB, "Lahore Hub", isTagged = false, pointId = "NODE-LHR-1", lastFillDate = fillDateDaysAgo(11), lastFillWeightKg = 11.8, nextTestDueDate = "2030-04-25"))
 
     // NODE-ISB-1
-    cylinders.add(Cylinder("BG-ISB-014", "SKU-LPG-11-8", 11.8, InventoryState.INV_AVAIL, CylinderCustody.HUB, "Islamabad Hub"))
-    cylinders.add(Cylinder("BG-ISB-118-001", "SKU-LPG-11-8", 11.8, InventoryState.INV_AVAIL, CylinderCustody.HUB, "Islamabad Hub"))
+    cylinders.add(Cylinder("BG-ISB-014", "SKU-LPG-11-8", 11.8, InventoryState.INV_AVAIL, CylinderCustody.HUB, "Islamabad Hub", pointId = "NODE-ISB-1", lastFillDate = fillDateDaysAgo(16), lastFillWeightKg = 11.8, nextTestDueDate = "2025-08-10"))
+    cylinders.add(Cylinder("BG-ISB-118-001", "SKU-LPG-11-8", 11.8, InventoryState.INV_AVAIL, CylinderCustody.HUB, "Islamabad Hub", pointId = "NODE-ISB-1", lastFillDate = fillDateDaysAgo(7), lastFillWeightKg = 11.8, nextTestDueDate = "2030-06-15"))
 
     // PLANT-01
     for (i in 1..12) {
         val s = String.format("BG-PLT-118-%03d", i)
-        cylinders.add(Cylinder(s, "SKU-LPG-11-8", 11.8, InventoryState.INV_AVAIL, CylinderCustody.PLANT, "Plant Site"))
+        val year = 2028 + (i % 4)
+        val month = String.format("%02d", (i % 12) + 1)
+        cylinders.add(
+            Cylinder(
+                serialNumber = s,
+                sku = "SKU-LPG-11-8",
+                weightKg = 11.8,
+                status = InventoryState.INV_AVAIL,
+                custody = CylinderCustody.PLANT,
+                currentLocationLabel = "Plant Site",
+                pointId = "PLANT-01",
+                lastFillDate = fillDateDaysAgo((i % 19) + 1),
+                lastFillWeightKg = 11.8,
+                nextTestDueDate = "$year-$month-15"
+            )
+        )
     }
 
     // Customer holdings & deposits (Ahmed Bilal: 11.8 kg on deposit; Usman Tariq: 11.8 kg loaned dealer cylinder)
@@ -87,7 +106,7 @@ internal fun BlueGasStore.seedAll() {
             customerId = "CUST-001",
             cylinderSerial = "BG-LHR-001",
             ownership = CylinderOwnership.DEPOSIT_HELD,
-            depositPaisa = 750000L,
+            depositPaisa = 1000000L,
             acquiredAt = now - 86400000L * 7L,
             noDepositOnRecord = false,
             depositStatus = DepositStatus.HELD,
@@ -100,7 +119,7 @@ internal fun BlueGasStore.seedAll() {
             customerId = "CUST-001",
             sku = "SKU-LPG-11-8",
             cylinderSerial = "BG-LHR-001",
-            amountPaisa = 750000L,
+            amountPaisa = 1000000L,
             paidAt = now - 86400000L * 7L,
             orderId = "ORD-SEED-101",
             paymentId = "PAY-SEED-101",

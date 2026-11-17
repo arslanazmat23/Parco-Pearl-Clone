@@ -191,6 +191,12 @@ fun StaffAdminScreen(
                             }
                         }
                     }
+
+                    Spacer(modifier = Modifier.height(12.dp))
+                    ToBeOptionsReadOnlyCard(
+                        settings = currentSettings,
+                        snapshot = snapshot
+                    )
                 }
             }
 
@@ -313,3 +319,228 @@ fun StaffAdminScreen(
         }
     }
 }
+
+/**
+ * Displays all To-Be configuration options read-only under Admin Settings with rule 7 status pills.
+ *
+ * @param settings Current [PlatformSettings] snapshot.
+ * @param snapshot Current [SharedAppState] used to resolve human-readable hub and product names.
+ */
+@Composable
+private fun ToBeOptionsReadOnlyCard(
+    settings: PlatformSettings,
+    snapshot: SharedAppState
+) {
+    val windowsText = buildString {
+        append("ASAP: ")
+        append(if (settings.asapEnabled) "On" else "Off")
+        append(" • Slots: ")
+        append(settings.deliveryWindowsHours.joinToString(", ") { "${it.first}:00–${it.second}:00" })
+        append(" • Tomorrow: ")
+        append(if (settings.tomorrowWindowsEnabled) "On" else "Off")
+    }
+
+    val expressText = "${if (settings.expressEnabled) "Enabled" else "Disabled"} • Fee: ${formatRupees(settings.expressFeePaisa)} • Target: ${settings.expressHours} hours"
+
+    val backupText = if (settings.backupCylinderAllowed) {
+        "Allowed (up to ${settings.maxDepositCylindersPerSize} per size)"
+    } else {
+        "Not allowed (limit 1 per size)"
+    }
+
+    val hubMinimumsText = if (settings.hubMinimumFilled.isEmpty()) {
+        "None configured"
+    } else {
+        settings.hubMinimumFilled.entries.joinToString("; ") { (pointId, skus) ->
+            val pointName = snapshot.nodes.find { it.id == pointId }?.name ?: pointId
+            val skuText = skus.entries.joinToString(", ") { (skuId, qty) ->
+                val sizeName = snapshot.productVariants.find { it.sku == skuId }?.let { v ->
+                    v.cylinderSizeKg?.let { "$it kg" } ?: v.name
+                } ?: skuId
+                "$sizeName: $qty"
+            }
+            "$pointName ($skuText)"
+        }
+    }
+
+    val dispatchText = when (settings.dispatchMode) {
+        DispatchMode.HUB_FIRST -> "Hub first"
+        DispatchMode.AUTO_RIDER_FIRST -> "Auto rider first"
+    }
+
+    Card(
+        colors = CardDefaults.cardColors(containerColor = Color.White),
+        border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFFCBD5E1)),
+        modifier = Modifier
+            .fillMaxWidth()
+            .testTag("to_be_options_card")
+    ) {
+        Column(modifier = Modifier.padding(12.dp)) {
+            Text("To-Be options", fontWeight = FontWeight.Bold, fontSize = 12.sp)
+            Text(
+                "Read-only upcoming policy and pilot configuration values.",
+                fontSize = 10.sp,
+                color = Color(0xFF64748B)
+            )
+            Spacer(modifier = Modifier.height(8.dp))
+
+            ToBeSettingRow(
+                label = "Dispatch mode",
+                value = dispatchText,
+                isRecommended = true
+            )
+            ToBeSettingRow(
+                label = "Maximum orders per rider trip",
+                value = "${settings.riderBatchMax} orders",
+                isRecommended = true
+            )
+            ToBeSettingRow(
+                label = "Delivery windows",
+                value = windowsText,
+                isRecommended = true
+            )
+            ToBeSettingRow(
+                label = "Same-day standard cut-off",
+                value = "${settings.standardCutoffHour}:00",
+                isDemoValue = true
+            )
+            ToBeSettingRow(
+                label = "Express delivery",
+                value = expressText,
+                isDemoValue = true
+            )
+            ToBeSettingRow(
+                label = "Not-home doorstep wait time",
+                value = "${settings.notHomeWaitMinutes} minutes",
+                isDemoValue = true
+            )
+            ToBeSettingRow(
+                label = "Free re-deliveries allowed",
+                value = "${settings.freeRedeliveries}",
+                isDemoValue = true
+            )
+            ToBeSettingRow(
+                label = "CNIC required for cylinder deposit",
+                value = if (settings.cnicRequiredForDeposit) "Yes" else "No",
+                isRecommended = true
+            )
+            ToBeSettingRow(
+                label = "Backup cylinder on deposit",
+                value = backupText,
+                isDemoValue = true
+            )
+            ToBeSettingRow(
+                label = "Refill reminder",
+                value = "${if (settings.refillReminderEnabled) "Enabled" else "Disabled"} (${settings.refillReminderLeadDays} days ahead)",
+                isRecommended = true
+            )
+            ToBeSettingRow(
+                label = "Customer SMS alerts",
+                value = if (settings.smsEnabled) "Enabled (shows \"SMS sent\" tag)" else "Disabled"
+            )
+            ToBeSettingRow(
+                label = "Hub minimum filled stock",
+                value = hubMinimumsText,
+                isDemoValue = true
+            )
+            ToBeSettingRow(
+                label = "Daily plant fill plan time",
+                value = "${settings.fillPlanHour}:00",
+                isRecommended = true
+            )
+            ToBeSettingRow(
+                label = "Switch & Save (Route A)",
+                value = if (settings.switchSaveRouteAEnabled) "Enabled" else "Disabled",
+                isRecommended = true
+            )
+            ToBeSettingRow(
+                label = "Rival cylinder return agreements (Route B)",
+                value = if (settings.rivalReturnAgreements.isEmpty()) "None configured" else settings.rivalReturnAgreements.joinToString(", "),
+                isDemoValue = true,
+                showDivider = false
+            )
+        }
+    }
+}
+
+/**
+ * Renders one read-only To-Be setting row with human-readable wording and optional status pill.
+ *
+ * @param label Human-readable setting label.
+ * @param value Formatted setting value in words.
+ * @param isRecommended True to display the blue "Recommended — awaiting approval" pill.
+ * @param isDemoValue True to display the grey "Demo value" pill.
+ * @param showDivider Whether to draw a divider below the row.
+ */
+@Composable
+private fun ToBeSettingRow(
+    label: String,
+    value: String,
+    isRecommended: Boolean = false,
+    isDemoValue: Boolean = false,
+    showDivider: Boolean = true
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 4.dp)
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = label,
+                fontWeight = FontWeight.SemiBold,
+                fontSize = 11.sp,
+                color = Color(0xFF1E293B),
+                modifier = Modifier.weight(1f)
+            )
+        }
+        if (isRecommended || isDemoValue) {
+            Spacer(modifier = Modifier.height(2.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                if (isRecommended) {
+                    Surface(
+                        color = Color(0xFFDBEAFE),
+                        shape = RoundedCornerShape(4.dp)
+                    ) {
+                        Text(
+                            text = "Recommended — awaiting approval",
+                            fontSize = 9.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            color = Color(0xFF1D4ED8),
+                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                        )
+                    }
+                }
+                if (isDemoValue) {
+                    Surface(
+                        color = Color(0xFFE2E8F0),
+                        shape = RoundedCornerShape(4.dp)
+                    ) {
+                        Text(
+                            text = "Demo value",
+                            fontSize = 9.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            color = Color(0xFF475569),
+                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                        )
+                    }
+                }
+            }
+        }
+        Spacer(modifier = Modifier.height(2.dp))
+        Text(
+            text = value,
+            fontSize = 11.sp,
+            color = Color(0xFF475569)
+        )
+        if (showDivider) {
+            Spacer(modifier = Modifier.height(4.dp))
+            HorizontalDivider(color = Color(0xFFF1F5F9))
+        }
+    }
+}
+

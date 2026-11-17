@@ -166,6 +166,22 @@ enum class FulfilmentPointType {
     HUB
 }
 
+enum class DispatchMode {
+    HUB_FIRST,
+    AUTO_RIDER_FIRST
+}
+
+enum class ServiceLevel(val label: String) {
+    STANDARD("Standard"),
+    EXPRESS("Express")
+}
+
+enum class NotifyChannel {
+    PUSH,
+    SMS,
+    INTERNAL
+}
+
 enum class RiderTaskStatus {
     OFFERED,
     ACCEPTED,
@@ -276,7 +292,7 @@ enum class PaymentState(val displayName: String, val isTerminal: Boolean = false
     FINAL_AMOUNT_DETERMINED("Final Amount Determined"),
     FINAL_CAPTURE_PENDING("Final Capture Pending"),
     CAPTURED("Captured"),
-    NO_ADJUSTMENT("No Adjustment Needed"),
+    NO_ADJUSTMENT("No Adjustment"),
     ADDITIONAL_COLLECTION_PENDING("Additional Collection Pending"),
     ADDITIONAL_COLLECTION_COMPLETED("Additional Collection Completed"),
     ADDITIONAL_COLLECTION_FAILED("Additional Collection Failed"),
@@ -300,8 +316,8 @@ enum class PaymentState(val displayName: String, val isTerminal: Boolean = false
 }
 
 enum class AccountableRole(val displayName: String) {
-    OPERATIONS("Operations Lead"),
-    FINANCE("Finance Lead"),
+    OPERATIONS("Operations Manager"),
+    FINANCE("Finance"),
     HUB("Hub Staff"),
     SUPPORT("Customer Support"),
     INVENTORY("Inventory Controller"),
@@ -344,7 +360,8 @@ data class Customer(
     val createdAt: Long = System.currentTimeMillis() - 90L * 86400000L,
     val isPhoneVerified: Boolean = true,
     val isCnicVerified: Boolean = true,
-    val customerType: String = "HOUSEHOLD"
+    val customerType: String = "HOUSEHOLD",
+    var cnicCapturedAt: Long? = null
 )
 
 data class Address(
@@ -418,8 +435,8 @@ data class PriceBookConfig(
         "SKU-REG-HOSE" to 145000L
     ),
     val depositAmountPaisa: Map<String, Long> = mapOf(
-        "SKU-LPG-11-8" to 750000L,
-        "SKU-LPG-45-4" to 1800000L,
+        "SKU-LPG-11-8" to 1000000L,
+        "SKU-LPG-45-4" to 2750000L,
         "SKU-REG-HOSE" to 0L
     ),
     val platformFeePaisa: Long = 15000L,
@@ -525,7 +542,11 @@ data class Cylinder(
     val pointId: String? = "NODE-LHR-1",
     val ownership: CylinderOwnership? = null,
     val custodyRecord: CustodyRecordStatus = CustodyRecordStatus.ACTIVE,
-    val hseHold: Boolean = false
+    val hseHold: Boolean = false,
+    val lastFillDate: String? = null,
+    val lastFillWeightKg: Double? = null,
+    val nextTestDueDate: String? = null,
+    var pendingHubScanIn: Boolean = false
 )
 
 data class CylinderCustodyEvent(
@@ -671,7 +692,8 @@ data class NotificationItem(
     val timestamp: Long = System.currentTimeMillis(),
     var isRead: Boolean = false,
     val code: String = "NTF-01",
-    val staffRole: StaffSubRole? = null
+    val staffRole: StaffSubRole? = null,
+    val channels: List<NotifyChannel> = listOf(NotifyChannel.PUSH)
 )
 
 data class AuditLog(
@@ -768,7 +790,16 @@ data class Order(
     var confirmedAt: Long? = null,
     var completedAt: Long? = null,
     var promisedByAt: Long? = null,
-    var adjustmentAccepted: Boolean? = null
+    var adjustmentAccepted: Boolean? = null,
+    var deliveryWindowLabel: String? = null,
+    var windowStartAt: Long? = null,
+    var windowEndAt: Long? = null,
+    val serviceLevel: ServiceLevel = ServiceLevel.STANDARD,
+    val expressFeePaisa: Long = 0L,
+    var notHomeCount: Int = 0,
+    var rescheduleCount: Int = 0,
+    var riderAtHubAt: Long? = null,
+    var complaintReference: String? = null
 )
 
 /**

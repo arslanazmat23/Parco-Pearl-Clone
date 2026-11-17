@@ -256,8 +256,20 @@ class BlueGasStore {
         canonicalStatus: String,
         orderId: String?,
         code: String = "NTF-01",
-        staffRole: StaffSubRole? = null
+        staffRole: StaffSubRole? = null,
+        channels: List<NotifyChannel>? = null
     ) {
+        val smsCodes = setOf("NTF-01", "NTF-04", "NTF-06", "NTF-13", "NTF-19", "NTF-20", "NTF-21")
+        val baseChannels = channels ?: if (surface == AppSurface.STAFF) {
+            listOf(NotifyChannel.INTERNAL)
+        } else {
+            listOf(NotifyChannel.PUSH)
+        }
+        val resolvedChannels = if (surface == AppSurface.CUSTOMER && settings.smsEnabled && code in smsCodes && NotifyChannel.SMS !in baseChannels) {
+            baseChannels + NotifyChannel.SMS
+        } else {
+            baseChannels
+        }
         notifications.add(
             0,
             NotificationItem(
@@ -269,7 +281,8 @@ class BlueGasStore {
                 orderId = orderId,
                 timestamp = System.currentTimeMillis(),
                 code = code,
-                staffRole = staffRole
+                staffRole = staffRole,
+                channels = resolvedChannels
             )
         )
     }

@@ -14,7 +14,8 @@ data class StockBalance(
     var heldQty: Int = 0,
     var reservedQty: Int = 0,
     val openingFilledQty: Int = filledQty,
-    val openingEmptyQty: Int = emptyQty
+    val openingEmptyQty: Int = emptyQty,
+    var outWithRidersQty: Int = 0
 ) {
     val availableQty: Int get() = (filledQty - heldQty - reservedQty).coerceAtLeast(0)
 }
@@ -100,8 +101,8 @@ data class PriceList(
         "SKU-LPG-45-4" to 1712100L
     ),
     val depositPaisa: Map<String, Long> = mapOf(
-        "SKU-LPG-11-8" to 750000L,
-        "SKU-LPG-45-4" to 1800000L
+        "SKU-LPG-11-8" to 1000000L,
+        "SKU-LPG-45-4" to 2750000L
     ),
     val accessoryPaisa: Map<String, Long> = mapOf(
         "SKU-REG-HOSE" to 145000L
@@ -316,7 +317,32 @@ data class PlatformSettings(
     val phase2DiscountAppliesTo: String = "NOT_DECIDED", // Q02
     val phase2EligibleBrands: List<String> = listOf("Pak LPG", "Burshane", "Fon Gas", "Shell Gas", "Other"),
     val phase2MaxClaimsPerCustomer: Int = 2,
-    val phase2RiderMayInspect: Boolean = false // Q12
+    val phase2RiderMayInspect: Boolean = false, // Q12
+    // To-Be options (Chunk 1)
+    val dispatchMode: DispatchMode = DispatchMode.HUB_FIRST,                  // To-Be P3 [Recommended]
+    val riderBatchMax: Int = 3,                                               // To-Be P3 [Recommended]
+    val asapEnabled: Boolean = true,                                          // To-Be P3 step 4 [Recommended]
+    val deliveryWindowsHours: List<Pair<Int, Int>> = listOf(10 to 12, 12 to 14, 14 to 16, 16 to 18, 18 to 20), // To-Be P3 [Recommended]
+    val tomorrowWindowsEnabled: Boolean = true,                               // To-Be P3 [Recommended]
+    val standardCutoffHour: Int = 17,                                         // delivery promise [To decide]
+    val expressEnabled: Boolean = false,                                      // [To decide]
+    val expressFeePaisa: Long = 20000L,                                       // [To decide]
+    val expressHours: Int = 2,                                                // [To decide]
+    val notHomeWaitMinutes: Int = 10,                                         // To-Be P5 step 2 [To decide]
+    val freeRedeliveries: Int = 1,                                            // To-Be P5 step 2 [To decide]
+    val cnicRequiredForDeposit: Boolean = true,                               // Q18 [Recommended]
+    val backupCylinderAllowed: Boolean = false,                               // To-Be P4 [To decide]
+    val maxDepositCylindersPerSize: Int = 2,                                  // used only when backupCylinderAllowed; otherwise the limit is 1
+    val refillReminderEnabled: Boolean = true,                                // To-Be P3 [Recommended]
+    val refillReminderLeadDays: Int = 3,                                      // To-Be P3 [Recommended]
+    val smsEnabled: Boolean = true,                                           // demo: records "SMS sent"
+    val hubMinimumFilled: Map<String, Map<String, Int>> = mapOf(              // To-Be P2 step 1 [levels to decide after pilot]
+        "NODE-LHR-1" to mapOf("SKU-LPG-11-8" to 20, "SKU-LPG-45-4" to 5),
+        "NODE-ISB-1" to mapOf("SKU-LPG-11-8" to 12, "SKU-LPG-45-4" to 3)
+    ),
+    val fillPlanHour: Int = 19,                                               // To-Be P1 step 1 [Recommended]
+    val switchSaveRouteAEnabled: Boolean = true,                              // To-Be P9 [Recommended, new]
+    val rivalReturnAgreements: List<String> = emptyList()                     // To-Be P9 Route B [To decide]
 )
 
 // --- Phase 2: Lifecycle 2 Replacement Claim & Assets ---
