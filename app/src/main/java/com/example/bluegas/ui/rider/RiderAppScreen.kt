@@ -8,7 +8,7 @@
  * - Cylinder verification before dispatch against allocated serial
  * - Doorstep delivery completion and proof of delivery capture
  * - Full offline operation with idempotency-keyed outbox replay
- * - Cash on Delivery custody tracking and formal handover to distributor or finance
+ * - Cash on Delivery custody tracking and formal handover to hub cashier or finance
  *
  * Reads: [SharedAppState.orders], [SharedAppState.riders], [SharedAppState.cylinders], [SharedAppState.settings]
  * Calls: [BlueGasStore.riderAcceptTask], [BlueGasStore.riderDeclineTask], [BlueGasStore.riderVerifyCylinder],
@@ -744,7 +744,7 @@ fun RiderAppScreen(store: BlueGasStore) {
                 } else {
                     Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
                         Text(
-                            text = "This delivery will go back to your distributor to assign to another rider.",
+                            text = "This delivery will go back to Operations to assign to another rider.",
                             fontSize = 12.sp,
                             color = Color(0xFF475569),
                             lineHeight = 16.sp
@@ -1031,8 +1031,8 @@ fun RiderAppScreen(store: BlueGasStore) {
         var declaredRupees by remember(expectedPaisa) {
             mutableStateOf((expectedPaisa / 100).toString())
         }
-        // Exactly two choices: "Distributor" and "Finance"
-        var recipient by remember { mutableStateOf("Distributor") }
+        // Exactly two choices: "HUB" and "Finance"
+        var recipient by remember { mutableStateOf("HUB") }
         var notes by remember { mutableStateOf("") }
         var amountError by remember { mutableStateOf<String?>(null) }
 
@@ -1087,7 +1087,7 @@ fun RiderAppScreen(store: BlueGasStore) {
 
                         Text("Hand over to:", fontSize = 12.sp, fontWeight = FontWeight.Medium)
                         Spacer(modifier = Modifier.height(4.dp))
-                        listOf("Distributor", "Finance").forEach { r ->
+                        listOf("HUB", "Finance").forEach { r ->
                             Row(
                                 verticalAlignment = Alignment.CenterVertically,
                                 modifier = Modifier
@@ -1140,7 +1140,7 @@ fun RiderAppScreen(store: BlueGasStore) {
                             value = notes,
                             onValueChange = { notes = it },
                             label = { Text(if (isDifference) "Reason for difference *" else "Notes (optional)") },
-                            placeholder = { Text(if (isDifference) "Reason for difference..." else "e.g. Handed to distributor cashier") },
+                            placeholder = { Text(if (isDifference) "Reason for difference..." else "e.g. Handed to hub cashier") },
                             modifier = Modifier.fillMaxWidth(),
                             singleLine = true
                         )

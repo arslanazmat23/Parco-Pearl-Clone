@@ -38,7 +38,7 @@ fun StaffOperationsScreen(
     var showReturnPartnerDialog by remember { mutableStateOf(false) }
     var selectedPartnerApp by remember { mutableStateOf<PartnerApplication?>(null) }
     var selectedZoneId by remember { mutableStateOf(snapshot.serviceZones.firstOrNull()?.id ?: "ZONE-LHR-GUL") }
-    var selectedLinkedDistId by remember { mutableStateOf(snapshot.distributors.firstOrNull()?.id ?: "DIST-001") }
+    var selectedHomePointId by remember { mutableStateOf(snapshot.nodes.firstOrNull { it.type == FulfilmentPointType.HUB }?.id ?: "NODE-LHR-1") }
     var trainingCompleted by remember { mutableStateOf(true) }
     var rejectionReasonInput by remember { mutableStateOf("Incomplete documentation / verification failed") }
     var missingDocsInput by remember { mutableStateOf("Missing CNIC or driving license copy") }
@@ -485,39 +485,23 @@ fun StaffOperationsScreen(
                     Spacer(modifier = Modifier.height(8.dp))
 
                     if (app.type == "DISTRIBUTOR") {
-                        Text("Select Service Zone Assignment:", fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
-                        snapshot.serviceZones.forEach { zone ->
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .clickable { selectedZoneId = zone.id }
-                                    .padding(vertical = 4.dp)
-                            ) {
-                                RadioButton(
-                                    selected = selectedZoneId == zone.id,
-                                    onClick = { selectedZoneId = zone.id }
-                                )
-                                Spacer(modifier = Modifier.width(6.dp))
-                                Text("${zone.name} (${zone.city})", fontSize = 12.sp)
-                            }
-                        }
+                        Text("Distributor onboarding is planned for a later phase (Later – Option C).", fontSize = 12.sp, color = MaterialTheme.colorScheme.error)
                     } else {
-                        Text("Select Parent Distributor Terminal:", fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
-                        snapshot.distributors.forEach { dist ->
+                        Text("Select Serving Hub:", fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
+                        snapshot.nodes.filter { it.type == FulfilmentPointType.HUB }.forEach { hub ->
                             Row(
                                 verticalAlignment = Alignment.CenterVertically,
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .clickable { selectedLinkedDistId = dist.id }
+                                    .clickable { selectedHomePointId = hub.id }
                                     .padding(vertical = 4.dp)
                             ) {
                                 RadioButton(
-                                    selected = selectedLinkedDistId == dist.id,
-                                    onClick = { selectedLinkedDistId = dist.id }
+                                    selected = selectedHomePointId == hub.id,
+                                    onClick = { selectedHomePointId = hub.id }
                                 )
                                 Spacer(modifier = Modifier.width(6.dp))
-                                Text("${dist.name} (${dist.city})", fontSize = 12.sp)
+                                Text("${hub.name} (${hub.city})", fontSize = 12.sp)
                             }
                         }
                         Spacer(modifier = Modifier.height(6.dp))
@@ -537,8 +521,7 @@ fun StaffOperationsScreen(
                     onClick = {
                         val (ok, msg) = store.approvePartner(
                             appId = app.id,
-                            zoneId = if (app.type == "DISTRIBUTOR") selectedZoneId else null,
-                            linkedDistributorId = if (app.type == "RIDER") selectedLinkedDistId else null,
+                            homePointId = selectedHomePointId,
                             trainingDone = trainingCompleted,
                             actor = "Operations Lead"
                         )

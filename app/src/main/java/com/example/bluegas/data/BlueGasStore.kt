@@ -222,6 +222,9 @@ class BlueGasStore {
         notifyChanged()
     }
 
+    fun depositFor(customerId: String, serial: String): DepositAccount? =
+        depositAccounts.firstOrNull { it.customerId == customerId && it.cylinderSerial == serial && it.status == DepositStatus.HELD }
+
     // --- Internal Helpers ---
 
     internal fun logAudit(

@@ -10,7 +10,7 @@ import java.util.UUID
  * Fulfilment store operations for BLUE GAS delivery and depot counter lifecycles (v0.4 §3.5 & §3.6).
  *
  * This file is organized into three distinct operational domains:
- * 1. Distributor Fulfilment (RACI-05): Order acceptance, cylinder staging, physical serial allocation
+ * 1. Hub Fulfilment (RACI-05): Order acceptance, cylinder staging, physical serial allocation
  *    at ORD_PREP (L4 rule), and offering tasks to qualified on-shift riders.
  * 2. Rider Fulfilment (RACI-06/07): Task acceptance/rejection (task-level only; order status stays ORD_PREP),
  *    local cylinder verification, trip initiation (ORD_DISP), doorstep arrival (ORD_ATHO), proof of delivery completion,
@@ -20,8 +20,8 @@ import java.util.UUID
  *
  * Architectural & Regulatory Notes:
  * - L3 Rule (BR-CSH-01/02): Doorstep COD payments transition to CASH_COLLECTED (never directly to SETTLED).
- *   Settlement is strictly reserved for Finance reconciliation when cash is handed over to Distributor/Finance.
- * - L4 Rule (RACI-05): Physical cylinder allocation must occur during ORD_PREP by the Distributor Lead,
+ *   Settlement is strictly reserved for Finance reconciliation when cash is handed over to Hub/Finance.
+ * - L4 Rule (RACI-05): Physical cylinder allocation must occur during ORD_PREP by the Hub Lead,
  *   never by the delivery rider. Riders verify the allocated serial against the physical cylinder before dispatch.
  * - Outbox Replay (v0.4 §12.3): Offline actions are replayed in monotonic sequenceNumber order with duplicate
  *   collision checks to prevent ghost actions or state corruption.
@@ -30,7 +30,7 @@ import java.util.UUID
  */
 
 // =========================================================================
-// 1. DISTRIBUTOR FULFILMENT FUNCTIONS (RACI-05)
+// 1. HUB FULFILMENT FUNCTIONS (RACI-05)
 // =========================================================================
 
 /**
@@ -64,13 +64,7 @@ fun BlueGasStore.hubAccept(orderId: String, pointId: String? = null): Pair<Boole
     return Pair(true, "Order ${order.id} accepted. Ready to start preparation.")
 }
 
-fun BlueGasStore.distributorAccept(orderId: String, distributorId: String? = null): Pair<Boolean, String> =
-    hubAccept(orderId, distributorId)
-
 fun BlueGasStore.hubAcceptOrder(orderId: String, actor: String = "Hub Staff"): Pair<Boolean, String> =
-    hubAccept(orderId)
-
-fun BlueGasStore.distributorAcceptOrder(orderId: String, actor: String = "Hub Staff"): Pair<Boolean, String> =
     hubAccept(orderId)
 
 /**
@@ -87,9 +81,6 @@ fun BlueGasStore.hubDecline(orderId: String, reason: String): Pair<Boolean, Stri
     }
     return raiseException(orderId, ExceptionReason.NO_ACCEPTANCE, "Hub declined order: $reason")
 }
-
-fun BlueGasStore.distributorDecline(orderId: String, reason: String): Pair<Boolean, String> =
-    hubDecline(orderId, reason)
 
 /**
  * Initiates physical preparation of the cylinder at the depot (ORD_ACPT -> ORD_PREP).
@@ -121,7 +112,7 @@ fun BlueGasStore.startPreparing(orderId: String): Pair<Boolean, String> {
 /**
  * Binds an exact physical cylinder serial to an order during preparation (L4 rule, RACI-05).
  *
- * Serial allocation is strictly a distributor responsibility. Verifies stock availability,
+ * Serial allocation is strictly a hub responsibility. Verifies stock availability,
  * ensures no HSE safety hold exists, and prevents double-allocation collision.
  *
  * @param orderId Target order identifier in ORD_PREP.
@@ -201,7 +192,7 @@ fun BlueGasStore.reportNoSuitableCylinder(orderId: String, untaggedOnly: Boolean
  * - Rider must exist, be approved ([Rider.onboardingStatus] == "APPROVED"),
  *   be active on shift ([Rider.status] == "ACTIVE"),
  *   be trained for installation ([Rider.installationTrained] == true),
- *   and belong to the order's assigned distributor ([Rider.distributorId] == [Order.assignedDistributorId]).
+ *   and belong to the order's assigned hub.
  *
  * @param orderId Target order identifier.
  * @param riderId Identifier of the rider to offer the delivery task to.
@@ -307,7 +298,7 @@ fun BlueGasStore.customerArrivedAtDepot(orderId: String, by: String = "CUSTOMER"
         order = order,
         targetStatus = OrderStatus.ORD_ATHO,
         actor = if (by == "CUSTOMER") "Customer" else "Counter Staff",
-        role = AccountableRole.DISTRIBUTOR,
+        role = AccountableRole.HUB,
         trigger = "Customer arrived at depot counter"
     )
     if (tAtHo is TransitionResult.Failure) {
@@ -630,7 +621,7 @@ fun BlueGasStore.riderVerifyCylinder(orderId: String, scannedId: String, riderId
 }
 
 /**
- * Commences delivery trip from the distributor depot to customer doorstep (ORD_PREP -> ORD_DISP).
+ * Commences delivery trip from the hub depot to customer doorstep (ORD_PREP -> ORD_DISP).
  *
  * Preconditions:
  * - Order must be in [OrderStatus.ORD_PREP].

@@ -113,7 +113,7 @@ object GeminiAdvisorService {
                 "• An order in ORD_EXC (Fulfilment Exception) cannot transition arbitrarily.\n" +
                 "• Constrained targets:\n" +
                 "  - Out of area: ORD_PAYPEND or ORD_CANC.\n" +
-                "  - No acceptance / delivery failure: ORD_ASGN (reassign to next available rider/distributor).\n" +
+                "  - No acceptance / delivery failure: ORD_ASGN (reassign to next available rider/hub).\n" +
                 "  - Serial unavailable: ORD_PREP (assign alternate verified serial).\n" +
                 "  - Adjusted amount rejection: ORD_ADJ or ORD_CANC.\n" +
                 "  - Unrecoverable: Terminal ORD_FCLO (Failed Closed).\n" +

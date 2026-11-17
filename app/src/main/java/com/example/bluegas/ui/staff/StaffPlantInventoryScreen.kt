@@ -311,7 +311,7 @@ fun StaffPlantInventoryScreen(
                     Spacer(modifier = Modifier.height(4.dp))
                 }
 
-                items(snapshot.cylinders.filter { it.custody == CylinderCustody.PLANT || it.custody == CylinderCustody.DISTRIBUTOR_NODE }.take(10)) { cyl ->
+                items(snapshot.cylinders.filter { it.custody == CylinderCustody.PLANT || it.custody == CylinderCustody.HUB }.take(10)) { cyl ->
                     Card(
                         colors = CardDefaults.cardColors(containerColor = Color.White),
                         border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFFCBD5E1)),
@@ -478,8 +478,8 @@ fun StaffPlantInventoryScreen(
                             driverName = driverNameInput,
                             driverPhone = driverPhoneInput,
                             cylinderIds = availableSerials,
-                            cmrNo = "CMR-26-001",
-                            filledBy = "Plant Operator Tariq",
+                            cmrNo = null,
+                            filledBy = null,
                             actor = "Plant Manager"
                         )
                         onBanner(msg)
@@ -501,243 +501,7 @@ fun StaffPlantInventoryScreen(
         )
     }
 
-    // Bulk Receipt Dialog
-    if (showBulkReceiptDialog) {
-        AlertDialog(
-            onDismissRequest = { showBulkReceiptDialog = false },
-            title = { Text("Log Bulk LPG Decanting", fontWeight = FontWeight.Bold) },
-            text = {
-                Column {
-                    OutlinedTextField(
-                        value = supplierInput,
-                        onValueChange = { supplierInput = it },
-                        label = { Text("Supplier Name") },
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                    Spacer(modifier = Modifier.height(4.dp))
-                    OutlinedTextField(
-                        value = blNumberInput,
-                        onValueChange = { blNumberInput = it },
-                        label = { Text("Bill of Lading No") },
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                    Spacer(modifier = Modifier.height(4.dp))
-                    OutlinedTextField(
-                        value = tankerNumberInput,
-                        onValueChange = { tankerNumberInput = it },
-                        label = { Text("Tanker Registration") },
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                    Spacer(modifier = Modifier.height(4.dp))
-                    OutlinedTextField(
-                        value = netWeightTonnesInput,
-                        onValueChange = { netWeightTonnesInput = it },
-                        label = { Text("Net Weight (Metric Tonnes)") },
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                }
-            },
-            confirmButton = {
-                Button(
-                    onClick = {
-                        val tonnes = netWeightTonnesInput.toDoubleOrNull() ?: 25.0
-                        val (ok, msg) = store.logBulkLpgReceipt(
-                            supplier = supplierInput,
-                            blNumber = blNumberInput,
-                            tankerNumber = tankerNumberInput,
-                            netWeightTonnes = tonnes,
-                            specificGravity = 0.510,
-                            density = 510.0,
-                            temperatureC = 25.0,
-                            actor = "Plant Manager"
-                        )
-                        onBanner(msg)
-                        showBulkReceiptDialog = false
-                    }
-                ) {
-                    Text("Confirm Decant")
-                }
-            },
-            dismissButton = {
-                OutlinedButton(onClick = { showBulkReceiptDialog = false }) {
-                    Text("Cancel")
-                }
-            }
-        )
-    }
-
-    // Daily Dip Dialog
-    if (showDipDialog) {
-        AlertDialog(
-            onDismissRequest = { showDipDialog = false },
-            title = { Text("Record Daily Storage Tank Dip", fontWeight = FontWeight.Bold) },
-            text = {
-                Column {
-                    OutlinedTextField(
-                        value = tankIdInput,
-                        onValueChange = { tankIdInput = it },
-                        label = { Text("Tank Identification") },
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                    Spacer(modifier = Modifier.height(4.dp))
-                    OutlinedTextField(
-                        value = liquidLevelCmInput,
-                        onValueChange = { liquidLevelCmInput = it },
-                        label = { Text("Liquid Level (cm)") },
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                    Spacer(modifier = Modifier.height(4.dp))
-                    OutlinedTextField(
-                        value = pressureBarInput,
-                        onValueChange = { pressureBarInput = it },
-                        label = { Text("Pressure Gauge (Bar)") },
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                    Spacer(modifier = Modifier.height(4.dp))
-                    OutlinedTextField(
-                        value = tempCInput,
-                        onValueChange = { tempCInput = it },
-                        label = { Text("Temperature (°C)") },
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                }
-            },
-            confirmButton = {
-                Button(
-                    onClick = {
-                        val lvl = liquidLevelCmInput.toDoubleOrNull() ?: 200.0
-                        val bar = pressureBarInput.toDoubleOrNull() ?: 6.5
-                        val temp = tempCInput.toDoubleOrNull() ?: 25.0
-                        val (ok, msg) = store.recordDailyPlantDip(
-                            tankId = tankIdInput,
-                            liquidLevelCm = lvl,
-                            pressureBar = bar,
-                            temperatureC = temp,
-                            calculatedTonnes = lvl * 0.15,
-                            actor = "Plant Shift Supervisor"
-                        )
-                        onBanner(msg)
-                        showDipDialog = false
-                    }
-                ) {
-                    Text("Record Dip")
-                }
-            },
-            dismissButton = {
-                OutlinedButton(onClick = { showDipDialog = false }) {
-                    Text("Cancel")
-                }
-            }
-        )
-    }
-
-    // Retest Dialog
-    if (showRetestDialog) {
-        AlertDialog(
-            onDismissRequest = { showRetestDialog = false },
-            title = { Text("Cylinder Hydro-Test Certification", fontWeight = FontWeight.Bold) },
-            text = {
-                Column {
-                    OutlinedTextField(
-                        value = testSerialInput,
-                        onValueChange = { testSerialInput = it },
-                        label = { Text("Cylinder Serial Number") },
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                    Spacer(modifier = Modifier.height(4.dp))
-                    OutlinedTextField(
-                        value = testCertInput,
-                        onValueChange = { testCertInput = it },
-                        label = { Text("OGRA Test Certificate No") },
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                    Spacer(modifier = Modifier.height(4.dp))
-                    OutlinedTextField(
-                        value = nextRetestDateInput,
-                        onValueChange = { nextRetestDateInput = it },
-                        label = { Text("Next Re-test Due Date (YYYY-MM-DD)") },
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                }
-            },
-            confirmButton = {
-                Button(
-                    onClick = {
-                        val (ok, msg) = store.recordCylinderTesting(
-                            serialNumber = testSerialInput,
-                            nextRetestDate = nextRetestDateInput,
-                            certificateNo = testCertInput,
-                            testPressureBar = 30.0,
-                            actor = "Certified HSE Tester"
-                        )
-                        onBanner(msg)
-                        showRetestDialog = false
-                    }
-                ) {
-                    Text("Certify Cylinder")
-                }
-            },
-            dismissButton = {
-                OutlinedButton(onClick = { showRetestDialog = false }) {
-                    Text("Cancel")
-                }
-            }
-        )
-    }
-
-    // Scrap Dialog
-    if (showScrapDialog) {
-        AlertDialog(
-            onDismissRequest = { showScrapDialog = false },
-            title = { Text("Condemn & Scrap Unsafe Cylinder", fontWeight = FontWeight.Bold) },
-            text = {
-                Column {
-                    OutlinedTextField(
-                        value = scrapSerialInput,
-                        onValueChange = { scrapSerialInput = it },
-                        label = { Text("Cylinder Serial") },
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                    Spacer(modifier = Modifier.height(4.dp))
-                    OutlinedTextField(
-                        value = scrapCertInput,
-                        onValueChange = { scrapCertInput = it },
-                        label = { Text("Scrap Certificate No") },
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                    Spacer(modifier = Modifier.height(4.dp))
-                    OutlinedTextField(
-                        value = scrapReasonInput,
-                        onValueChange = { scrapReasonInput = it },
-                        label = { Text("Condemnation Failure Reason") },
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                }
-            },
-            confirmButton = {
-                Button(
-                    onClick = {
-                        val (ok, msg) = store.recordCylinderScrap(
-                            serialNumber = scrapSerialInput,
-                            reason = scrapReasonInput,
-                            scrapCertificateNo = scrapCertInput,
-                            actor = "HSE Inspection Lead"
-                        )
-                        onBanner(msg)
-                        showScrapDialog = false
-                    },
-                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFDC2626))
-                ) {
-                    Text("Condemn & Scrap")
-                }
-            },
-            dismissButton = {
-                OutlinedButton(onClick = { showScrapDialog = false }) {
-                    Text("Cancel")
-                }
-            }
-        )
-    }
+    // Rebuilt in Stage B: Bulk receipt, tank dip, testing, and scrap dialogs removed for plant system of record
 
     // Physical Audit Dialog
     if (showAuditDialog) {
@@ -758,7 +522,7 @@ fun StaffPlantInventoryScreen(
                     OutlinedTextField(
                         value = audit110Qty,
                         onValueChange = { audit110Qty = it },
-                        label = { Text("11.0kg Physical Count") },
+                        label = { Text("45.4kg Physical Count") },
                         modifier = Modifier.fillMaxWidth()
                     )
                 }
@@ -767,8 +531,8 @@ fun StaffPlantInventoryScreen(
                 Button(
                     onClick = {
                         val c118 = audit118Qty.toIntOrNull() ?: 10
-                        val c110 = audit110Qty.toIntOrNull() ?: 5
-                        val map = mapOf("SKU-LPG-11-8" to c118, "SKU-LPG-11-0" to c110)
+                        val c454 = audit110Qty.toIntOrNull() ?: 5
+                        val map = mapOf("SKU-LPG-11-8" to c118, "SKU-LPG-45-4" to c454)
                         val (ok, msg) = store.submitPhysicalStockAudit(auditPointId, map, "Audit Controller")
                         onBanner(msg)
                         showAuditDialog = false

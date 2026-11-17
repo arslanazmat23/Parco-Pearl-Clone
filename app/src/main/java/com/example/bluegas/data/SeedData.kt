@@ -733,7 +733,6 @@ internal fun BlueGasStore.seedAll() {
             issuedTonnes = 2.1248,
             closingTonnes = 47.8442,
             cylindersIssuedBySku = mapOf(
-                "SKU-LPG-11-0" to 116,
                 "SKU-LPG-11-8" to 45,
                 "SKU-LPG-45-4" to 7
             ),
@@ -760,7 +759,7 @@ internal fun BlueGasStore.seedAll() {
         )
     )
 
-    // 14. Open Decisions Q01-Q28
+    // 14. Open Decisions Q01-Q33
     val decisionTitles = mapOf(
         "Q01" to "Discount value for replacement cylinder claim",
         "Q02" to "What the replacement discount applies to",
@@ -772,7 +771,7 @@ internal fun BlueGasStore.seedAll() {
         "Q08" to "Legal disposition and title of surrendered assets",
         "Q09" to "Evidence retention and access policy",
         "Q10" to "Cylinder identification (tag before launch or phase in)",
-        "Q11" to "Fulfilment model (own staff, distributors, mix; plant as point)",
+        "Q11" to "Fulfilment model (own staff, direct hubs, mix; plant as point)",
         "Q12" to "Can a rider be the authorized inspector",
         "Q13" to "Payment methods enabled for customers",
         "Q14" to "Service area and out-of-area handling",
@@ -786,16 +785,21 @@ internal fun BlueGasStore.seedAll() {
         "Q22" to "Tax on household sales and FBR automated invoice",
         "Q23" to "Household sizes, 11 kg vs 11.8 kg distinction",
         "Q24" to "Household price calculation method and rounding",
-        "Q25" to "Existing dealers as distributors, trade prices and credit",
-        "Q26" to "Meaning of plant fields (CMR No., Hospitality weights, Filled By)",
+        "Q25" to "Distributor credit limit and settlement terms (Later – Option C)",
+        "Q26" to "Distributor commission structure (Later – Option C)",
         "Q27" to "Installation standard and rider safety training",
-        "Q28" to "Cash handling and daily handover rules"
+        "Q28" to "Cash handling and daily handover rules",
+        "Q29" to "Fulfilment points and pickup",
+        "Q30" to "BLUE GAS cylinders already in homes (dealers)",
+        "Q31" to "Rider employment model",
+        "Q32" to "When distributors join (Later – Option C)",
+        "Q33" to "Branding"
     )
 
-    val blockingP1 = setOf("Q03", "Q10", "Q11", "Q15", "Q16", "Q21", "Q22", "Q23", "Q24", "Q27")
-    val phase2Decisions = setOf("Q01", "Q02", "Q05", "Q06", "Q08", "Q12")
+    val blockingP1 = setOf("Q03", "Q10", "Q20", "Q24", "Q28", "Q29", "Q30", "Q31", "Q33")
+    val phase2Decisions = setOf("Q01", "Q02", "Q05", "Q06", "Q08", "Q12", "Q25", "Q26", "Q32")
 
-    for (i in 1..28) {
+    for (i in 1..33) {
         val qId = String.format("Q%02d", i)
         openDecisions.add(
             OpenDecision(
@@ -836,12 +840,12 @@ internal fun BlueGasStore.seedAll() {
     addNotification(AppSurface.CUSTOMER, "Welcome to Blue Gas", "Your profile is active with verified delivery service in Gulberg.", "CONFIRMED", null)
 
     addNotification(AppSurface.STAFF, "Order in Fulfilment Exception", "1 order in Fulfilment Exception requires dispatch resolution.", "ORD_EXC", "ORD-SEED-102", code = "NTF-07", staffRole = StaffSubRole.OPERATIONS)
-    addNotification(AppSurface.STAFF, "Transfer TRF-0002 In Transit", "Stock transfer TRF-0002 is on the way to Gulberg Terminal.", "DISPATCHED", null, code = "NTF-15", staffRole = StaffSubRole.DISTRIBUTOR)
+    addNotification(AppSurface.STAFF, "Transfer TRF-0002 In Transit", "Stock transfer TRF-0002 is on the way to Lahore Hub.", "DISPATCHED", null, code = "NTF-15", staffRole = StaffSubRole.HUB)
     addNotification(AppSurface.STAFF, "Transfer Dispatch Pending", "Transfer TRF-0003 is waiting for plant dispatch.", "REQUESTED", null, code = "NTF-15", staffRole = StaffSubRole.PLANT_INVENTORY)
     addNotification(AppSurface.STAFF, "Cash Hand-over Pending", "Cash hand-over CSH-SEED-02 submitted by rider waiting for reconciliation.", "SUBMITTED", null, code = "NTF-15", staffRole = StaffSubRole.FINANCE)
     addNotification(AppSurface.STAFF, "Price List v1 Active", "Price list v1 is currently active for all pilot zones.", "PUBLISHED", null, code = "NTF-16", staffRole = StaffSubRole.COMMERCIAL)
     addNotification(AppSurface.STAFF, "New Customer Dispute", "New complaint CASE-SEED-01 registered on cylinder condition.", "OPEN", "ORD-SEED-101", code = "NTF-17", staffRole = StaffSubRole.SUPPORT)
     addNotification(AppSurface.STAFF, "Safety Alert Raised", "Incident INC-0001 raised on doorstep safety smell alert.", "INCIDENT_RAISED", "ORD-SEED-111", code = "NTF-09", staffRole = StaffSubRole.SAFETY_HSE)
-    addNotification(AppSurface.STAFF, "10 Open Decisions Block Phase 1", "Regulatory and operational architecture decisions require client input.", "OPEN", null, code = "NTF-14", staffRole = StaffSubRole.ADMIN)
+    addNotification(AppSurface.STAFF, "9 Open Decisions Block Phase 1", "Regulatory and operational architecture decisions require client input.", "OPEN", null, code = "NTF-14", staffRole = StaffSubRole.ADMIN)
     addNotification(AppSurface.STAFF, "Phase 2 Claim Waiting", "Replacement claim CLM-SEED-01 submitted evidence for eligibility review.", "EVIDENCE_SUBMITTED", null, code = "NTF-10", staffRole = StaffSubRole.PHASE2_PREVIEW)
 }

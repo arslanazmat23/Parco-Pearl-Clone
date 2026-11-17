@@ -1428,7 +1428,7 @@ private fun isStepCompleted(current: OrderStatus, target: OrderStatus): Boolean 
  *
  * Groups closely related operational substates under their parent customer milestone:
  * - Confirmation milestone (ORD_CONF) encompasses validation, payment pending, confirmation, and reservation.
- * - Partner assignment milestone (ORD_ACPT) groups distributor assignment and acceptance.
+ * - Partner assignment milestone (ORD_ACPT) groups hub assignment and acceptance.
  * - In-transit milestone encompasses road dispatch (ORD_DISP) or ready for customer pickup (ORD_RDYPU).
  * - Doorstep arrival milestone encompasses doorstep arrival, inspection, and price adjustments.
  * - Completed milestone encompasses final handover completion and terminal closure.

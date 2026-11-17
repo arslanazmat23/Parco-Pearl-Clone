@@ -31,13 +31,12 @@ fun StaffAdminScreen(
 
     val currentSettings = snapshot.settings
     var holdTtl by remember(currentSettings.holdTtlMinutes) { mutableStateOf(currentSettings.holdTtlMinutes.toString()) }
-    var acceptanceWindow by remember(currentSettings.distributorAcceptanceWindowMins) { mutableStateOf(currentSettings.distributorAcceptanceWindowMins.toString()) }
+    var acceptanceWindow by remember(currentSettings.hubAcceptanceWindowMins) { mutableStateOf(currentSettings.hubAcceptanceWindowMins.toString()) }
     var riderAcceptanceWindow by remember(currentSettings.riderAcceptanceWindowMins) { mutableStateOf(currentSettings.riderAcceptanceWindowMins.toString()) }
     var promisedHandoverSla by remember(currentSettings.promisedHandoverMinutes) { mutableStateOf(currentSettings.promisedHandoverMinutes.toString()) }
     var cashHandoverHours by remember(currentSettings.cashHandoverHours) { mutableStateOf(currentSettings.cashHandoverHours.toString()) }
     var evidenceRetentionDays by remember(currentSettings.evidenceRetentionDays) { mutableStateOf(currentSettings.evidenceRetentionDays.toString()) }
     var maxQtyPerOrder by remember(currentSettings.maxQuantityPerOrder) { mutableStateOf(currentSettings.maxQuantityPerOrder.toString()) }
-    var newCylinderEnabled by remember(currentSettings.newCylinderModel) { mutableStateOf(currentSettings.newCylinderModel) }
     var refillModelEnabled by remember(currentSettings.refillModel) { mutableStateOf(currentSettings.refillModel) }
     var phase2PreviewEnabled by remember(currentSettings.phase2PreviewEnabled) { mutableStateOf(currentSettings.phase2PreviewEnabled) }
 
@@ -98,7 +97,7 @@ fun StaffAdminScreen(
                             OutlinedTextField(
                                 value = acceptanceWindow,
                                 onValueChange = { acceptanceWindow = it },
-                                label = { Text("Distributor Acceptance Window (Minutes) [1-240]") },
+                                label = { Text("Hub Acceptance Window (Minutes) [1-240]") },
                                 modifier = Modifier.fillMaxWidth()
                             )
                             Spacer(modifier = Modifier.height(6.dp))
@@ -143,22 +142,6 @@ fun StaffAdminScreen(
                             )
                             Spacer(modifier = Modifier.height(10.dp))
 
-                            Text("New Cylinder Model:", fontWeight = FontWeight.SemiBold, fontSize = 11.sp)
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.spacedBy(6.dp)
-                            ) {
-                                NewCylinderModel.entries.forEach { model ->
-                                    FilterChip(
-                                        selected = newCylinderEnabled == model,
-                                        onClick = { newCylinderEnabled = model },
-                                        label = { Text(model.name, fontSize = 10.sp) },
-                                        modifier = Modifier.height(28.dp)
-                                    )
-                                }
-                            }
-                            Spacer(modifier = Modifier.height(8.dp))
-
                             Text("Refill Model:", fontWeight = FontWeight.SemiBold, fontSize = 11.sp)
                             Row(
                                 modifier = Modifier.fillMaxWidth(),
@@ -189,13 +172,12 @@ fun StaffAdminScreen(
                                 onClick = {
                                     val newSettings = currentSettings.copy(
                                         holdTtlMinutes = holdTtl.toIntOrNull() ?: currentSettings.holdTtlMinutes,
-                                        distributorAcceptanceWindowMins = acceptanceWindow.toIntOrNull() ?: currentSettings.distributorAcceptanceWindowMins,
+                                        hubAcceptanceWindowMins = acceptanceWindow.toIntOrNull() ?: currentSettings.hubAcceptanceWindowMins,
                                         riderAcceptanceWindowMins = riderAcceptanceWindow.toIntOrNull() ?: currentSettings.riderAcceptanceWindowMins,
                                         promisedHandoverMinutes = promisedHandoverSla.toIntOrNull() ?: currentSettings.promisedHandoverMinutes,
                                         cashHandoverHours = cashHandoverHours.toIntOrNull() ?: currentSettings.cashHandoverHours,
                                         evidenceRetentionDays = evidenceRetentionDays.toIntOrNull() ?: currentSettings.evidenceRetentionDays,
                                         maxQuantityPerOrder = maxQtyPerOrder.toIntOrNull() ?: currentSettings.maxQuantityPerOrder,
-                                        newCylinderModel = newCylinderEnabled,
                                         refillModel = refillModelEnabled,
                                         phase2PreviewEnabled = phase2PreviewEnabled
                                     )
@@ -297,6 +279,19 @@ fun StaffAdminScreen(
                                 Icon(Icons.Default.Schedule, contentDescription = null, modifier = Modifier.size(14.dp))
                                 Spacer(modifier = Modifier.width(6.dp))
                                 Text("Trigger Immediate Timer SLA Cycle")
+                            }
+
+                            Spacer(modifier = Modifier.height(8.dp))
+                            OutlinedButton(
+                                onClick = {
+                                    val (ok, msg) = store.simulateDepositMismatch()
+                                    onBanner(msg)
+                                },
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Icon(Icons.Default.Warning, contentDescription = null, modifier = Modifier.size(14.dp))
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text("Simulate Deposit Mismatch (EXC-28)")
                             }
 
                             Spacer(modifier = Modifier.height(8.dp))

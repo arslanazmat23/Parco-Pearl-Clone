@@ -53,10 +53,10 @@ fun BlueGasStore.processRefund(
                     val dep = depositAccounts.find { it.id == caseItem.depositId }
                         ?: depositAccounts.find { it.cylinderSerial == caseItem.cylinderSerial && it.customerId == caseItem.customerId }
                     if (dep != null) {
-                        dep.refundedPaisa = refund.amountPaisa
+                        dep.refundId = refund.id
+                        dep.returnCaseId = caseItem.id
                         dep.deductionPaisa = caseItem.deductionPaisa
-                        dep.refundCaseId = caseItem.id
-                        dep.settledAt = System.currentTimeMillis()
+                        dep.deductionReason = caseItem.deductionReason
                         dep.status = if (caseItem.deductionPaisa > 0L) DepositStatus.REDUCED_OR_FORFEITED else DepositStatus.REFUNDED
                     }
 

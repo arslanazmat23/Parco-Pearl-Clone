@@ -302,10 +302,10 @@ fun ProfileScreen(
                             val cyl = snapshot.cylinders.find { it.serialNumber == holding.cylinderSerial }
                             val sizeLabel = cyl?.let { "${it.weightKg} kg" }
                             val ownershipLabel = when (holding.ownership) {
-                                CylinderOwnership.OWNED_BY_CUSTOMER -> "Owned"
                                 CylinderOwnership.DEPOSIT_HELD -> "Deposit held"
                                 CylinderOwnership.LOANED -> "Loaned"
-                                else -> holding.ownership.label
+                                CylinderOwnership.RETURNED -> "Returned/Released"
+                                CylinderOwnership.SURRENDERED_ASSET -> "Surrendered"
                             }
 
                             Surface(

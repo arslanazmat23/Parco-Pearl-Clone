@@ -392,7 +392,6 @@ fun BlueGasStore.importPlantFileDemo(): Pair<Boolean, String> {
         issuedTonnes = 1.9170,
         closingTonnes = 55.9272,
         cylindersIssuedBySku = mapOf(
-            "SKU-LPG-11-0" to 100,
             "SKU-LPG-11-8" to 50,
             "SKU-LPG-45-4" to 5
         ),

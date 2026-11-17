@@ -386,11 +386,7 @@ fun HomeScreen(
                     Spacer(modifier = Modifier.height(8.dp))
                     when (orderType) {
                         OrderType.NEW_CYLINDER -> {
-                            val modelNote = when (snapshot.settings.newCylinderModel) {
-                                NewCylinderModel.SOLD -> "You will own the cylinder"
-                                NewCylinderModel.DEPOSIT -> "Held against a security deposit — you don't own it"
-                                NewCylinderModel.LOAN -> "Loaned to you"
-                            }
+                            val modelNote = "Held against a refundable security deposit — you don't own it."
                             Row(
                                 verticalAlignment = Alignment.CenterVertically,
                                 horizontalArrangement = Arrangement.spacedBy(6.dp)

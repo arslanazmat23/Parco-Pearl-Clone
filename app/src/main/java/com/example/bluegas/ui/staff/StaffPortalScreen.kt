@@ -189,7 +189,7 @@ fun StaffPortalScreen(store: BlueGasStore) {
                     onBanner = { bannerMessage = it },
                     onSelectOrder = { selectedOrderForDetail = it }
                 )
-                StaffSubRole.DISTRIBUTOR -> StaffDistributorScreen(
+                StaffSubRole.HUB -> StaffHubScreen(
                     store = store,
                     snapshot = snapshot,
                     onBanner = { bannerMessage = it },

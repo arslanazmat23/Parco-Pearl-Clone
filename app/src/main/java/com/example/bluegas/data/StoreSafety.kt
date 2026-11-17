@@ -122,14 +122,17 @@ fun BlueGasStore.moveIncident(
         }
         inc.authorizedBy = authorizedBy
         inc.authorizedDecision = notes
-        if (!cylinderOutcome.isNullOrBlank()) {
+        if (!inc.cylinderId.isNullOrBlank()) {
+            if (cylinderOutcome != "RELEASE" && cylinderOutcome != "WRITE_OFF") {
+                return Pair(false, "Cylinder outcome (RELEASE or WRITE_OFF) is required.")
+            }
             inc.cylinderOutcome = cylinderOutcome
         }
     }
 
     if (target == L7Status.INCIDENT_CLOSED) {
         inc.closedAt = System.currentTimeMillis()
-        val effectiveOutcome = cylinderOutcome ?: inc.cylinderOutcome
+        val effectiveOutcome = inc.cylinderOutcome
         if (!inc.cylinderId.isNullOrBlank()) {
             val cyl = cylinders.find { it.serialNumber == inc.cylinderId }
             if (cyl != null) {

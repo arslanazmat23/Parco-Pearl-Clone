@@ -4,7 +4,7 @@ import com.example.bluegas.model.*
 
 object CaseLifecycles {
 
-    // --- Lifecycle 6: Return/Refund Cases (v0.4 §9.4) ---
+    // --- Lifecycle 6: Return/Refund Cases (v0.5 §8.16, §9.4) ---
     val allowedL6Transitions: Map<L6Status, Set<L6Status>> = mapOf(
         L6Status.CASE_OPENED to setOf(L6Status.UNDER_REVIEW),
         L6Status.UNDER_REVIEW to setOf(L6Status.RETURN_AUTHORIZED, L6Status.RETURN_REJECTED, L6Status.REFUND_REQUESTED),

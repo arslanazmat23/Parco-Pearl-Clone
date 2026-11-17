@@ -171,19 +171,24 @@ enum class DepositStatus(val label: String) {
 }
 
 data class DepositAccount(
-    val id: String,
+    val id: String,                       // "DEP-" + 4 digits
     val customerId: String,
-    var cylinderSerial: String,
-    val skuId: String,
+    val sku: String,
+    var cylinderSerial: String?,          // moves to the new cylinder on empty exchange (BR-DEP-05)
     val amountPaisa: Long,
+    val paidAt: Long,
     val orderId: String,
+    val paymentId: String?,
     var status: DepositStatus = DepositStatus.HELD,
+    var returnCaseId: String? = null,
+    var refundId: String? = null,
     var deductionPaisa: Long = 0L,
-    var refundedPaisa: Long = 0L,
-    var refundCaseId: String? = null,
-    val createdAt: Long = System.currentTimeMillis(),
-    var settledAt: Long? = null
-)
+    var deductionReason: String? = null,
+    val noDepositOnRecord: Boolean = false // dealer-sourced cylinder (Q30); amountPaisa = 0
+) {
+    val skuId: String get() = sku
+    val createdAt: Long get() = paidAt
+}
 
 // --- Lifecycle 6: Return/Refund Cases ---
 
@@ -261,13 +266,13 @@ data class SafetyIncident(
 data class ConfirmedDecision(val id: String, val title: String)
 
 val CONFIRMED_DECISIONS = listOf(
-    ConfirmedDecision("D3", "Direct hub model for Phase 1 (no distributors)"),
-    ConfirmedDecision("D4", "Customer never owns cylinders (deposit model)"),
-    ConfirmedDecision("D5", "Deposit amounts: 11.8 kg Rs. 7,500; 45.4 kg Rs. 18,000"),
-    ConfirmedDecision("D6", "Full refund when intact cylinder returned with record"),
-    ConfirmedDecision("D7", "45.4 kg domestic delivery scope: Ground floor and kitchen only"),
-    ConfirmedDecision("D8", "Two SKUs only: 11.8 kg and 45.4 kg"),
-    ConfirmedDecision("D9", "Plant operations run by plant staff; plant daily dip is out of Blue Gas scope")
+    ConfirmedDecision("D3", "All of Lahore and Islamabad served"),
+    ConfirmedDecision("D4", "Households buy only 11.8 kg and 45.4 kg"),
+    ConfirmedDecision("D5", "Plant system connects to the platform"),
+    ConfirmedDecision("D6", "BLUE GAS sets its own household price"),
+    ConfirmedDecision("D7", "Phase 1 uses BLUE GAS riders from BLUE GAS-run points"),
+    ConfirmedDecision("D8", "Refundable security deposit, cylinder stays BLUE GAS property"),
+    ConfirmedDecision("D9", "All BLUE GAS cylinders in the market belong to BLUE GAS")
 )
 
 data class OpenDecision(

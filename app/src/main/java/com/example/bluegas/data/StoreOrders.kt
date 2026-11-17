@@ -209,8 +209,8 @@ fun BlueGasStore.onConfirmed(order: Order) {
 
     // 2. Assign to Hub (Reserved -> Assigned, RACI-06)
     val servingPointId = order.fulfilmentPointId ?: "NODE-LHR-1"
-    val hub = nodes.find { it.id == servingPointId && it.type == FulfilmentPointType.HUB && it.status == "ACTIVE" }
-        ?: nodes.firstOrNull { it.type == FulfilmentPointType.HUB && it.status == "ACTIVE" }
+    val hub = nodes.find { it.id == servingPointId && it.type == FulfilmentPointType.HUB }
+        ?: nodes.firstOrNull { it.type == FulfilmentPointType.HUB }
 
     if (hub != null) {
         order.fulfilmentPointId = hub.id
@@ -236,7 +236,7 @@ fun BlueGasStore.onConfirmed(order: Order) {
 
             addNotification(
                 surface = AppSurface.CUSTOMER,
-                title = "Order received at hub",
+                title = "Order assigned",
                 message = "Your order is with the ${hub.name} team and will be prepared shortly.",
                 canonicalStatus = order.status.canonicalLabel,
                 orderId = order.id,

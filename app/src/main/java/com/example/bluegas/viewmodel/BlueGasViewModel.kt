@@ -83,8 +83,8 @@ class BlueGasViewModel(
         return store.confirmPaymentAndAdvance(orderId, forcedOutcome)
     }
 
-    fun distributorAcceptOrder(orderId: String): Pair<Boolean, String> {
-        return store.distributorAcceptOrder(orderId)
+    fun hubAcceptOrder(orderId: String): Pair<Boolean, String> {
+        return store.hubAcceptOrder(orderId)
     }
 
     fun allocateCylinderSerial(orderId: String, serialNumber: String): Pair<Boolean, String> {

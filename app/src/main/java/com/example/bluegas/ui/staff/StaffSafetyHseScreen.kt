@@ -171,7 +171,7 @@ fun StaffSafetyHseScreen(
                                     L7Status.UNDER_HSE_ASSESSMENT -> {
                                         Button(
                                             onClick = {
-                                                val (ok, msg) = store.moveIncident(inc.id, L7Status.AWAITING_AUTHORIZED_DECISION, "Assessment findings submitted to Head of HSE", actor = "HSE Officer")
+                                                val (ok, msg) = store.moveIncident(inc.id, L7Status.AWAITING_AUTHORIZED_DECISION, "Assessment findings submitted for authorized decision", actor = "HSE Officer")
                                                 onBanner(msg)
                                             },
                                             colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF0284C7)),
@@ -191,7 +191,7 @@ fun StaffSafetyHseScreen(
                                                         incidentId = inc.id,
                                                         target = L7Status.AUTHORIZED_ACTION_TAKEN,
                                                         notes = "Cylinder passed pressure & ultrasonic re-inspection. Cleared.",
-                                                        authorizedBy = "Head of HSE",
+                                                        authorizedBy = "Authorized HSE Inspector",
                                                         cylinderOutcome = "RELEASE",
                                                         actor = "HSE Officer"
                                                     )
@@ -208,7 +208,7 @@ fun StaffSafetyHseScreen(
                                                         incidentId = inc.id,
                                                         target = L7Status.AUTHORIZED_ACTION_TAKEN,
                                                         notes = "Cylinder condemned due to pit corrosion. Scrapped.",
-                                                        authorizedBy = "Head of HSE",
+                                                        authorizedBy = "Authorized HSE Inspector",
                                                         cylinderOutcome = "WRITE_OFF",
                                                         actor = "HSE Officer"
                                                     )

@@ -641,7 +641,7 @@ data class PartnerDocument(
 
 data class PartnerApplication(
     val id: String,
-    val type: String, // "DISTRIBUTOR", "RIDER"
+    val type: String, // "DISTRIBUTOR" (Later – Option C), "RIDER"
     val applicantName: String,
     val city: String,
     val cnic: String,
