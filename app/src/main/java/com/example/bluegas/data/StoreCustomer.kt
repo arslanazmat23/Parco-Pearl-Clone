@@ -15,6 +15,9 @@
 package com.example.bluegas.data
 
 import com.example.bluegas.model.*
+import java.util.Calendar
+import java.util.Locale
+import java.util.TimeZone
 import java.util.UUID
 
 /**
@@ -315,4 +318,220 @@ fun BlueGasStore.captureCnic(
     notifyChanged()
     return Pair(true, "CNIC saved.")
 }
+
+/** Single selectable delivery or collection window option in Asia/Karachi time. */
+data class DeliveryWindowOption(
+    val label: String,
+    val startAt: Long?,
+    val endAt: Long?,
+    val isAsap: Boolean
+)
+
+/** Due refill reminder summary for a customer based on completed order cadence. */
+data class RefillReminder(
+    val sku: String,
+    val sizeLabel: String,
+    val expectedDate: Long,
+    val lastCompletedAt: Long
+)
+
+private val KARACHI_TZ: TimeZone = TimeZone.getTimeZone("Asia/Karachi")
+
+/** Formats a 12-hour hour range like `"10 am–12 pm"` or `"4–6 pm"`. */
+internal fun formatHourRange12h(startHour: Int, endHour: Int): String {
+    val startPeriod = if (startHour < 12) "am" else "pm"
+    val endPeriod = if (endHour < 12 || endHour == 24) "am" else "pm"
+    val start12 = if (startHour % 12 == 0) 12 else startHour % 12
+    val end12 = if (endHour % 12 == 0) 12 else endHour % 12
+    return if (startPeriod == endPeriod) {
+        "$start12–$end12 $endPeriod"
+    } else {
+        "$start12 $startPeriod–$end12 $endPeriod"
+    }
+}
+
+/** Formats an epoch timestamp in Asia/Karachi 12-hour clock time (e.g. `"4:30 pm"` or `"11 am"`). */
+internal fun formatKarachiTime12h(millis: Long): String {
+    val cal = Calendar.getInstance(KARACHI_TZ, Locale.US).apply { timeInMillis = millis }
+    val hour24 = cal.get(Calendar.HOUR_OF_DAY)
+    val minute = cal.get(Calendar.MINUTE)
+    val period = if (hour24 < 12) "am" else "pm"
+    val hour12 = if (hour24 % 12 == 0) 12 else hour24 % 12
+    return if (minute == 0) {
+        "$hour12 $period"
+    } else {
+        String.format(Locale.US, "%d:%02d %s", hour12, minute, period)
+    }
+}
+
+/** Computes epoch millis for a given [hour]:00 in Asia/Karachi on today + [addDays]. */
+internal fun karachiDayHourMillis(baseMillis: Long, addDays: Int, hour: Int): Long {
+    val cal = Calendar.getInstance(KARACHI_TZ, Locale.US).apply {
+        timeInMillis = baseMillis
+        set(Calendar.HOUR_OF_DAY, 0)
+        set(Calendar.MINUTE, 0)
+        set(Calendar.SECOND, 0)
+        set(Calendar.MILLISECOND, 0)
+        if (addDays != 0) add(Calendar.DAY_OF_YEAR, addDays)
+        set(Calendar.HOUR_OF_DAY, hour)
+    }
+    return cal.timeInMillis
+}
+
+/**
+ * Pure delivery window builder used across checkout, quick-reorder, and cylinder return scheduling.
+ * Filters out today's windows whose end time has already passed as of [nowMillis] in Asia/Karachi.
+ */
+fun computeDeliveryWindows(
+    settings: PlatformSettings,
+    nowMillis: Long,
+    includeAsap: Boolean = true
+): List<DeliveryWindowOption> {
+    val out = mutableListOf<DeliveryWindowOption>()
+    if (includeAsap && settings.asapEnabled) {
+        out.add(
+            DeliveryWindowOption(
+                label = "As soon as possible",
+                startAt = null,
+                endAt = null,
+                isAsap = true
+            )
+        )
+    }
+    val sortedSlots = settings.deliveryWindowsHours.sortedBy { it.first }
+    sortedSlots.forEach { (startH, endH) ->
+        val startAt = karachiDayHourMillis(nowMillis, addDays = 0, hour = startH)
+        val endAt = karachiDayHourMillis(nowMillis, addDays = 0, hour = endH)
+        if (endAt > nowMillis) {
+            out.add(
+                DeliveryWindowOption(
+                    label = "Today ${formatHourRange12h(startH, endH)}",
+                    startAt = startAt,
+                    endAt = endAt,
+                    isAsap = false
+                )
+            )
+        }
+    }
+    if (settings.tomorrowWindowsEnabled) {
+        sortedSlots.forEach { (startH, endH) ->
+            val startAt = karachiDayHourMillis(nowMillis, addDays = 1, hour = startH)
+            val endAt = karachiDayHourMillis(nowMillis, addDays = 1, hour = endH)
+            out.add(
+                DeliveryWindowOption(
+                    label = "Tomorrow ${formatHourRange12h(startH, endH)}",
+                    startAt = startAt,
+                    endAt = endAt,
+                    isAsap = false
+                )
+            )
+        }
+    }
+    return out
+}
+
+/**
+ * Returns selectable delivery time windows for the customer based on [PlatformSettings]
+ * and the current [Asia/Karachi] clock.
+ */
+fun BlueGasStore.availableDeliveryWindows(nowMillis: Long = clock()): List<DeliveryWindowOption> =
+    computeDeliveryWindows(settings, nowMillis, includeAsap = true)
+
+/**
+ * Returns the customer's most recent completed gas order suitable for one-tap refill reorder,
+ * or null if none exists.
+ */
+fun BlueGasStore.lastReorderableOrder(customerId: String): Order? {
+    return orders
+        .filter {
+            it.customerId == customerId &&
+                it.status == OrderStatus.ORD_COMP &&
+                it.orderType != OrderType.ACCESSORY_ONLY &&
+                it.items.any { line -> line.lineType == "GAS" }
+        }
+        .maxByOrNull { it.completedAt ?: it.createdAt }
+}
+
+/**
+ * Estimates whether a household refill reminder is due for [customerId] based on past completed
+ * orders, [PlatformSettings.refillReminderEnabled], and [PlatformSettings.refillReminderLeadDays].
+ */
+fun BlueGasStore.refillReminderDue(
+    customerId: String,
+    nowMillis: Long = clock()
+): RefillReminder? {
+    if (!settings.refillReminderEnabled) return null
+    val customer = customers.find { it.id == customerId } ?: return null
+
+    val completedGasOrders = orders
+        .filter {
+            it.customerId == customerId &&
+                it.status == OrderStatus.ORD_COMP &&
+                it.orderType != OrderType.ACCESSORY_ONLY &&
+                it.items.any { line -> line.lineType == "GAS" }
+        }
+        .sortedBy { it.completedAt ?: it.createdAt }
+
+    if (completedGasOrders.isEmpty()) return null
+
+    val lastOrder = completedGasOrders.last()
+    val lastCompletedAt = lastOrder.completedAt ?: lastOrder.createdAt
+    if (customer.reminderDismissedForCompletedAt == lastCompletedAt) return null
+
+    val lastGasSku = lastOrder.items.firstOrNull { it.lineType == "GAS" }?.sku ?: "SKU-LPG-11-8"
+    val sizeKg = productVariants.find { it.sku == lastGasSku }?.cylinderSizeKg
+    val sizeLabel = sizeKg?.let { "$it kg" } ?: "LPG"
+
+    val oneDayMs = 86_400_000L
+    val defaultCycleMs = 30L * oneDayMs
+
+    val sameSkuCompleted = completedGasOrders.filter { ord ->
+        ord.items.any { it.lineType == "GAS" && it.sku == lastGasSku }
+    }
+    val series = if (sameSkuCompleted.size >= 2) sameSkuCompleted else completedGasOrders
+
+    val dayGaps = series.zipWithNext { a, b ->
+        (b.completedAt ?: b.createdAt) - (a.completedAt ?: a.createdAt)
+    }.filter { it >= oneDayMs }
+
+    val cycleMs = if (dayGaps.isNotEmpty()) {
+        dayGaps.sum() / dayGaps.size
+    } else {
+        defaultCycleMs
+    }
+
+    val expectedDate = lastCompletedAt + cycleMs
+    val leadMs = settings.refillReminderLeadDays * oneDayMs
+    if (nowMillis < expectedDate - leadMs) return null
+
+    return RefillReminder(
+        sku = lastGasSku,
+        sizeLabel = sizeLabel,
+        expectedDate = expectedDate,
+        lastCompletedAt = lastCompletedAt
+    )
+}
+
+/**
+ * Dismisses the refill reminder for [customerId]'s latest completed order so it stays hidden
+ * until a newer order completes.
+ */
+fun BlueGasStore.dismissRefillReminder(customerId: String): Pair<Boolean, String> {
+    val lastCompletedAt = orders
+        .filter {
+            it.customerId == customerId &&
+                it.status == OrderStatus.ORD_COMP &&
+                it.orderType != OrderType.ACCESSORY_ONLY &&
+                it.items.any { line -> line.lineType == "GAS" }
+        }
+        .maxOfOrNull { it.completedAt ?: it.createdAt }
+        ?: return Pair(false, "No completed order found.")
+
+    val cust = customers.find { it.id == customerId }
+        ?: return Pair(false, "Customer not found.")
+    cust.reminderDismissedForCompletedAt = lastCompletedAt
+    notifyChanged()
+    return Pair(true, "Reminder dismissed.")
+}
+
 

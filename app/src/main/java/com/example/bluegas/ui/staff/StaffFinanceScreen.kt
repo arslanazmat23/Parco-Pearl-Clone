@@ -773,7 +773,19 @@ fun StaffFinanceScreen(
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             Column(modifier = Modifier.weight(1f)) {
-                                Text("[${led.entryType}] ${led.description}", fontSize = 10.sp, fontWeight = FontWeight.Medium)
+                                val entryTypeLabel = when (led.entryType) {
+                                    "REVENUE_GAS" -> "Gas revenue"
+                                    "DELIVERY_FEE" -> "Delivery fee"
+                                    "EXPRESS_FEE" -> "Express delivery fee"
+                                    "PLATFORM_FEE" -> "Platform fee"
+                                    "TAX_PAYABLE" -> "Tax payable"
+                                    "DEPOSIT_LIABILITY" -> "Security deposit"
+                                    "REFUND" -> "Refund"
+                                    "SETTLEMENT" -> "Settlement"
+                                    "CASH_SHORT_OVER" -> "Cash short / over"
+                                    else -> led.entryType.replace('_', ' ').lowercase().replaceFirstChar { it.uppercase() }
+                                }
+                                Text("$entryTypeLabel · ${led.description}", fontSize = 10.sp, fontWeight = FontWeight.Medium)
                                 if (led.orderId != null) {
                                     Text(snapshot.orderLabel(led.orderId), fontSize = 9.sp, color = Color.Gray)
                                 }

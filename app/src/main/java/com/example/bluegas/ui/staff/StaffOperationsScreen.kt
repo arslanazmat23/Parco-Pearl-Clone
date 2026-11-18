@@ -579,6 +579,37 @@ fun StaffOperationsScreen(
                                 fontSize = 10.sp,
                                 color = Color.Gray
                             )
+                            if (ord.fulfilmentMode == FulfilmentMode.DELIVERY) {
+                                val windowText = ord.promiseLabel?.takeIf { it.isNotBlank() }
+                                    ?: ord.deliveryWindowLabel?.takeIf { it.isNotBlank() }
+                                if (ord.serviceLevel == ServiceLevel.EXPRESS || windowText != null) {
+                                    Row(
+                                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        modifier = Modifier.padding(top = 3.dp)
+                                    ) {
+                                        if (ord.serviceLevel == ServiceLevel.EXPRESS) {
+                                            Surface(color = Color(0xFFFFEDD5), shape = RoundedCornerShape(4.dp)) {
+                                                Text(
+                                                    text = ServiceLevel.EXPRESS.label,
+                                                    fontSize = 9.sp,
+                                                    fontWeight = FontWeight.Bold,
+                                                    color = Color(0xFFC2410C),
+                                                    modifier = Modifier.padding(horizontal = 5.dp, vertical = 1.dp)
+                                                )
+                                            }
+                                        }
+                                        if (windowText != null) {
+                                            Text(
+                                                text = "Window: $windowText",
+                                                fontSize = 10.sp,
+                                                color = Color(0xFF334155),
+                                                fontWeight = FontWeight.Medium
+                                            )
+                                        }
+                                    }
+                                }
+                            }
                         }
                         CanonicalStatusChip(ord.status)
                     }
@@ -973,6 +1004,36 @@ private fun OperationsDispatchCard(
                 fontSize = 11.sp,
                 color = Color(0xFF475569)
             )
+            if (order.fulfilmentMode == FulfilmentMode.DELIVERY) {
+                val windowText = order.promiseLabel?.takeIf { it.isNotBlank() }
+                    ?: order.deliveryWindowLabel?.takeIf { it.isNotBlank() }
+                if (order.serviceLevel == ServiceLevel.EXPRESS || windowText != null) {
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        if (order.serviceLevel == ServiceLevel.EXPRESS) {
+                            Surface(color = Color(0xFFFFEDD5), shape = RoundedCornerShape(4.dp)) {
+                                Text(
+                                    text = ServiceLevel.EXPRESS.label,
+                                    fontSize = 9.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = Color(0xFFC2410C),
+                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                )
+                            }
+                        }
+                        if (windowText != null) {
+                            Text(
+                                text = "Window: $windowText",
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                color = Color(0xFF1E293B)
+                            )
+                        }
+                    }
+                }
+            }
             Text(
                 text = "Bound cylinder: ${order.allocatedSerial ?: "None"}",
                 fontSize = 11.sp,

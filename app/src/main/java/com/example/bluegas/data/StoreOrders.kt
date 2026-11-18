@@ -4,6 +4,9 @@ import com.example.bluegas.lifecycle.OrderStateMachine
 import com.example.bluegas.lifecycle.PaymentStateMachine
 import com.example.bluegas.lifecycle.TransitionResult
 import com.example.bluegas.model.*
+import java.util.Calendar
+import java.util.Locale
+import java.util.TimeZone
 import java.util.UUID
 
 fun BlueGasStore.createOrder(
@@ -16,7 +19,11 @@ fun BlueGasStore.createOrder(
     paymentMethod: PaymentMethod = PaymentMethod.ONLINE_HOSTED,
     orderType: OrderType = OrderType.REFILL_EXCHANGE,
     pickupPointId: String? = null,
-    accessories: List<Pair<String, Int>> = emptyList()
+    accessories: List<Pair<String, Int>> = emptyList(),
+    deliveryWindowLabel: String? = null,
+    windowStartAt: Long? = null,
+    windowEndAt: Long? = null,
+    serviceLevel: ServiceLevel = ServiceLevel.STANDARD
 ): Pair<Order?, String?> {
     val customer = customers.find { it.id == customerId }
         ?: return Pair(null, "Customer profile not found.")
@@ -66,6 +73,20 @@ fun BlueGasStore.createOrder(
         }
     }
 
+    // 2C. Delivery window & service level guards (pickup ignores windows and Express)
+    val nowMillis = clock()
+    val effectiveServiceLevel = if (fulfilmentMode == FulfilmentMode.PICKUP) ServiceLevel.STANDARD else serviceLevel
+    val effectiveWindowLabel = if (fulfilmentMode == FulfilmentMode.PICKUP) null else deliveryWindowLabel?.takeIf { it.isNotBlank() }
+    val effectiveWindowStartAt = if (fulfilmentMode == FulfilmentMode.PICKUP) null else windowStartAt
+    val effectiveWindowEndAt = if (fulfilmentMode == FulfilmentMode.PICKUP) null else windowEndAt
+
+    if (effectiveServiceLevel == ServiceLevel.EXPRESS && !settings.expressEnabled) {
+        return Pair(null, "Express delivery is not available right now.")
+    }
+    if (effectiveWindowEndAt != null && effectiveWindowEndAt < nowMillis) {
+        return Pair(null, "That delivery time window has passed. Please pick another.")
+    }
+
     // 3. Check stock availability at serving point
     val servingPointId = if (fulfilmentMode == FulfilmentMode.PICKUP) {
         pickupPointId ?: nodes.firstOrNull { it.pickupEnabled }?.id ?: "NODE-LHR-1"
@@ -93,10 +114,17 @@ fun BlueGasStore.createOrder(
         mode = fulfilmentMode,
         priceList = currentPriceList,
         tax = taxConfig,
-        settings = settings
+        settings = settings,
+        serviceLevel = effectiveServiceLevel
     )
 
     val orderId = "ORD-" + UUID.randomUUID().toString().take(6).uppercase()
+    val storedWindowLabel = when {
+        fulfilmentMode == FulfilmentMode.PICKUP -> null
+        effectiveWindowLabel != null -> effectiveWindowLabel
+        effectiveServiceLevel == ServiceLevel.EXPRESS -> "Express · within ${settings.expressHours} hours"
+        else -> null
+    }
 
     val initialOrder = Order(
         id = orderId,
@@ -120,7 +148,13 @@ fun BlueGasStore.createOrder(
         discountPaisa = quote.discountPaisa,
         gstPaisa = quote.gstPaisa,
         furtherTaxPaisa = quote.furtherTaxPaisa,
-        holdExpiresAt = System.currentTimeMillis() + (settings.holdTtlMinutes * 60000L),
+        holdExpiresAt = nowMillis + (settings.holdTtlMinutes * 60000L),
+        createdAt = nowMillis,
+        deliveryWindowLabel = storedWindowLabel,
+        windowStartAt = effectiveWindowStartAt,
+        windowEndAt = effectiveWindowEndAt,
+        serviceLevel = effectiveServiceLevel,
+        expressFeePaisa = quote.expressFeePaisa,
         handoverPin = (1000..9999).random().toString()
     )
 
@@ -199,8 +233,63 @@ fun BlueGasStore.createOrder(
 }
 
 fun BlueGasStore.onConfirmed(order: Order) {
-    order.confirmedAt = System.currentTimeMillis()
-    order.promisedByAt = System.currentTimeMillis() + (settings.promisedHandoverMinutes * 60000L)
+    val now = clock()
+    order.confirmedAt = now
+
+    val karachiCal = Calendar.getInstance(TimeZone.getTimeZone("Asia/Karachi"), Locale.US).apply {
+        timeInMillis = now
+    }
+    val currentKarachiHour = karachiCal.get(Calendar.HOUR_OF_DAY)
+
+    when {
+        order.fulfilmentMode == FulfilmentMode.PICKUP -> {
+            val readyAt = now + (settings.promisedHandoverMinutes * 60000L)
+            order.promisedByAt = readyAt
+            order.promiseLabel = "Ready by ${formatKarachiTime12h(readyAt)}"
+        }
+        order.serviceLevel == ServiceLevel.EXPRESS -> {
+            val expressBy = now + (settings.expressHours * 3_600_000L)
+            order.promisedByAt = expressBy
+            order.promiseLabel = "Express · within ${settings.expressHours} hours (by ${formatKarachiTime12h(expressBy)})"
+        }
+        order.windowEndAt != null && !order.deliveryWindowLabel.isNullOrBlank() -> {
+            order.promisedByAt = order.windowEndAt
+            order.promiseLabel = order.deliveryWindowLabel
+        }
+        currentKarachiHour >= settings.standardCutoffHour -> {
+            val firstTomorrow = settings.deliveryWindowsHours.minByOrNull { it.first } ?: (10 to 12)
+            val promisedEnd = karachiDayHourMillis(now, addDays = 1, hour = firstTomorrow.second)
+            order.promisedByAt = promisedEnd
+            order.promiseLabel = "Tomorrow ${formatHourRange12h(firstTomorrow.first, firstTomorrow.second)}"
+        }
+        else -> {
+            val standardBy = now + (settings.promisedHandoverMinutes * 60000L)
+            order.promisedByAt = standardBy
+            order.promiseLabel = "Today by ${formatKarachiTime12h(standardBy)}"
+        }
+    }
+
+    val promiseModeWord = if (order.fulfilmentMode == FulfilmentMode.PICKUP) "pickup" else "delivery"
+    val confirmedMessage = if (order.paymentMethod == PaymentMethod.CASH_ON_DELIVERY) {
+        "Order confirmed — $promiseModeWord ${order.promiseLabel}. ${formatRupees(order.totalAmountPaisa)} payable at handover."
+    } else {
+        "Order confirmed — $promiseModeWord ${order.promiseLabel}."
+    }
+    val existingCodConfIdx = notifications.indexOfFirst {
+        it.surface == AppSurface.CUSTOMER && it.orderId == order.id && it.code == "NTF-01" && it.title == "Order Confirmed"
+    }
+    if (existingCodConfIdx != -1) {
+        notifications[existingCodConfIdx] = notifications[existingCodConfIdx].copy(message = confirmedMessage)
+    } else {
+        addNotification(
+            surface = AppSurface.CUSTOMER,
+            title = "Order Confirmed",
+            message = confirmedMessage,
+            canonicalStatus = OrderStatus.ORD_CONF.canonicalLabel,
+            orderId = order.id,
+            code = "NTF-01"
+        )
+    }
 
     // 1. Convert Temporary Hold to Firm Reservation (Confirmed -> Reserved)
     val tRsvd = OrderStateMachine.transition(
@@ -534,7 +623,8 @@ fun BlueGasStore.supersedeOrder(
         mode = oldOrder.fulfilmentMode,
         priceList = currentPriceList,
         tax = taxConfig,
-        settings = settings
+        settings = settings,
+        serviceLevel = oldOrder.serviceLevel
     )
 
     val newOrder = oldOrder.copy(
@@ -542,10 +632,21 @@ fun BlueGasStore.supersedeOrder(
         addressId = newAddressId,
         items = quote.lines,
         subtotalPaisa = quote.subtotalPaisa,
+        deliveryFeePaisa = quote.deliveryFeePaisa,
+        platformFeePaisa = quote.platformFeePaisa,
+        taxPaisa = quote.taxPaisa,
+        gstPaisa = quote.gstPaisa,
+        furtherTaxPaisa = quote.furtherTaxPaisa,
+        expressFeePaisa = quote.expressFeePaisa,
+        serviceLevel = oldOrder.serviceLevel,
+        deliveryWindowLabel = oldOrder.deliveryWindowLabel,
+        windowStartAt = oldOrder.windowStartAt,
+        windowEndAt = oldOrder.windowEndAt,
+        promiseLabel = oldOrder.promiseLabel,
         totalAmountPaisa = quote.totalAmountPaisa,
         status = OrderStatus.ORD_CONF,
         supersedesOrderId = oldOrder.id,
-        createdAt = System.currentTimeMillis()
+        createdAt = clock()
     )
 
     // Old order -> ORD_SUPS

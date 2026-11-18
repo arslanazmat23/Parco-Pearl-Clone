@@ -1161,6 +1161,9 @@ fun BlueGasStore.completeHandover(
     // Post Revenue Ledger
     postLedger(orderId, "REVENUE_GAS", debitPaisa = order.subtotalPaisa, description = "LPG refill gas revenue")
     postLedger(orderId, "DELIVERY_FEE", debitPaisa = order.deliveryFeePaisa, description = "Doorstep delivery fee")
+    if (order.expressFeePaisa > 0L) {
+        postLedger(orderId, "EXPRESS_FEE", debitPaisa = order.expressFeePaisa, description = "Express delivery fee")
+    }
     postLedger(orderId, "PLATFORM_FEE", debitPaisa = order.platformFeePaisa, description = "Platform convenience fee")
     if (order.taxPaisa > 0) {
         postLedger(orderId, "TAX_PAYABLE", creditPaisa = order.taxPaisa, description = "GST and sales tax payable")

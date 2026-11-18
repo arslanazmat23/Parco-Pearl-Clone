@@ -30,6 +30,8 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.lazy.LazyColumn
@@ -97,7 +99,7 @@ fun formatCustomerExceptionMessage(reason: ExceptionReason?): String {
  * @param onActionMessage Customer notification banner callback receiving (message: String, isError: Boolean).
  * @param modifier Optional layout modifier.
  */
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
 fun TrackingScreen(
     store: BlueGasStore,
@@ -368,7 +370,7 @@ fun TrackingScreen(
                             tint = Color(0xFFF0FDF4),
                             accent = Color(0xFF10B981),
                             icon = Icons.Default.PinDrop,
-                            title = if (isPickup) "You're at the hub" else "Rider has arrived",
+                            title = if (isPickup) "You're at the hub" else "Your rider has arrived",
                             subtitle = if (isPickup) "Show your handover code at the counter." else "Please share your handover code with the rider."
                         )
                         OrderStatus.ORD_INSP, OrderStatus.ORD_ADJ -> HeroBannerConfig(
@@ -462,6 +464,54 @@ fun TrackingScreen(
                                     color = Color(0xFF475569),
                                     lineHeight = 15.sp
                                 )
+
+                                val promiseText = currentOrder.promiseLabel?.takeIf { it.isNotBlank() }
+                                    ?: if (!isPickup) currentOrder.deliveryWindowLabel?.takeIf { it.isNotBlank() } else null
+
+                                if (!isPickup && currentOrder.status == OrderStatus.ORD_DISP) {
+                                    val dispatchTime = snapshot.orderStatusHistory
+                                        .filter { it.orderId == currentOrder.id && it.toStatus == OrderStatus.ORD_DISP }
+                                        .maxByOrNull { it.timestamp }?.timestamp
+                                        ?: currentOrder.createdAt
+                                    val elapsedMins = ((nowMillis - dispatchTime).coerceAtLeast(0L) / 60_000L).toInt()
+                                    val etaMins = (25 - elapsedMins).coerceAtLeast(2)
+                                    Spacer(modifier = Modifier.height(6.dp))
+                                    FlowRow(
+                                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                                    ) {
+                                        Text(
+                                            text = "Arriving in about $etaMins min",
+                                            fontSize = 12.sp,
+                                            fontWeight = FontWeight.Bold,
+                                            color = BlueGasPrimary
+                                        )
+                                        DemoValuePill("Demo estimate")
+                                    }
+                                }
+
+                                if (promiseText != null || (!isPickup && currentOrder.serviceLevel == ServiceLevel.EXPRESS)) {
+                                    Spacer(modifier = Modifier.height(6.dp))
+                                    FlowRow(
+                                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                                    ) {
+                                        if (!isPickup && currentOrder.serviceLevel == ServiceLevel.EXPRESS) {
+                                            ExpressChip()
+                                        }
+                                        if (promiseText != null) {
+                                            Text(
+                                                text = if (isPickup) promiseText else "Delivery: $promiseText",
+                                                fontSize = 11.sp,
+                                                fontWeight = FontWeight.SemiBold,
+                                                color = Color(0xFF1E293B)
+                                            )
+                                        }
+                                        if (!isPickup && (currentOrder.serviceLevel == ServiceLevel.EXPRESS || promiseText != null)) {
+                                            DemoValuePill("Demo value · delivery promise")
+                                        }
+                                    }
+                                }
                             }
                         }
                     }

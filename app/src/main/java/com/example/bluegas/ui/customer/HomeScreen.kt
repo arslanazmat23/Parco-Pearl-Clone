@@ -22,9 +22,11 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
@@ -45,11 +47,16 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.bluegas.data.BlueGasStore
+import com.example.bluegas.data.DeliveryWindowOption
 import com.example.bluegas.data.PricingEngine
+import com.example.bluegas.data.availableDeliveryWindows
 import com.example.bluegas.data.captureCnic
 import com.example.bluegas.data.confirmPaymentAndAdvance
 import com.example.bluegas.data.createOrder
+import com.example.bluegas.data.dismissRefillReminder
+import com.example.bluegas.data.lastReorderableOrder
 import com.example.bluegas.data.needsCnicForDeposit
+import com.example.bluegas.data.refillReminderDue
 import com.example.bluegas.model.*
 import com.example.ui.theme.BlueGasDark
 import com.example.ui.theme.BlueGasPrimary
@@ -68,7 +75,7 @@ import com.example.ui.theme.BlueGasPrimary
  * @param onPrefillConsumed Invoked once the prefill values have been applied.
  * @param modifier Optional layout modifier.
  */
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
 fun HomeScreen(
     store: BlueGasStore,
@@ -100,11 +107,14 @@ fun HomeScreen(
     var paymentMethodChoice by rememberSaveable { mutableStateOf(PaymentMethod.ONLINE_HOSTED) }
     var addAccessory by rememberSaveable { mutableStateOf(false) }
     var selectedPickupNodeId by rememberSaveable { mutableStateOf("") }
+    var selectedWindowLabel by rememberSaveable { mutableStateOf("") }
+    var selectedServiceLevel by rememberSaveable { mutableStateOf(ServiceLevel.STANDARD) }
 
-    // Dialog state for payment execution, CNIC deposit capture, and deposit info sheet
+    // Dialog state for payment execution, CNIC deposit capture, deposit info sheet, and quick reorder sheet
     var createdOrderIdForPayment by remember { mutableStateOf<String?>(null) }
     var showPaymentGatewayDialog by remember { mutableStateOf(false) }
     var showDepositInfoSheet by remember { mutableStateOf(false) }
+    var showQuickReorderSheet by remember { mutableStateOf(false) }
     var showCnicCaptureDialog by remember { mutableStateOf(false) }
     var cnicDigitsInput by remember { mutableStateOf("") }
     var cnicConsentChecked by remember { mutableStateOf(false) }
@@ -124,6 +134,9 @@ fun HomeScreen(
             selectedMode = FulfilmentMode.DELIVERY
             paymentMethodChoice = PaymentMethod.ONLINE_HOSTED
             addAccessory = false
+            selectedWindowLabel = ""
+            selectedServiceLevel = ServiceLevel.STANDARD
+            showQuickReorderSheet = false
             lastCustomerId = activeCustomer.id
         }
     }
@@ -146,6 +159,11 @@ fun HomeScreen(
         selectedMode = p.mode
         paymentMethodChoice = p.paymentMethod
         addAccessory = p.addAccessory
+        selectedServiceLevel = if (p.mode == FulfilmentMode.DELIVERY && snapshot.settings.expressEnabled) {
+            p.serviceLevel
+        } else {
+            ServiceLevel.STANDARD
+        }
 
         // Preserve previous depot selection if valid for the address's city
         val targetAddress = snapshot.addresses.find { it.id == selectedAddressId }
@@ -190,17 +208,95 @@ fun HomeScreen(
         }
     }
 
+    // Delivery time windows (filtered for current Karachi time) & service level normalization
+    val deliveryWindowOptions = remember(snapshot.version, snapshot.settings) {
+        store.availableDeliveryWindows()
+    }
+    LaunchedEffect(deliveryWindowOptions) {
+        if (deliveryWindowOptions.isNotEmpty() && deliveryWindowOptions.none { it.label == selectedWindowLabel }) {
+            selectedWindowLabel = deliveryWindowOptions.first().label
+        } else if (deliveryWindowOptions.isEmpty()) {
+            selectedWindowLabel = ""
+        }
+    }
+    val selectedWindowOption: DeliveryWindowOption? = deliveryWindowOptions.find { it.label == selectedWindowLabel }
+        ?: deliveryWindowOptions.firstOrNull()
+
+    LaunchedEffect(selectedMode, snapshot.settings.expressEnabled) {
+        if (selectedMode == FulfilmentMode.PICKUP || !snapshot.settings.expressEnabled) {
+            selectedServiceLevel = ServiceLevel.STANDARD
+        }
+    }
+    val effectiveServiceLevel = if (selectedMode == FulfilmentMode.DELIVERY && snapshot.settings.expressEnabled) {
+        selectedServiceLevel
+    } else {
+        ServiceLevel.STANDARD
+    }
+
+    // Helper for Home, CNIC dialog, and One-Tap Reorder to execute order placement without duplicating payment handling
+    fun submitOrderRequest(
+        reqAddressId: String,
+        reqMode: FulfilmentMode,
+        reqSku: String,
+        reqQty: Int,
+        reqPaymentMethod: PaymentMethod,
+        reqOrderType: OrderType,
+        reqPickupPointId: String?,
+        reqAccessories: List<Pair<String, Int>>,
+        reqWindow: DeliveryWindowOption?,
+        reqServiceLevel: ServiceLevel
+    ): Boolean {
+        val (newOrder, err) = store.createOrder(
+            customerId = activeCustomer.id,
+            addressId = reqAddressId,
+            fulfilmentMode = reqMode,
+            sku = reqSku,
+            quantity = reqQty,
+            includeDeposit = false,
+            paymentMethod = reqPaymentMethod,
+            orderType = reqOrderType,
+            pickupPointId = if (reqMode == FulfilmentMode.PICKUP) reqPickupPointId else null,
+            accessories = reqAccessories,
+            deliveryWindowLabel = if (reqMode == FulfilmentMode.DELIVERY) reqWindow?.label else null,
+            windowStartAt = if (reqMode == FulfilmentMode.DELIVERY) reqWindow?.startAt else null,
+            windowEndAt = if (reqMode == FulfilmentMode.DELIVERY) reqWindow?.endAt else null,
+            serviceLevel = reqServiceLevel
+        )
+        if (err != null) {
+            onActionMessage(err, true)
+            return false
+        }
+        if (newOrder != null) {
+            onOrderCreated(newOrder)
+            onActionMessage("Order ${newOrder.id} placed.", false)
+            if (reqPaymentMethod == PaymentMethod.ONLINE_HOSTED) {
+                createdOrderIdForPayment = newOrder.id
+                showPaymentGatewayDialog = true
+            } else {
+                val (codOk, codMsg) = store.confirmPaymentAndAdvance(newOrder.id, actor = activeCustomer.id)
+                onActionMessage(codMsg, !codOk)
+                onNavigateToOrders()
+            }
+            return true
+        }
+        return false
+    }
+
     // Accessory pricing calculation adhering to price list rounding rules
     val rawAccessoryPaisa = snapshot.currentPriceList.accessoryPaisa["SKU-REG-HOSE"]
     val accessoryPricePaisa = rawAccessoryPaisa?.let {
         PricingEngine.roundToRupees(it, snapshot.currentPriceList.roundingRule)
     }
 
+    // Refill reminder & one-tap reorder candidates
+    val refillReminder = remember(snapshot.version, activeCustomer.id) {
+        store.refillReminderDue(activeCustomer.id)
+    }
+    val lastReorderOrder = remember(snapshot.version, activeCustomer.id) {
+        store.lastReorderableOrder(activeCustomer.id)
+    }
+
     // Pure deterministic pricing quote calculation adhering to company pricing tiers and rounding rules.
-    // Automatically evaluates base fuel tariffs, cylinder security deposits for new packages, delivery surcharges, and statutory sales tax.
-    // Footing invariant: sum of item line subtotals + delivery surcharge + sales tax + security deposit - discounts exactly equals totalAmountPaisa.
-    // Quote calculation: recomputed only when pricing parameters change via remember keys.
-    // Minimizes unnecessary recomposition overhead during UI text inputs or dialog toggles.
     val accessoriesList = if (addAccessory) listOf("SKU-REG-HOSE" to 1) else emptyList()
     val quote = remember(
         selectedSku,
@@ -208,6 +304,7 @@ fun HomeScreen(
         selectedMode,
         orderType,
         addAccessory,
+        effectiveServiceLevel,
         snapshot.currentPriceList,
         snapshot.taxConfig,
         snapshot.settings
@@ -221,7 +318,8 @@ fun HomeScreen(
             priceList = snapshot.currentPriceList,
             tax = snapshot.taxConfig,
             settings = snapshot.settings,
-            discountPaisa = 0L
+            discountPaisa = 0L,
+            serviceLevel = effectiveServiceLevel
         )
     }
 
@@ -277,6 +375,136 @@ fun HomeScreen(
                             tint = BlueGasPrimary,
                             modifier = Modifier.size(26.dp)
                         )
+                    }
+                }
+            }
+        }
+
+        // Household Refill Reminder Card (G-20)
+        if (refillReminder != null) {
+            item {
+                Card(
+                    colors = CardDefaults.cardColors(containerColor = Color(0xFFFFFBEB)),
+                    shape = RoundedCornerShape(12.dp),
+                    border = BorderStroke(1.dp, Color(0xFFFCD34D)),
+                    modifier = Modifier.fillMaxWidth().testTag("home_refill_reminder_card")
+                ) {
+                    Column(
+                        modifier = Modifier.padding(12.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        RecommendedPill()
+                        Text(
+                            text = "Your ${refillReminder.sizeLabel} cylinder may be running low. Reorder?",
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 13.sp,
+                            color = Color(0xFF78350F)
+                        )
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Button(
+                                onClick = {
+                                    selectedSku = refillReminder.sku
+                                    orderType = OrderType.REFILL_EXCHANGE
+                                    if (lastReorderOrder != null) {
+                                        showQuickReorderSheet = true
+                                    }
+                                },
+                                colors = ButtonDefaults.buttonColors(containerColor = BlueGasPrimary),
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .heightIn(min = 48.dp)
+                                    .testTag("refill_reminder_reorder_btn")
+                            ) {
+                                Text("Reorder", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                            }
+                            OutlinedButton(
+                                onClick = { store.dismissRefillReminder(activeCustomer.id) },
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .heightIn(min = 48.dp)
+                                    .testTag("refill_reminder_dismiss_btn")
+                            ) {
+                                Text("Not now", fontSize = 12.sp, color = Color(0xFF78350F))
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // One-Tap Reorder Card (G-19)
+        if (lastReorderOrder != null) {
+            item {
+                val gasLine = lastReorderOrder.items.firstOrNull { it.lineType == "GAS" }
+                val variant = snapshot.productVariants.find { it.sku == gasLine?.sku }
+                val sizeLabel = variant?.cylinderSizeKg?.let { "$it kg" } ?: (variant?.name ?: "LPG")
+                val addrLabel = if (lastReorderOrder.fulfilmentMode == FulfilmentMode.PICKUP) {
+                    "Hub pickup"
+                } else {
+                    snapshot.addresses.find { it.id == lastReorderOrder.addressId }?.label ?: "Saved address"
+                }
+                val payLabel = when (lastReorderOrder.paymentMethod) {
+                    PaymentMethod.ONLINE_HOSTED -> "Online payment"
+                    PaymentMethod.CASH_ON_DELIVERY -> "Cash on delivery"
+                }
+
+                Card(
+                    colors = CardDefaults.cardColors(containerColor = Color(0xFFF0F9FF)),
+                    shape = RoundedCornerShape(12.dp),
+                    border = BorderStroke(1.dp, Color(0xFF93C5FD)),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable { showQuickReorderSheet = true }
+                        .testTag("home_one_tap_reorder_card")
+                ) {
+                    Column(
+                        modifier = Modifier.padding(12.dp),
+                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            RecommendedPill()
+                            Text(
+                                text = "One-tap reorder",
+                                fontSize = 10.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = BlueGasPrimary
+                            )
+                        }
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column(modifier = Modifier.weight(1f).padding(end = 8.dp)) {
+                                Text(
+                                    text = "Reorder: $sizeLabel refill · $addrLabel · $payLabel",
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 12.sp,
+                                    color = BlueGasDark
+                                )
+                                Text(
+                                    text = "Tap to review fresh live price & delivery time",
+                                    fontSize = 10.sp,
+                                    color = Color(0xFF475569)
+                                )
+                            }
+                            Button(
+                                onClick = { showQuickReorderSheet = true },
+                                colors = ButtonDefaults.buttonColors(containerColor = BlueGasPrimary),
+                                modifier = Modifier
+                                    .heightIn(min = 48.dp)
+                                    .testTag("home_one_tap_reorder_button")
+                            ) {
+                                Text("Reorder", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                            }
+                        }
                     }
                 }
             }
@@ -793,6 +1021,129 @@ fun HomeScreen(
             }
         }
 
+        // Section 2C: Delivery Time Windows & Service Speed (Delivery Mode Only; Pickup ignores windows & Express)
+        if (selectedMode == FulfilmentMode.DELIVERY) {
+            item {
+                Card(
+                    colors = CardDefaults.cardColors(containerColor = Color.White),
+                    shape = RoundedCornerShape(14.dp),
+                    border = BorderStroke(1.dp, Color(0xFFE2E8F0)),
+                    modifier = Modifier.fillMaxWidth().testTag("delivery_window_selector_card")
+                ) {
+                    Column(
+                        modifier = Modifier.padding(14.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = "When should we deliver?",
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 13.sp,
+                                color = Color(0xFF0F172A)
+                            )
+                        }
+                        RecommendedPill()
+
+                        if (deliveryWindowOptions.isEmpty()) {
+                            Text(
+                                text = "No delivery time windows are available right now. Switch to Hub pickup above to order.",
+                                fontSize = 11.sp,
+                                color = Color(0xFFDC2626)
+                            )
+                        } else {
+                            FlowRow(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                verticalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                deliveryWindowOptions.forEachIndexed { idx, opt ->
+                                    val isChosen = selectedWindowOption?.label == opt.label
+                                    FilterChip(
+                                        selected = isChosen,
+                                        onClick = { selectedWindowLabel = opt.label },
+                                        label = { Text(opt.label, fontSize = 11.sp) },
+                                        leadingIcon = if (isChosen) {
+                                            { Icon(Icons.Default.Check, contentDescription = null, modifier = Modifier.size(14.dp)) }
+                                        } else null,
+                                        colors = FilterChipDefaults.filterChipColors(
+                                            selectedContainerColor = Color(0xFFDBEAFE),
+                                            selectedLabelColor = BlueGasPrimary
+                                        ),
+                                        modifier = Modifier.testTag("delivery_window_chip_$idx")
+                                    )
+                                }
+                            }
+                        }
+
+                        if (snapshot.settings.expressEnabled) {
+                            HorizontalDivider(color = Color(0xFFE2E8F0), modifier = Modifier.padding(vertical = 2.dp))
+                            Text(
+                                text = "Delivery speed",
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 12.sp,
+                                color = Color(0xFF0F172A)
+                            )
+                            FlowRow(
+                                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                verticalArrangement = Arrangement.spacedBy(4.dp)
+                            ) {
+                                RecommendedPill()
+                                DemoValuePill("Demo value · delivery promise")
+                            }
+
+                            val expressRoundedPaisa = PricingEngine.roundToRupees(
+                                snapshot.settings.expressFeePaisa,
+                                snapshot.currentPriceList.roundingRule
+                            )
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                val isStandard = effectiveServiceLevel == ServiceLevel.STANDARD
+                                FilterChip(
+                                    selected = isStandard,
+                                    onClick = { selectedServiceLevel = ServiceLevel.STANDARD },
+                                    label = { Text(ServiceLevel.STANDARD.label, fontSize = 11.sp) },
+                                    leadingIcon = if (isStandard) {
+                                        { Icon(Icons.Default.Check, contentDescription = null, modifier = Modifier.size(14.dp)) }
+                                    } else null,
+                                    colors = FilterChipDefaults.filterChipColors(
+                                        selectedContainerColor = Color(0xFFDBEAFE),
+                                        selectedLabelColor = BlueGasPrimary
+                                    ),
+                                    modifier = Modifier.weight(1f).testTag("service_level_standard_chip")
+                                )
+
+                                val isExpress = effectiveServiceLevel == ServiceLevel.EXPRESS
+                                FilterChip(
+                                    selected = isExpress,
+                                    onClick = { selectedServiceLevel = ServiceLevel.EXPRESS },
+                                    label = {
+                                        Text(
+                                            text = "${ServiceLevel.EXPRESS.label} · ${snapshot.settings.expressHours}h (+${formatRupees(expressRoundedPaisa)})",
+                                            fontSize = 11.sp
+                                        )
+                                    },
+                                    leadingIcon = {
+                                        Icon(Icons.Default.Bolt, contentDescription = null, modifier = Modifier.size(14.dp))
+                                    },
+                                    colors = FilterChipDefaults.filterChipColors(
+                                        selectedContainerColor = Color(0xFFFFEDD5),
+                                        selectedLabelColor = Color(0xFFC2410C)
+                                    ),
+                                    modifier = Modifier.weight(1.3f).testTag("service_level_express_chip")
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         // Section 3: Payment Method
         // Cash on Delivery confirms the order immediately with payment collected at doorstep handover.
         // Online Hosted Gateway places order in ORD_PAYPEND with a 15-minute stock reservation hold window.
@@ -885,9 +1236,25 @@ fun HomeScreen(
                     }
 
                     if (selectedMode == FulfilmentMode.DELIVERY) {
+                        val summaryWindowText = if (effectiveServiceLevel == ServiceLevel.EXPRESS) {
+                            "${ServiceLevel.EXPRESS.label} · within ${snapshot.settings.expressHours} hours"
+                        } else {
+                            selectedWindowOption?.label ?: "As soon as possible"
+                        }
+                        QuoteLineRow(
+                            label = "Delivery time",
+                            value = summaryWindowText
+                        )
                         QuoteLineRow(
                             label = "Doorstep Delivery Fee",
                             value = formatRupees(quote.deliveryFeePaisa)
+                        )
+                    }
+
+                    if (quote.expressFeePaisa > 0) {
+                        QuoteLineRow(
+                            label = "Express delivery fee",
+                            value = formatRupees(quote.expressFeePaisa)
                         )
                     }
 
@@ -976,43 +1343,12 @@ fun HomeScreen(
         }
 
         // Section 5: Place Order Button with double-tap protection
-        // Validates checkout eligibility based on delivery zone serviceability or hub selection.
+        // Validates checkout eligibility based on delivery zone serviceability, open delivery window, or hub selection.
         // Disables the place order action while payment gateway modal is active to prevent duplicate orders.
         item {
             val isPickupValid = selectedMode == FulfilmentMode.PICKUP && cityPickupNodes.isNotEmpty() && selectedPickupNodeId.isNotEmpty()
-            val isCheckoutAllowed = (selectedMode == FulfilmentMode.DELIVERY && activeAddress.isServiceable) || isPickupValid
-
-            fun placeOrderNow() {
-                val (newOrder, err) = store.createOrder(
-                    customerId = activeCustomer.id,
-                    addressId = activeAddress.id,
-                    fulfilmentMode = selectedMode,
-                    sku = selectedSku,
-                    quantity = quantity,
-                    includeDeposit = false,
-                    paymentMethod = paymentMethodChoice,
-                    orderType = orderType,
-                    pickupPointId = if (selectedMode == FulfilmentMode.PICKUP) selectedPickupNodeId else null,
-                    accessories = accessoriesList
-                )
-
-                if (err != null) {
-                    onActionMessage(err, true)
-                } else if (newOrder != null) {
-                    onOrderCreated(newOrder)
-                    onActionMessage("Order ${newOrder.id} placed.", false)
-
-                    if (paymentMethodChoice == PaymentMethod.ONLINE_HOSTED) {
-                        createdOrderIdForPayment = newOrder.id
-                        showPaymentGatewayDialog = true
-                    } else {
-                        // COD advances directly to Confirmed status
-                        val (codOk, codMsg) = store.confirmPaymentAndAdvance(newOrder.id, actor = activeCustomer.id)
-                        onActionMessage(codMsg, !codOk)
-                        onNavigateToOrders()
-                    }
-                }
-            }
+            val hasDeliveryWindow = deliveryWindowOptions.isNotEmpty() && selectedWindowOption != null
+            val isCheckoutAllowed = (selectedMode == FulfilmentMode.DELIVERY && activeAddress.isServiceable && hasDeliveryWindow) || isPickupValid
 
             Column(modifier = Modifier.fillMaxWidth()) {
                 Button(
@@ -1023,7 +1359,18 @@ fun HomeScreen(
                             cnicModalError = null
                             showCnicCaptureDialog = true
                         } else {
-                            placeOrderNow()
+                            submitOrderRequest(
+                                reqAddressId = activeAddress.id,
+                                reqMode = selectedMode,
+                                reqSku = selectedSku,
+                                reqQty = quantity,
+                                reqPaymentMethod = paymentMethodChoice,
+                                reqOrderType = orderType,
+                                reqPickupPointId = selectedPickupNodeId,
+                                reqAccessories = accessoriesList,
+                                reqWindow = selectedWindowOption,
+                                reqServiceLevel = effectiveServiceLevel
+                            )
                         }
                     },
                     modifier = Modifier
@@ -1043,10 +1390,13 @@ fun HomeScreen(
                 }
 
                 if (!isCheckoutAllowed) {
-                    val notAllowedText = if (selectedMode == FulfilmentMode.PICKUP && cityPickupNodes.isEmpty()) {
-                        "No BLUE GAS hub is available in your city yet."
-                    } else {
-                        "Selected address is outside our delivery area. Switch to hub pickup above to proceed."
+                    val notAllowedText = when {
+                        selectedMode == FulfilmentMode.PICKUP && cityPickupNodes.isEmpty() ->
+                            "No BLUE GAS hub is available in your city yet."
+                        selectedMode == FulfilmentMode.DELIVERY && !activeAddress.isServiceable ->
+                            "Selected address is outside our delivery area. Switch to hub pickup above to proceed."
+                        else ->
+                            "No delivery time windows are open right now. Switch to hub pickup above to proceed."
                     }
                     Spacer(modifier = Modifier.height(4.dp))
                     Text(
@@ -1211,32 +1561,18 @@ fun HomeScreen(
                             cnicModalError = msg
                         } else {
                             showCnicCaptureDialog = false
-                            val (newOrder, err) = store.createOrder(
-                                customerId = activeCustomer.id,
-                                addressId = activeAddress.id,
-                                fulfilmentMode = selectedMode,
-                                sku = selectedSku,
-                                quantity = quantity,
-                                includeDeposit = false,
-                                paymentMethod = paymentMethodChoice,
-                                orderType = orderType,
-                                pickupPointId = if (selectedMode == FulfilmentMode.PICKUP) selectedPickupNodeId else null,
-                                accessories = accessoriesList
+                            submitOrderRequest(
+                                reqAddressId = activeAddress.id,
+                                reqMode = selectedMode,
+                                reqSku = selectedSku,
+                                reqQty = quantity,
+                                reqPaymentMethod = paymentMethodChoice,
+                                reqOrderType = orderType,
+                                reqPickupPointId = selectedPickupNodeId,
+                                reqAccessories = accessoriesList,
+                                reqWindow = selectedWindowOption,
+                                reqServiceLevel = effectiveServiceLevel
                             )
-                            if (err != null) {
-                                onActionMessage(err, true)
-                            } else if (newOrder != null) {
-                                onOrderCreated(newOrder)
-                                onActionMessage("Order ${newOrder.id} placed.", false)
-                                if (paymentMethodChoice == PaymentMethod.ONLINE_HOSTED) {
-                                    createdOrderIdForPayment = newOrder.id
-                                    showPaymentGatewayDialog = true
-                                } else {
-                                    val (codOk, codMsg) = store.confirmPaymentAndAdvance(newOrder.id, actor = activeCustomer.id)
-                                    onActionMessage(codMsg, !codOk)
-                                    onNavigateToOrders()
-                                }
-                            }
                         }
                     },
                     enabled = isCnicValid && cnicConsentChecked,
@@ -1252,6 +1588,254 @@ fun HomeScreen(
                 }
             }
         )
+    }
+
+    // One-Tap Reorder Bottom Sheet (G-19)
+    if (showQuickReorderSheet && lastReorderOrder != null) {
+        val prevOrder = lastReorderOrder
+        val gasLine = prevOrder.items.firstOrNull { it.lineType == "GAS" }
+        val reorderSku = gasLine?.sku?.takeIf { sku ->
+            snapshot.productVariants.any { it.sku == sku && it.isCylinder && it.isHouseholdApproved }
+        } ?: "SKU-LPG-11-8"
+        val reorderQty = (gasLine?.quantity ?: 1).coerceIn(1, snapshot.settings.maxQuantityPerOrder)
+        val reorderVariant = snapshot.productVariants.find { it.sku == reorderSku }
+        val reorderSizeLabel = reorderVariant?.cylinderSizeKg?.let { "$it kg" } ?: (reorderVariant?.name ?: "LPG")
+
+        val savedAddress = customerAddresses.find { it.id == prevOrder.addressId }
+            ?: customerAddresses.firstOrNull { it.isDefault }
+            ?: customerAddresses.firstOrNull()
+            ?: activeAddress
+
+        val wasDelivery = prevOrder.fulfilmentMode == FulfilmentMode.DELIVERY
+        val addressUnserviceableFallback = wasDelivery && !savedAddress.isServiceable
+        val reorderMode = if (addressUnserviceableFallback) FulfilmentMode.PICKUP else prevOrder.fulfilmentMode
+        val reorderCityHubs = snapshot.nodes.filter {
+            it.pickupEnabled && it.type != FulfilmentPointType.PLANT && it.city.equals(savedAddress.city, ignoreCase = true)
+        }
+        val reorderPickupHubId = prevOrder.pickupPointId?.takeIf { pid -> reorderCityHubs.any { it.id == pid } }
+            ?: reorderCityHubs.firstOrNull()?.id
+            ?: ""
+
+        var sheetWindowLabel by remember(prevOrder.id, deliveryWindowOptions) {
+            mutableStateOf(deliveryWindowOptions.firstOrNull()?.label ?: "")
+        }
+        var sheetServiceLevel by remember(prevOrder.id, snapshot.settings.expressEnabled, reorderMode) {
+            mutableStateOf(
+                if (reorderMode == FulfilmentMode.DELIVERY && snapshot.settings.expressEnabled && prevOrder.serviceLevel == ServiceLevel.EXPRESS) {
+                    ServiceLevel.EXPRESS
+                } else {
+                    ServiceLevel.STANDARD
+                }
+            )
+        }
+        val effectiveSheetServiceLevel = if (reorderMode == FulfilmentMode.DELIVERY && snapshot.settings.expressEnabled) {
+            sheetServiceLevel
+        } else {
+            ServiceLevel.STANDARD
+        }
+        val selectedSheetWindow = deliveryWindowOptions.find { it.label == sheetWindowLabel }
+            ?: deliveryWindowOptions.firstOrNull()
+
+        val reorderQuote = remember(
+            reorderSku,
+            reorderQty,
+            reorderMode,
+            effectiveSheetServiceLevel,
+            snapshot.currentPriceList,
+            snapshot.taxConfig,
+            snapshot.settings
+        ) {
+            PricingEngine.buildQuote(
+                orderType = OrderType.REFILL_EXCHANGE,
+                sku = reorderSku,
+                quantity = reorderQty,
+                accessories = emptyList(),
+                mode = reorderMode,
+                priceList = snapshot.currentPriceList,
+                tax = snapshot.taxConfig,
+                settings = snapshot.settings,
+                discountPaisa = 0L,
+                serviceLevel = effectiveSheetServiceLevel
+            )
+        }
+
+        val reorderSheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+        ModalBottomSheet(
+            onDismissRequest = { showQuickReorderSheet = false },
+            sheetState = reorderSheetState
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .verticalScroll(rememberScrollState())
+                    .padding(horizontal = 20.dp, vertical = 12.dp)
+                    .testTag("quick_reorder_bottom_sheet"),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = "Confirm Reorder ($reorderQty× $reorderSizeLabel refill)",
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 16.sp,
+                        color = BlueGasDark
+                    )
+                }
+                RecommendedPill()
+
+                Surface(
+                    color = Color(0xFFF8FAFC),
+                    shape = RoundedCornerShape(10.dp),
+                    border = BorderStroke(1.dp, Color(0xFFE2E8F0)),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(
+                        modifier = Modifier.padding(10.dp),
+                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        val destText = if (reorderMode == FulfilmentMode.PICKUP) {
+                            val hubName = reorderCityHubs.find { it.id == reorderPickupHubId }?.name ?: "Hub pickup"
+                            "Hub pickup · $hubName"
+                        } else {
+                            "${savedAddress.label} · ${savedAddress.street}, ${savedAddress.area}"
+                        }
+                        Text(text = "Destination: $destText", fontSize = 11.sp, fontWeight = FontWeight.SemiBold, color = Color(0xFF0F172A))
+                        val methodWords = if (prevOrder.paymentMethod == PaymentMethod.ONLINE_HOSTED) "Online payment" else "Cash on delivery"
+                        Text(text = "Payment: $methodWords", fontSize = 11.sp, color = Color(0xFF475569))
+                    }
+                }
+
+                if (addressUnserviceableFallback) {
+                    Surface(
+                        color = Color(0xFFFEF2F2),
+                        shape = RoundedCornerShape(8.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text(
+                            text = "Your saved address is outside the delivery area — switched to Hub pickup.",
+                            fontSize = 11.sp,
+                            color = Color(0xFF991B1B),
+                            modifier = Modifier.padding(8.dp)
+                        )
+                    }
+                }
+
+                if (reorderMode == FulfilmentMode.DELIVERY) {
+                    Text("When should we deliver?", fontWeight = FontWeight.Bold, fontSize = 12.sp, color = Color(0xFF0F172A))
+                    if (deliveryWindowOptions.isEmpty()) {
+                        Text(
+                            text = "No delivery time windows are open right now.",
+                            fontSize = 11.sp,
+                            color = Color(0xFFDC2626)
+                        )
+                    } else {
+                        FlowRow(
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            deliveryWindowOptions.forEach { opt ->
+                                val isChosen = selectedSheetWindow?.label == opt.label
+                                FilterChip(
+                                    selected = isChosen,
+                                    onClick = { sheetWindowLabel = opt.label },
+                                    label = { Text(opt.label, fontSize = 11.sp) }
+                                )
+                            }
+                        }
+                    }
+
+                    if (snapshot.settings.expressEnabled) {
+                        FlowRow(
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            verticalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            RecommendedPill()
+                            DemoValuePill("Demo value · delivery promise")
+                        }
+                        val expressRoundedPaisa = PricingEngine.roundToRupees(
+                            snapshot.settings.expressFeePaisa,
+                            snapshot.currentPriceList.roundingRule
+                        )
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            FilterChip(
+                                selected = effectiveSheetServiceLevel == ServiceLevel.STANDARD,
+                                onClick = { sheetServiceLevel = ServiceLevel.STANDARD },
+                                label = { Text(ServiceLevel.STANDARD.label, fontSize = 11.sp) },
+                                modifier = Modifier.weight(1f)
+                            )
+                            FilterChip(
+                                selected = effectiveSheetServiceLevel == ServiceLevel.EXPRESS,
+                                onClick = { sheetServiceLevel = ServiceLevel.EXPRESS },
+                                label = { Text("${ServiceLevel.EXPRESS.label} (+${formatRupees(expressRoundedPaisa)})", fontSize = 11.sp) },
+                                modifier = Modifier.weight(1.2f)
+                            )
+                        }
+                    }
+                }
+
+                HorizontalDivider()
+                reorderQuote.lines.filter { it.lineType != "DEPOSIT" }.forEach { line ->
+                    QuoteLineRow(label = "${line.quantity}x ${line.productName}", value = formatRupees(line.subtotalPaisa))
+                }
+                if (reorderMode == FulfilmentMode.DELIVERY) {
+                    QuoteLineRow(label = "Doorstep Delivery Fee", value = formatRupees(reorderQuote.deliveryFeePaisa))
+                }
+                if (reorderQuote.expressFeePaisa > 0L) {
+                    QuoteLineRow(label = "Express delivery fee", value = formatRupees(reorderQuote.expressFeePaisa))
+                }
+                if (reorderQuote.taxPaisa > 0L) {
+                    QuoteLineRow(label = "Sales Tax (GST)", value = formatRupees(reorderQuote.taxPaisa))
+                }
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text("Live Total", fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                    Text(formatRupees(reorderQuote.totalAmountPaisa), fontWeight = FontWeight.Black, fontSize = 16.sp, color = BlueGasPrimary)
+                }
+
+                val canConfirmReorder = if (reorderMode == FulfilmentMode.DELIVERY) {
+                    savedAddress.isServiceable && deliveryWindowOptions.isNotEmpty() && selectedSheetWindow != null
+                } else {
+                    reorderPickupHubId.isNotEmpty()
+                }
+                Button(
+                    onClick = {
+                        val submitted = submitOrderRequest(
+                            reqAddressId = savedAddress.id,
+                            reqMode = reorderMode,
+                            reqSku = reorderSku,
+                            reqQty = reorderQty,
+                            reqPaymentMethod = prevOrder.paymentMethod,
+                            reqOrderType = OrderType.REFILL_EXCHANGE,
+                            reqPickupPointId = reorderPickupHubId,
+                            reqAccessories = emptyList(),
+                            reqWindow = selectedSheetWindow,
+                            reqServiceLevel = effectiveSheetServiceLevel
+                        )
+                        if (submitted) {
+                            showQuickReorderSheet = false
+                        }
+                    },
+                    enabled = canConfirmReorder && !showPaymentGatewayDialog,
+                    colors = ButtonDefaults.buttonColors(containerColor = BlueGasPrimary),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(48.dp)
+                        .testTag("confirm_quick_reorder_button")
+                ) {
+                    Text("Place Reorder (${formatRupees(reorderQuote.totalAmountPaisa)})", fontWeight = FontWeight.Bold)
+                }
+                Spacer(modifier = Modifier.height(12.dp))
+            }
+        }
     }
 
     // Shared Demo Payment Dialog

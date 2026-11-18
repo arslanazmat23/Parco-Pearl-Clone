@@ -1737,6 +1737,41 @@ private fun PendingOrderCard(
                 )
             }
 
+            if (order.fulfilmentMode == FulfilmentMode.DELIVERY) {
+                val windowText = order.promiseLabel?.takeIf { it.isNotBlank() }
+                    ?: order.deliveryWindowLabel?.takeIf { it.isNotBlank() }
+                if (order.serviceLevel == ServiceLevel.EXPRESS || windowText != null) {
+                    Spacer(modifier = Modifier.height(6.dp))
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        if (order.serviceLevel == ServiceLevel.EXPRESS) {
+                            Surface(
+                                color = Color(0xFFFFEDD5),
+                                shape = RoundedCornerShape(4.dp)
+                            ) {
+                                Text(
+                                    text = ServiceLevel.EXPRESS.label,
+                                    fontSize = 10.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = Color(0xFFC2410C),
+                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                )
+                            }
+                        }
+                        if (windowText != null) {
+                            Text(
+                                text = "Window: $windowText",
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                color = Color(0xFF1E293B)
+                            )
+                        }
+                    }
+                }
+            }
+
             Spacer(modifier = Modifier.height(6.dp))
             Text(
                 text = if (order.paymentMethod == PaymentMethod.CASH_ON_DELIVERY) {
@@ -1857,6 +1892,41 @@ private fun ActiveOrderCard(
                 fontWeight = FontWeight.Bold,
                 color = BlueGasDark
             )
+
+            if (order.fulfilmentMode == FulfilmentMode.DELIVERY) {
+                val windowText = order.promiseLabel?.takeIf { it.isNotBlank() }
+                    ?: order.deliveryWindowLabel?.takeIf { it.isNotBlank() }
+                if (order.serviceLevel == ServiceLevel.EXPRESS || windowText != null) {
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        if (order.serviceLevel == ServiceLevel.EXPRESS) {
+                            Surface(
+                                color = Color(0xFFFFEDD5),
+                                shape = RoundedCornerShape(4.dp)
+                            ) {
+                                Text(
+                                    text = ServiceLevel.EXPRESS.label,
+                                    fontSize = 10.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = Color(0xFFC2410C),
+                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                )
+                            }
+                        }
+                        if (windowText != null) {
+                            Text(
+                                text = "Window: $windowText",
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                color = Color(0xFF1E293B)
+                            )
+                        }
+                    }
+                }
+            }
 
             // Tap-to-expand address (S5)
             Column(

@@ -20,6 +20,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.example.bluegas.data.computeDeliveryWindows
 import com.example.bluegas.model.DepositStatus
 import com.example.bluegas.model.formatRupees
 import com.example.bluegas.model.FulfilmentMode
@@ -32,6 +33,7 @@ import com.example.bluegas.model.PaymentState
 import com.example.bluegas.model.PlatformSettings
 import com.example.bluegas.model.Refund
 import com.example.bluegas.model.ReturnRefundCase
+import com.example.bluegas.model.ServiceLevel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 
@@ -76,6 +78,49 @@ fun DemoValuePill(text: String, modifier: Modifier = Modifier) {
 }
 
 /**
+ * Blue disclosure pill indicating a recommended new customer feature awaiting client sign-off.
+ */
+@Composable
+fun RecommendedPill(
+    text: String = "Recommended — awaiting approval",
+    modifier: Modifier = Modifier
+) {
+    Surface(
+        color = Color(0xFFDBEAFE),
+        shape = RoundedCornerShape(4.dp),
+        modifier = modifier
+    ) {
+        Text(
+            text = text,
+            fontSize = 9.sp,
+            fontWeight = FontWeight.SemiBold,
+            color = Color(0xFF1D4ED8),
+            modifier = Modifier.padding(horizontal = 5.dp, vertical = 2.dp)
+        )
+    }
+}
+
+/**
+ * Compact orange chip identifying Express delivery without exposing raw enum identifiers.
+ */
+@Composable
+fun ExpressChip(modifier: Modifier = Modifier) {
+    Surface(
+        color = Color(0xFFFFEDD5),
+        shape = RoundedCornerShape(4.dp),
+        modifier = modifier
+    ) {
+        Text(
+            text = ServiceLevel.EXPRESS.label,
+            fontSize = 9.sp,
+            fontWeight = FontWeight.Bold,
+            color = Color(0xFFC2410C),
+            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+        )
+    }
+}
+
+/**
  * Immutable carrier for reorder form prefill values transferred from order history to the checkout form.
  *
  * Keyed by a unique [nonce] to prevent duplicate consumption. The checkout screen re-validates
@@ -100,7 +145,8 @@ data class ReorderPrefill(
     val paymentMethod: PaymentMethod,
     val pickupPointId: String?,
     val addAccessory: Boolean,
-    val nonce: Long
+    val nonce: Long,
+    val serviceLevel: ServiceLevel = ServiceLevel.STANDARD
 )
 
 /**
@@ -158,19 +204,16 @@ fun customerDepositStatusLabel(status: DepositStatus): String = when (status) {
     DepositStatus.REDUCED_OR_FORFEITED -> "Reduced or closed"
 }
 
-/** Formats preferred return collection time window options from [PlatformSettings]. */
-fun customerReturnWindowOptions(settings: PlatformSettings): List<String> {
-    val today = settings.deliveryWindowsHours.map { (start, end) ->
-        String.format("Today %02d:00–%02d:00", start, end)
-    }
-    val tomorrow = if (settings.tomorrowWindowsEnabled) {
-        settings.deliveryWindowsHours.map { (start, end) ->
-            String.format("Tomorrow %02d:00–%02d:00", start, end)
-        }
-    } else {
-        emptyList()
-    }
-    return today + tomorrow
+/** Formats preferred return collection time window options from [PlatformSettings] using the single window generator. */
+fun customerReturnWindowOptions(
+    settings: PlatformSettings,
+    nowMillis: Long = System.currentTimeMillis()
+): List<String> {
+    return computeDeliveryWindows(
+        settings = settings,
+        nowMillis = nowMillis,
+        includeAsap = false
+    ).map { it.label }
 }
 
 /** Plain-language summary of a customer's cylinder return progress (7 steps, indices 0..6) with zero enum leakage. */

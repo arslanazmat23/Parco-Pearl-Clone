@@ -361,7 +361,8 @@ data class Customer(
     val isPhoneVerified: Boolean = true,
     val isCnicVerified: Boolean = true,
     val customerType: String = "HOUSEHOLD",
-    var cnicCapturedAt: Long? = null
+    var cnicCapturedAt: Long? = null,
+    var reminderDismissedForCompletedAt: Long? = null
 )
 
 data class Address(
@@ -790,12 +791,13 @@ data class Order(
     var confirmedAt: Long? = null,
     var completedAt: Long? = null,
     var promisedByAt: Long? = null,
+    var promiseLabel: String? = null,
     var adjustmentAccepted: Boolean? = null,
     var deliveryWindowLabel: String? = null,
     var windowStartAt: Long? = null,
     var windowEndAt: Long? = null,
-    val serviceLevel: ServiceLevel = ServiceLevel.STANDARD,
-    val expressFeePaisa: Long = 0L,
+    var serviceLevel: ServiceLevel = ServiceLevel.STANDARD,
+    var expressFeePaisa: Long = 0L,
     var notHomeCount: Int = 0,
     var rescheduleCount: Int = 0,
     var riderAtHubAt: Long? = null,

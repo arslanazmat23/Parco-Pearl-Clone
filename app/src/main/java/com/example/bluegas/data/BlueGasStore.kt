@@ -23,6 +23,9 @@ class BlueGasStore {
     // Version counter for reliable reactivity
     var stateVersionCounter: Long = 0L
 
+    // Overridable clock for deterministic delivery window, cutoff, and refill reminder tests
+    internal var clock: () -> Long = { System.currentTimeMillis() }
+
     // Core Entity Collections
     val customers = mutableListOf<Customer>()
     val addresses = mutableListOf<Address>()

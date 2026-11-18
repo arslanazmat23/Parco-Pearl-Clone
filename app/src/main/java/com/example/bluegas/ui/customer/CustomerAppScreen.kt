@@ -419,7 +419,8 @@ fun CustomerAppScreen(store: BlueGasStore, modifier: Modifier = Modifier) {
                                                 paymentMethod = order.paymentMethod,
                                                 pickupPointId = order.pickupPointId ?: order.fulfilmentPointId,
                                                 addAccessory = hasAccessory,
-                                                nonce = System.currentTimeMillis()
+                                                nonce = System.currentTimeMillis(),
+                                                serviceLevel = order.serviceLevel
                                             )
                                             store.setCustomerTab("HOME")
                                         },

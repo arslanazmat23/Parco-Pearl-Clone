@@ -576,6 +576,30 @@ private fun CustomerOrderCard(
                 )
             }
 
+            if (order.fulfilmentMode == FulfilmentMode.DELIVERY) {
+                val windowText = order.promiseLabel?.takeIf { it.isNotBlank() }
+                    ?: order.deliveryWindowLabel?.takeIf { it.isNotBlank() }
+                if (windowText != null || order.serviceLevel == ServiceLevel.EXPRESS) {
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        if (order.serviceLevel == ServiceLevel.EXPRESS) {
+                            ExpressChip(modifier = Modifier.testTag("order_express_chip_${order.id}"))
+                        }
+                        if (windowText != null) {
+                            Text(
+                                text = windowText,
+                                fontSize = 11.sp,
+                                color = Color(0xFF475569),
+                                fontWeight = FontWeight.Medium
+                            )
+                        }
+                    }
+                }
+            }
+
             Spacer(modifier = Modifier.height(4.dp))
 
             // Price summary and payment method badge

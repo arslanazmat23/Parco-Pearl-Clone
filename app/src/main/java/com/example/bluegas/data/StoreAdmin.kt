@@ -37,6 +37,33 @@ fun BlueGasStore.updateSettings(
     if (new.installationChecklistItems.isEmpty()) {
         return Pair(false, "Installation checklist must contain at least one safety verification item.")
     }
+    if (new.deliveryWindowsHours.isEmpty()) {
+        return Pair(false, "At least one delivery window must be configured.")
+    }
+    val sortedWindows = new.deliveryWindowsHours.sortedBy { it.first }
+    for (w in sortedWindows) {
+        val duration = w.second - w.first
+        if (w.first !in 7..21 || w.second !in 8..22 || duration !in 1..4) {
+            return Pair(false, "Each delivery window must be 1–4 hours between 7 am and 10 pm.")
+        }
+    }
+    for (i in 0 until sortedWindows.size - 1) {
+        if (sortedWindows[i].second > sortedWindows[i + 1].first) {
+            return Pair(false, "Delivery windows must not overlap.")
+        }
+    }
+    if (new.standardCutoffHour !in 8..22) {
+        return Pair(false, "Same-day standard cut-off hour must be between 8 am and 10 pm.")
+    }
+    if (new.expressFeePaisa < 0L) {
+        return Pair(false, "Express delivery fee cannot be negative.")
+    }
+    if (new.expressHours !in 1..6) {
+        return Pair(false, "Express delivery window must be between 1 and 6 hours.")
+    }
+    if (new.refillReminderLeadDays !in 0..14) {
+        return Pair(false, "Refill reminder lead days must be between 0 and 14.")
+    }
 
     val old = settings
     val changedFields = mutableListOf<String>()
@@ -50,8 +77,17 @@ fun BlueGasStore.updateSettings(
     if (old.cylinderIdMode != new.cylinderIdMode) changedFields.add("cylinderIdMode: ${old.cylinderIdMode} -> ${new.cylinderIdMode}")
     if (old.phase2PreviewEnabled != new.phase2PreviewEnabled) changedFields.add("phase2Preview: ${old.phase2PreviewEnabled} -> ${new.phase2PreviewEnabled}")
     if (old.installationChecklistItems != new.installationChecklistItems) changedFields.add("checklistItems: ${new.installationChecklistItems.size} items")
+    if (old.asapEnabled != new.asapEnabled) changedFields.add("asapEnabled: ${old.asapEnabled} -> ${new.asapEnabled}")
+    if (old.deliveryWindowsHours != sortedWindows) changedFields.add("deliveryWindowsHours: ${sortedWindows.size} slots")
+    if (old.tomorrowWindowsEnabled != new.tomorrowWindowsEnabled) changedFields.add("tomorrowWindowsEnabled: ${old.tomorrowWindowsEnabled} -> ${new.tomorrowWindowsEnabled}")
+    if (old.standardCutoffHour != new.standardCutoffHour) changedFields.add("standardCutoffHour: ${old.standardCutoffHour} -> ${new.standardCutoffHour}")
+    if (old.expressEnabled != new.expressEnabled) changedFields.add("expressEnabled: ${old.expressEnabled} -> ${new.expressEnabled}")
+    if (old.expressFeePaisa != new.expressFeePaisa) changedFields.add("expressFeePaisa: ${old.expressFeePaisa} -> ${new.expressFeePaisa}")
+    if (old.expressHours != new.expressHours) changedFields.add("expressHours: ${old.expressHours} -> ${new.expressHours}h")
+    if (old.refillReminderEnabled != new.refillReminderEnabled) changedFields.add("refillReminderEnabled: ${old.refillReminderEnabled} -> ${new.refillReminderEnabled}")
+    if (old.refillReminderLeadDays != new.refillReminderLeadDays) changedFields.add("refillReminderLeadDays: ${old.refillReminderLeadDays} -> ${new.refillReminderLeadDays}d")
 
-    settings = new
+    settings = new.copy(deliveryWindowsHours = sortedWindows)
 
     val details = if (changedFields.isEmpty()) "Settings re-saved with no changes" else changedFields.joinToString("; ")
     logAudit("PlatformSettings", "GLOBAL", "UPDATE_SETTINGS", actor, AccountableRole.ADMIN, details)

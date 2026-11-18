@@ -87,6 +87,16 @@ fun buildReceiptRows(order: Order, snapshot: SharedAppState): List<ReceiptRow> {
     val pointName = snapshot.nodes.find { it.id == order.fulfilmentPointId }?.name ?: order.fulfilmentPointId ?: "BLUE GAS hub"
     val modeLabel = if (order.fulfilmentMode == FulfilmentMode.DELIVERY) "Doorstep delivery" else "Hub pickup"
     rows.add(ReceiptRow("Fulfilment", "$modeLabel · $pointName"))
+    if (order.fulfilmentMode == FulfilmentMode.DELIVERY) {
+        val deliveryTime = order.promiseLabel?.takeIf { it.isNotBlank() }
+            ?: order.deliveryWindowLabel?.takeIf { it.isNotBlank() }
+        if (deliveryTime != null) {
+            rows.add(ReceiptRow("Delivery time", deliveryTime))
+        }
+        if (order.serviceLevel == ServiceLevel.EXPRESS) {
+            rows.add(ReceiptRow("Service", order.serviceLevel.label))
+        }
+    }
 
     // Itemized lines
     var linesSum = 0L
@@ -110,6 +120,11 @@ fun buildReceiptRows(order: Order, snapshot: SharedAppState): List<ReceiptRow> {
     // Delivery fee if delivery mode and non-zero
     if (order.deliveryFeePaisa > 0) {
         rows.add(ReceiptRow("Delivery fee", formatRupees(order.deliveryFeePaisa)))
+    }
+
+    // Express delivery fee if non-zero
+    if (order.expressFeePaisa > 0) {
+        rows.add(ReceiptRow("Express delivery", formatRupees(order.expressFeePaisa)))
     }
 
     // Discount if any
@@ -180,9 +195,9 @@ fun buildReceiptRows(order: Order, snapshot: SharedAppState): List<ReceiptRow> {
     }
 
     // Footing verification: confirm lines and taxes add up exactly to the total charge
-    val calculatedSum = linesSum + order.depositTotalPaisa + order.platformFeePaisa + order.deliveryFeePaisa - order.discountPaisa + order.gstPaisa + order.furtherTaxPaisa
+    val calculatedSum = linesSum + order.depositTotalPaisa + order.platformFeePaisa + order.deliveryFeePaisa + order.expressFeePaisa - order.discountPaisa + order.gstPaisa + order.furtherTaxPaisa
     if (calculatedSum != order.totalAmountPaisa) {
-        Log.w("Receipt", "Receipt line sum mismatch: lines=$linesSum deposit=${order.depositTotalPaisa} plat=${order.platformFeePaisa} del=${order.deliveryFeePaisa} disc=${order.discountPaisa} gst=${order.gstPaisa} furtherTax=${order.furtherTaxPaisa} sum=$calculatedSum vs total=${order.totalAmountPaisa}")
+        Log.w("Receipt", "Receipt line sum mismatch: lines=$linesSum deposit=${order.depositTotalPaisa} plat=${order.platformFeePaisa} del=${order.deliveryFeePaisa} express=${order.expressFeePaisa} disc=${order.discountPaisa} gst=${order.gstPaisa} furtherTax=${order.furtherTaxPaisa} sum=$calculatedSum vs total=${order.totalAmountPaisa}")
     }
 
     return rows

@@ -42,6 +42,17 @@ fun StaffAdminScreen(
     var cnicRequiredForDeposit by remember(currentSettings.cnicRequiredForDeposit) { mutableStateOf(currentSettings.cnicRequiredForDeposit) }
     var backupCylinderAllowed by remember(currentSettings.backupCylinderAllowed) { mutableStateOf(currentSettings.backupCylinderAllowed) }
     var maxDepositCylindersPerSize by remember(currentSettings.maxDepositCylindersPerSize) { mutableStateOf(currentSettings.maxDepositCylindersPerSize.toString()) }
+    var asapEnabled by remember(currentSettings.asapEnabled) { mutableStateOf(currentSettings.asapEnabled) }
+    var tomorrowWindowsEnabled by remember(currentSettings.tomorrowWindowsEnabled) { mutableStateOf(currentSettings.tomorrowWindowsEnabled) }
+    var deliveryWindowsText by remember(currentSettings.deliveryWindowsHours) {
+        mutableStateOf(currentSettings.deliveryWindowsHours.joinToString(", ") { "${it.first}-${it.second}" })
+    }
+    var standardCutoffHour by remember(currentSettings.standardCutoffHour) { mutableStateOf(currentSettings.standardCutoffHour.toString()) }
+    var expressEnabled by remember(currentSettings.expressEnabled) { mutableStateOf(currentSettings.expressEnabled) }
+    var expressFeeRs by remember(currentSettings.expressFeePaisa) { mutableStateOf((currentSettings.expressFeePaisa / 100L).toString()) }
+    var expressHours by remember(currentSettings.expressHours) { mutableStateOf(currentSettings.expressHours.toString()) }
+    var refillReminderEnabled by remember(currentSettings.refillReminderEnabled) { mutableStateOf(currentSettings.refillReminderEnabled) }
+    var refillReminderLeadDays by remember(currentSettings.refillReminderLeadDays) { mutableStateOf(currentSettings.refillReminderLeadDays.toString()) }
 
     LazyColumn(
         modifier = Modifier
@@ -261,12 +272,219 @@ fun StaffAdminScreen(
                                     .testTag("admin_max_deposit_per_size_input")
                             )
 
+                            Spacer(modifier = Modifier.height(10.dp))
+                            HorizontalDivider(color = Color(0xFFE2E8F0))
+                            Spacer(modifier = Modifier.height(8.dp))
+
+                            Text(
+                                text = "Delivery Windows, Express & Refill Reminders",
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 12.sp,
+                                color = Color(0xFF0F172A)
+                            )
+                            Spacer(modifier = Modifier.height(6.dp))
+
+                            // ASAP delivery option
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Column(modifier = Modifier.weight(1f).padding(end = 8.dp)) {
+                                    Text("ASAP delivery option", fontWeight = FontWeight.SemiBold, fontSize = 11.sp, color = Color(0xFF1E293B))
+                                    Spacer(modifier = Modifier.height(2.dp))
+                                    Surface(color = Color(0xFFDBEAFE), shape = RoundedCornerShape(4.dp)) {
+                                        Text(
+                                            text = "Recommended — awaiting approval",
+                                            fontSize = 9.sp,
+                                            fontWeight = FontWeight.SemiBold,
+                                            color = Color(0xFF1D4ED8),
+                                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                        )
+                                    }
+                                }
+                                Switch(
+                                    checked = asapEnabled,
+                                    onCheckedChange = { asapEnabled = it },
+                                    modifier = Modifier.testTag("admin_asap_enabled_switch")
+                                )
+                            }
+                            Spacer(modifier = Modifier.height(6.dp))
+
+                            // Tomorrow windows option
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Column(modifier = Modifier.weight(1f).padding(end = 8.dp)) {
+                                    Text("Tomorrow delivery windows", fontWeight = FontWeight.SemiBold, fontSize = 11.sp, color = Color(0xFF1E293B))
+                                    Spacer(modifier = Modifier.height(2.dp))
+                                    Surface(color = Color(0xFFDBEAFE), shape = RoundedCornerShape(4.dp)) {
+                                        Text(
+                                            text = "Recommended — awaiting approval",
+                                            fontSize = 9.sp,
+                                            fontWeight = FontWeight.SemiBold,
+                                            color = Color(0xFF1D4ED8),
+                                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                        )
+                                    }
+                                }
+                                Switch(
+                                    checked = tomorrowWindowsEnabled,
+                                    onCheckedChange = { tomorrowWindowsEnabled = it },
+                                    modifier = Modifier.testTag("admin_tomorrow_windows_switch")
+                                )
+                            }
+                            Spacer(modifier = Modifier.height(6.dp))
+
+                            OutlinedTextField(
+                                value = deliveryWindowsText,
+                                onValueChange = { deliveryWindowsText = it },
+                                label = { Text("Delivery window slots (24h, comma-separated)") },
+                                placeholder = { Text("10-12, 12-14, 14-16, 16-18, 18-20") },
+                                supportingText = {
+                                    Text("Hours 7–22, 1–4 hour length, non-overlapping (Recommended — awaiting approval)", fontSize = 10.sp)
+                                },
+                                modifier = Modifier.fillMaxWidth().testTag("admin_delivery_windows_input")
+                            )
+                            Spacer(modifier = Modifier.height(6.dp))
+
+                            OutlinedTextField(
+                                value = standardCutoffHour,
+                                onValueChange = { standardCutoffHour = it.filter { ch -> ch.isDigit() } },
+                                label = { Text("Same-day standard cut-off hour [8-22]") },
+                                supportingText = { Text("Demo value · delivery promise", fontSize = 10.sp) },
+                                singleLine = true,
+                                modifier = Modifier.fillMaxWidth().testTag("admin_standard_cutoff_input")
+                            )
+                            Spacer(modifier = Modifier.height(8.dp))
+
+                            // Express delivery
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Column(modifier = Modifier.weight(1f).padding(end = 8.dp)) {
+                                    Text("Express delivery", fontWeight = FontWeight.SemiBold, fontSize = 11.sp, color = Color(0xFF1E293B))
+                                    Spacer(modifier = Modifier.height(2.dp))
+                                    Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                                        Surface(color = Color(0xFFDBEAFE), shape = RoundedCornerShape(4.dp)) {
+                                            Text(
+                                                text = "Recommended — awaiting approval",
+                                                fontSize = 9.sp,
+                                                fontWeight = FontWeight.SemiBold,
+                                                color = Color(0xFF1D4ED8),
+                                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                            )
+                                        }
+                                        Surface(color = Color(0xFFE2E8F0), shape = RoundedCornerShape(4.dp)) {
+                                            Text(
+                                                text = "Demo value · delivery promise",
+                                                fontSize = 9.sp,
+                                                fontWeight = FontWeight.SemiBold,
+                                                color = Color(0xFF475569),
+                                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                            )
+                                        }
+                                    }
+                                }
+                                Switch(
+                                    checked = expressEnabled,
+                                    onCheckedChange = { expressEnabled = it },
+                                    modifier = Modifier.testTag("admin_express_enabled_switch")
+                                )
+                            }
+                            Spacer(modifier = Modifier.height(6.dp))
+
+                            OutlinedTextField(
+                                value = expressFeeRs,
+                                onValueChange = { expressFeeRs = it.filter { ch -> ch.isDigit() } },
+                                label = { Text("Express delivery fee (Rs)") },
+                                supportingText = { Text("Demo value · delivery promise", fontSize = 10.sp) },
+                                singleLine = true,
+                                modifier = Modifier.fillMaxWidth().testTag("admin_express_fee_input")
+                            )
+                            Spacer(modifier = Modifier.height(6.dp))
+
+                            OutlinedTextField(
+                                value = expressHours,
+                                onValueChange = { expressHours = it.filter { ch -> ch.isDigit() } },
+                                label = { Text("Express target hours [1-6]") },
+                                supportingText = { Text("Demo value · delivery promise", fontSize = 10.sp) },
+                                singleLine = true,
+                                modifier = Modifier.fillMaxWidth().testTag("admin_express_hours_input")
+                            )
+                            Spacer(modifier = Modifier.height(8.dp))
+
+                            // Household refill reminder
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Column(modifier = Modifier.weight(1f).padding(end = 8.dp)) {
+                                    Text("Household refill reminder", fontWeight = FontWeight.SemiBold, fontSize = 11.sp, color = Color(0xFF1E293B))
+                                    Spacer(modifier = Modifier.height(2.dp))
+                                    Surface(color = Color(0xFFDBEAFE), shape = RoundedCornerShape(4.dp)) {
+                                        Text(
+                                            text = "Recommended — awaiting approval",
+                                            fontSize = 9.sp,
+                                            fontWeight = FontWeight.SemiBold,
+                                            color = Color(0xFF1D4ED8),
+                                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                        )
+                                    }
+                                }
+                                Switch(
+                                    checked = refillReminderEnabled,
+                                    onCheckedChange = { refillReminderEnabled = it },
+                                    modifier = Modifier.testTag("admin_refill_reminder_switch")
+                                )
+                            }
+                            Spacer(modifier = Modifier.height(6.dp))
+
+                            OutlinedTextField(
+                                value = refillReminderLeadDays,
+                                onValueChange = { refillReminderLeadDays = it.filter { ch -> ch.isDigit() } },
+                                label = { Text("Refill reminder lead days [0-14]") },
+                                supportingText = { Text("Recommended — awaiting approval", fontSize = 10.sp) },
+                                singleLine = true,
+                                modifier = Modifier.fillMaxWidth().testTag("admin_refill_lead_days_input")
+                            )
+
                             Spacer(modifier = Modifier.height(12.dp))
                             Button(
                                 onClick = {
                                     val parsedMaxDeposits = maxDepositCylindersPerSize.trim().toIntOrNull()
                                     if (parsedMaxDeposits == null || parsedMaxDeposits !in 1..5) {
                                         onBanner("Max deposit cylinders per size must be between 1 and 5.")
+                                        return@Button
+                                    }
+                                    val parsedWindows = parseDeliveryWindowsInput(deliveryWindowsText)
+                                    if (parsedWindows == null) {
+                                        onBanner("Delivery windows must be comma-separated start-end hours, e.g. 10-12, 12-14.")
+                                        return@Button
+                                    }
+                                    val parsedCutoff = standardCutoffHour.trim().toIntOrNull()
+                                    if (parsedCutoff == null) {
+                                        onBanner("Enter a valid same-day cut-off hour (8–22).")
+                                        return@Button
+                                    }
+                                    val parsedExpressFeeRs = expressFeeRs.trim().toLongOrNull()
+                                    if (parsedExpressFeeRs == null || parsedExpressFeeRs < 0L) {
+                                        onBanner("Enter a valid non-negative Express delivery fee in Rs.")
+                                        return@Button
+                                    }
+                                    val parsedExpressHours = expressHours.trim().toIntOrNull()
+                                    if (parsedExpressHours == null) {
+                                        onBanner("Enter valid Express delivery target hours (1–6).")
+                                        return@Button
+                                    }
+                                    val parsedLeadDays = refillReminderLeadDays.trim().toIntOrNull()
+                                    if (parsedLeadDays == null) {
+                                        onBanner("Enter valid refill reminder lead days (0–14).")
                                         return@Button
                                     }
                                     val newSettings = currentSettings.copy(
@@ -281,7 +499,16 @@ fun StaffAdminScreen(
                                         phase2PreviewEnabled = phase2PreviewEnabled,
                                         cnicRequiredForDeposit = cnicRequiredForDeposit,
                                         backupCylinderAllowed = backupCylinderAllowed,
-                                        maxDepositCylindersPerSize = parsedMaxDeposits
+                                        maxDepositCylindersPerSize = parsedMaxDeposits,
+                                        asapEnabled = asapEnabled,
+                                        tomorrowWindowsEnabled = tomorrowWindowsEnabled,
+                                        deliveryWindowsHours = parsedWindows,
+                                        standardCutoffHour = parsedCutoff,
+                                        expressEnabled = expressEnabled,
+                                        expressFeePaisa = parsedExpressFeeRs * 100L,
+                                        expressHours = parsedExpressHours,
+                                        refillReminderEnabled = refillReminderEnabled,
+                                        refillReminderLeadDays = parsedLeadDays
                                     )
                                     val (ok, msg) = store.updateSettings(newSettings, "System Administrator")
                                     onBanner(msg)
@@ -435,17 +662,6 @@ private fun ToBeOptionsReadOnlyCard(
     settings: PlatformSettings,
     snapshot: SharedAppState
 ) {
-    val windowsText = buildString {
-        append("ASAP: ")
-        append(if (settings.asapEnabled) "On" else "Off")
-        append(" • Slots: ")
-        append(settings.deliveryWindowsHours.joinToString(", ") { "${it.first}:00–${it.second}:00" })
-        append(" • Tomorrow: ")
-        append(if (settings.tomorrowWindowsEnabled) "On" else "Off")
-    }
-
-    val expressText = "${if (settings.expressEnabled) "Enabled" else "Disabled"} • Fee: ${formatRupees(settings.expressFeePaisa)} • Target: ${settings.expressHours} hours"
-
     val hubMinimumsText = if (settings.hubMinimumFilled.isEmpty()) {
         "None configured"
     } else {
@@ -493,21 +709,6 @@ private fun ToBeOptionsReadOnlyCard(
                 isRecommended = true
             )
             ToBeSettingRow(
-                label = "Delivery windows",
-                value = windowsText,
-                isRecommended = true
-            )
-            ToBeSettingRow(
-                label = "Same-day standard cut-off",
-                value = "${settings.standardCutoffHour}:00",
-                isDemoValue = true
-            )
-            ToBeSettingRow(
-                label = "Express delivery",
-                value = expressText,
-                isDemoValue = true
-            )
-            ToBeSettingRow(
                 label = "Not-home doorstep wait time",
                 value = "${settings.notHomeWaitMinutes} minutes",
                 isDemoValue = true
@@ -516,11 +717,6 @@ private fun ToBeOptionsReadOnlyCard(
                 label = "Free re-deliveries allowed",
                 value = "${settings.freeRedeliveries}",
                 isDemoValue = true
-            )
-            ToBeSettingRow(
-                label = "Refill reminder",
-                value = "${if (settings.refillReminderEnabled) "Enabled" else "Disabled"} (${settings.refillReminderLeadDays} days ahead)",
-                isRecommended = true
             )
             ToBeSettingRow(
                 label = "Customer SMS alerts",
@@ -630,5 +826,18 @@ private fun ToBeSettingRow(
             HorizontalDivider(color = Color(0xFFF1F5F9))
         }
     }
+}
+
+private fun parseDeliveryWindowsInput(raw: String): List<Pair<Int, Int>>? {
+    val parts = raw.split(",").map { it.trim() }.filter { it.isNotEmpty() }
+    if (parts.isEmpty()) return null
+    val result = mutableListOf<Pair<Int, Int>>()
+    for (part in parts) {
+        val cleaned = part.replace(":00", "").replace('–', '-')
+        val tokens = cleaned.split("-").map { it.trim().toIntOrNull() }
+        if (tokens.size != 2 || tokens[0] == null || tokens[1] == null) return null
+        result.add(tokens[0]!! to tokens[1]!!)
+    }
+    return result
 }
 

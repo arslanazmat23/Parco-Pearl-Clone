@@ -16,7 +16,8 @@ data class QuoteResult(
     val taxPaisa: Long,
     val totalAmountPaisa: Long,
     val reference118PricePaisa: Long?,
-    val priceListVersion: Int
+    val priceListVersion: Int,
+    val expressFeePaisa: Long = 0L
 )
 
 object PricingEngine {
@@ -74,7 +75,8 @@ object PricingEngine {
         priceList: PriceList,
         tax: TaxConfig,
         settings: PlatformSettings,
-        discountPaisa: Long = 0L
+        discountPaisa: Long = 0L,
+        serviceLevel: ServiceLevel = ServiceLevel.STANDARD
     ): QuoteResult {
         val lines = mutableListOf<OrderLine>()
 
@@ -145,9 +147,14 @@ object PricingEngine {
         val subtotalPaisa = lines.filter { it.lineType != "DEPOSIT" }.sumOf { it.subtotalPaisa }
         val platformFee = roundToRupees(priceList.platformFeePaisa, priceList.roundingRule)
         val deliveryFee = if (mode == FulfilmentMode.DELIVERY) roundToRupees(priceList.deliveryFeePaisa, priceList.roundingRule) else 0L
+        val expressFee = if (mode == FulfilmentMode.DELIVERY && serviceLevel == ServiceLevel.EXPRESS) {
+            roundToRupees(settings.expressFeePaisa, priceList.roundingRule)
+        } else {
+            0L
+        }
 
-        // Taxable base includes gas, cylinder sale, accessories, platform fee, delivery fee (DEPOSIT EXCLUDED)
-        val taxableBase = (subtotalPaisa + platformFee + deliveryFee - discountPaisa).coerceAtLeast(0L)
+        // Taxable base includes gas, cylinder sale, accessories, platform fee, delivery fee, express fee (DEPOSIT EXCLUDED)
+        val taxableBase = (subtotalPaisa + platformFee + deliveryFee + expressFee - discountPaisa).coerceAtLeast(0L)
         val gst = roundToRupees((taxableBase * tax.gstBps) / 10000L, priceList.roundingRule)
         val furtherTax = if (tax.furtherTaxApplies) roundToRupees((taxableBase * tax.furtherTaxBps) / 10000L, priceList.roundingRule) else 0L
         val totalTax = gst + furtherTax
@@ -165,7 +172,8 @@ object PricingEngine {
             taxPaisa = totalTax,
             totalAmountPaisa = totalAmount,
             reference118PricePaisa = priceList.reference118Paisa,
-            priceListVersion = priceList.version
+            priceListVersion = priceList.version,
+            expressFeePaisa = expressFee
         )
     }
 }
