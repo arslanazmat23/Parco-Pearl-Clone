@@ -648,7 +648,7 @@ fun BlueGasStore.runDepositCheck(): ReconLine {
     val activeHoldingsPaisa = customerHoldings.filter { it.status == "ACTIVE" && it.depositStatus == DepositStatus.HELD && !it.noDepositOnRecord }.sumOf { it.depositPaisa }
     val diffPaisa = heldAccountsPaisa - activeHoldingsPaisa
 
-    if (diffPaisa != 0L) {
+    if (diffPaisa != 0L && reconExceptions.none { it.code == "EXC-28" && it.status == "OPEN" }) {
         val excId = "EXC28-" + UUID.randomUUID().toString().take(6)
         reconExceptions.add(
             ReconciliationException(
@@ -660,6 +660,7 @@ fun BlueGasStore.runDepositCheck(): ReconLine {
         )
     }
 
+    notifyChanged()
     return ReconLine(
         area = "6. Security Deposits Held",
         skuId = "DEPOSIT_ACCOUNTS",

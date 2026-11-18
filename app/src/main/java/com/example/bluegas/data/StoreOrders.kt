@@ -40,6 +40,32 @@ fun BlueGasStore.createOrder(
         return Pair(null, "Maximum order quantity is ${settings.maxQuantityPerOrder} cylinders.")
     }
 
+    // 2B. Deposit policy guards (Q18 CNIC capture & backup cylinder deposit limit)
+    if (orderType == OrderType.NEW_CYLINDER) {
+        if (needsCnicForDeposit(customerId, orderType)) {
+            return Pair(null, "Please add your CNIC to take a cylinder on deposit.")
+        }
+        val activeSameSizeDeposits = customerHoldings.count { holding ->
+            holding.customerId == customerId &&
+                holding.status == "ACTIVE" &&
+                holding.ownership == CylinderOwnership.DEPOSIT_HELD &&
+                (
+                    cylinders.find { it.serialNumber == holding.cylinderSerial }?.sku == sku ||
+                        depositAccounts.any { d ->
+                            d.customerId == customerId &&
+                                d.cylinderSerial == holding.cylinderSerial &&
+                                d.sku == sku &&
+                                d.status == DepositStatus.HELD
+                        }
+                    )
+        }
+        val maxDepositsAllowed = if (settings.backupCylinderAllowed) settings.maxDepositCylindersPerSize else 1
+        if (activeSameSizeDeposits + quantity > maxDepositsAllowed) {
+            val sizeLabel = variant?.cylinderSizeKg?.let { "$it kg" } ?: sku
+            return Pair(null, "You already hold the maximum number of $sizeLabel cylinders on deposit. Order a refill instead.")
+        }
+    }
+
     // 3. Check stock availability at serving point
     val servingPointId = if (fulfilmentMode == FulfilmentMode.PICKUP) {
         pickupPointId ?: nodes.firstOrNull { it.pickupEnabled }?.id ?: "NODE-LHR-1"
@@ -441,20 +467,26 @@ fun BlueGasStore.cancelOrder(
                             orderId = orderId,
                             amountPaisa = payment.capturedAmountPaisa,
                             reason = "Cancellation refund: $reason",
-                            executedBy = "System",
+                            executedBy = "BLUE GAS platform (system)",
                             state = PaymentState.FULL_REFUND_PENDING
                         )
                     )
-                    addNotification(
-                        surface = AppSurface.STAFF,
-                        title = "Refund waiting — $orderId",
-                        message = "Order $orderId cancelled post-capture. Refund of ${formatPaisaToPkr(payment.capturedAmountPaisa)} waiting in Finance queue.",
-                        canonicalStatus = "PENDING",
-                        orderId = orderId,
-                        code = "NTF-11",
-                        staffRole = StaffSubRole.FINANCE
-                    )
-                    paymentOutcome = "Refund of ${formatRupees(payment.capturedAmountPaisa)} pending Finance processing"
+                    autoExecuteRefund(refId)
+                    val refAfter = refunds.find { it.id == refId }
+                    if (refAfter?.state == PaymentState.FULLY_REFUNDED) {
+                        paymentOutcome = "Your refund of ${formatRupees(payment.capturedAmountPaisa)} has been sent back to your payment method"
+                    } else {
+                        addNotification(
+                            surface = AppSurface.STAFF,
+                            title = "Cancellation refund failed — $orderId",
+                            message = "Automatic refund of ${formatPaisaToPkr(payment.capturedAmountPaisa)} failed for order $orderId. Retry from Finance Refunds.",
+                            canonicalStatus = "FAILED",
+                            orderId = orderId,
+                            code = "NTF-11",
+                            staffRole = StaffSubRole.FINANCE
+                        )
+                        paymentOutcome = "Automatic refund of ${formatRupees(payment.capturedAmountPaisa)} failed and requires Finance retry"
+                    }
                 }
                 PaymentState.PAYMENT_PENDING -> {
                     PaymentStateMachine.transition(payment, PaymentState.PAYMENT_CANCELLED, actor, "Order cancelled while payment pending", paymentHistory)

@@ -1,13 +1,14 @@
 package com.example.bluegas.ui.staff
 
-import androidx.compose.foundation.background
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.*
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -15,61 +16,87 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.bluegas.data.*
 import com.example.bluegas.model.*
 import com.example.ui.theme.BlueGasPrimary
 
+/**
+ * Customer Support workspace covering customer complaints and L6 Return & Refund cases
+ * (including cylinder deposit return requests, 8-step lifecycle progress, and blank-input triage).
+ *
+ * @param store Shared in-memory store instance.
+ * @param snapshot Immutable state snapshot for rendering.
+ * @param onBanner Banner callback reporting success or error feedback.
+ * @param onSelectOrder Callback to open the order detail dialog.
+ */
 @Composable
 fun StaffSupportScreen(
     store: BlueGasStore,
     snapshot: SharedAppState,
-    onBanner: (String) -> Unit,
+    onBanner: StaffBanner,
     onSelectOrder: (Order) -> Unit
 ) {
     var selectedSupportTab by remember { mutableStateOf("COMPLAINTS") }
     var selectedFilter by remember { mutableStateOf("ALL") }
 
-    // Resolve Complaint Dialog state
+    // Resolve Complaint Dialog state (blank inputs)
     var showResolveDialog by remember { mutableStateOf(false) }
     var caseToResolve by remember { mutableStateOf<SupportCase?>(null) }
-    var resolutionNotesInput by remember { mutableStateOf("Inspected per OGRA safety guidelines. Resolved satisfactorily.") }
+    var resolutionNotesInput by remember { mutableStateOf("") }
 
-    // New Complaint Dialog state
+    // New Complaint Dialog state (blank description)
     var showNewCaseDialog by remember { mutableStateOf(false) }
-    var newCaseOrderId by remember { mutableStateOf(snapshot.orders.firstOrNull()?.id ?: "") }
+    var newCaseOrderId by remember(snapshot.version) { mutableStateOf(snapshot.orders.firstOrNull()?.id ?: "") }
     var newCaseIssueType by remember { mutableStateOf("LEAKAGE_SAFETY") }
-    var newCaseDescription by remember { mutableStateOf("Customer reported suspect regulator seal after delivery.") }
+    var newCaseDescription by remember { mutableStateOf("") }
 
-    // Open Return/Refund Case Dialog state
+    // Open Return/Refund Case Dialog state (blank inputs)
+    val completedOrders = remember(snapshot.version) {
+        snapshot.orders.filter { it.status == OrderStatus.ORD_COMP }
+    }
     var showNewReturnCaseDialog by remember { mutableStateOf(false) }
-    val completedOrders = snapshot.orders.filter { it.status == OrderStatus.ORD_COMP }
-    var returnOrderId by remember { mutableStateOf(completedOrders.firstOrNull()?.id ?: "") }
-    var returnTypeInput by remember { mutableStateOf("RETURN") }
-    var returnReasonInput by remember { mutableStateOf("Damaged valve seal discovered upon customer unboxing") }
-    var requestedRefundAmountInput by remember { mutableStateOf("4450") }
+    var returnOrderId by remember(snapshot.version) { mutableStateOf(completedOrders.firstOrNull()?.id ?: "") }
+    var returnTypeInput by remember { mutableStateOf("CYLINDER_RETURN") }
+    var returnCustomerId by remember(snapshot.version) {
+        mutableStateOf(snapshot.customers.firstOrNull()?.id ?: "")
+    }
+    var returnHoldingSerial by remember { mutableStateOf("") }
+    var returnReasonInput by remember { mutableStateOf("") }
+    var requestedRefundAmountInput by remember { mutableStateOf("") }
+
+    val filteredComplaints = remember(snapshot.version, selectedFilter) {
+        when (selectedFilter) {
+            "OPEN" -> snapshot.supportCases.filter { it.status == "OPEN" }
+            "IN_PROGRESS" -> snapshot.supportCases.filter { it.status == "IN_PROGRESS" }
+            "RESOLVED" -> snapshot.supportCases.filter { it.status == "RESOLVED" }
+            else -> snapshot.supportCases
+        }
+    }
 
     LazyColumn(
         modifier = Modifier
             .fillMaxSize()
-            .testTag("support_screen")
+            .testTag("support_screen"),
+        verticalArrangement = Arrangement.spacedBy(8.dp)
     ) {
         item {
             AccountableHeader(
-                roleName = "Customer Support Lead",
-                description = "Dispute Cases, L6 Return/Refund Cases & Post-Completion Inquiry Tracking"
+                roleName = AccountableRole.SUPPORT.displayName,
+                description = "Dispute Cases, L6 Cylinder Returns & Deposit Refund Support"
             )
             Spacer(modifier = Modifier.height(8.dp))
 
             Surface(
                 color = Color(0xFFEFF6FF),
                 shape = RoundedCornerShape(6.dp),
-                border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFF93C5FD)),
+                border = BorderStroke(1.dp, Color(0xFF93C5FD)),
                 modifier = Modifier.fillMaxWidth()
             ) {
                 Text(
-                    text = "Rule: Completed orders stay Completed (ORD_COMP). Post-completion disputes are tracked through immutable Support Cases and L6 Return/Refund Cases.",
+                    text = "Rule: Completed orders stay Completed. Post-completion returns and deposit refunds are tracked through L6 Return/Refund cases.",
                     fontSize = 10.sp,
                     color = Color(0xFF1E40AF),
                     modifier = Modifier.padding(8.dp)
@@ -80,21 +107,20 @@ fun StaffSupportScreen(
             // Sub-tabs
             Row(
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(4.dp)
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
             ) {
                 listOf(
                     "COMPLAINTS" to "Complaints (${snapshot.supportCases.size})",
-                    "RETURN_CASES" to "Return/Refund L6 (${snapshot.returnCases.size})"
+                    "RETURN_CASES" to "Return & deposit cases (${snapshot.returnCases.size})"
                 ).forEach { (id, label) ->
                     FilterChip(
                         selected = selectedSupportTab == id,
                         onClick = { selectedSupportTab = id },
                         label = { Text(label, fontSize = 10.sp) },
-                        modifier = Modifier.height(28.dp)
+                        modifier = Modifier.testTag("support_tab_${id.lowercase()}")
                     )
                 }
             }
-            Spacer(modifier = Modifier.height(8.dp))
         }
 
         when (selectedSupportTab) {
@@ -105,62 +131,51 @@ fun StaffSupportScreen(
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                            listOf("ALL", "OPEN", "IN_PROGRESS", "RESOLVED").forEach { tab ->
+                        LazyRow(
+                            modifier = Modifier.weight(1f),
+                            horizontalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            items(listOf("ALL", "OPEN", "IN_PROGRESS", "RESOLVED")) { tab ->
                                 FilterChip(
                                     selected = selectedFilter == tab,
                                     onClick = { selectedFilter = tab },
-                                    label = { Text(tab, fontSize = 9.sp) },
-                                    modifier = Modifier.height(26.dp)
+                                    label = { Text(tab, fontSize = 9.sp) }
                                 )
                             }
                         }
+                        Spacer(modifier = Modifier.width(6.dp))
                         Button(
-                            onClick = { showNewCaseDialog = true },
-                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
-                            modifier = Modifier.height(28.dp)
+                            onClick = {
+                                newCaseDescription = ""
+                                showNewCaseDialog = true
+                            },
+                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
+                            modifier = Modifier.heightIn(min = 48.dp)
                         ) {
-                            Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(12.dp))
+                            Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(14.dp))
                             Spacer(modifier = Modifier.width(4.dp))
-                            Text("New Complaint", fontSize = 10.sp)
+                            Text("New complaint", fontSize = 10.sp)
                         }
                     }
-                    Spacer(modifier = Modifier.height(8.dp))
 
-                    val filtered = when (selectedFilter) {
-                        "OPEN" -> snapshot.supportCases.filter { it.status == "OPEN" }
-                        "IN_PROGRESS" -> snapshot.supportCases.filter { it.status == "IN_PROGRESS" }
-                        "RESOLVED" -> snapshot.supportCases.filter { it.status == "RESOLVED" }
-                        else -> snapshot.supportCases
-                    }
-
-                    if (filtered.isEmpty()) {
-                        Text("No complaints found.", fontSize = 11.sp, color = Color.Gray)
+                    if (filteredComplaints.isEmpty()) {
+                        Text("No complaints found.", fontSize = 11.sp, color = Color.Gray, modifier = Modifier.padding(vertical = 8.dp))
                     }
                 }
 
-                val filteredCases = when (selectedFilter) {
-                    "OPEN" -> snapshot.supportCases.filter { it.status == "OPEN" }
-                    "IN_PROGRESS" -> snapshot.supportCases.filter { it.status == "IN_PROGRESS" }
-                    "RESOLVED" -> snapshot.supportCases.filter { it.status == "RESOLVED" }
-                    else -> snapshot.supportCases
-                }
-
-                items(filteredCases) { c ->
+                items(filteredComplaints, key = { it.id }) { c ->
                     Card(
                         colors = CardDefaults.cardColors(containerColor = Color.White),
-                        border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFFCBD5E1)),
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(vertical = 4.dp)
+                        border = BorderStroke(1.dp, Color(0xFFCBD5E1)),
+                        modifier = Modifier.fillMaxWidth()
                     ) {
-                        Column(modifier = Modifier.padding(10.dp)) {
+                        Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                             Row(
                                 modifier = Modifier.fillMaxWidth(),
                                 horizontalArrangement = Arrangement.SpaceBetween,
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
-                                Text("Case ${c.id} • ${c.issueType}", fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                                Text("Case ${c.id} · ${c.issueType}", fontWeight = FontWeight.Bold, fontSize = 12.sp)
                                 Surface(
                                     color = when (c.status) {
                                         "OPEN" -> Color(0xFFFEE2E2)
@@ -182,8 +197,12 @@ fun StaffSupportScreen(
                                     )
                                 }
                             }
-                            Text("Order ID: ${c.orderId ?: "General"} (Customer: ${c.customerId})", fontSize = 10.sp, color = Color(0xFF1E40AF))
-                            Text(c.description, fontSize = 11.sp, modifier = Modifier.padding(vertical = 4.dp))
+                            Text(
+                                text = "Order: ${c.orderId?.let { snapshot.orderLabel(it) } ?: "General"} (${snapshot.customerName(c.customerId)})",
+                                fontSize = 10.sp,
+                                color = Color(0xFF1E40AF)
+                            )
+                            Text(c.description, fontSize = 11.sp)
 
                             if (c.status == "RESOLVED" && c.resolutionNotes != null) {
                                 Text(
@@ -195,44 +214,50 @@ fun StaffSupportScreen(
                             }
 
                             if (c.status == "OPEN") {
-                                Spacer(modifier = Modifier.height(6.dp))
+                                Spacer(modifier = Modifier.height(4.dp))
                                 Row(
                                     modifier = Modifier.fillMaxWidth(),
                                     horizontalArrangement = Arrangement.spacedBy(8.dp)
                                 ) {
                                     Button(
                                         onClick = {
-                                            val (ok, msg) = store.startComplaint(c.id, "Support Lead")
-                                            onBanner(msg)
+                                            onBanner.report(
+                                                store.startComplaint(c.id, AccountableRole.SUPPORT.displayName)
+                                            )
                                         },
-                                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
-                                        modifier = Modifier.weight(1f).height(30.dp)
+                                        modifier = Modifier
+                                            .weight(1f)
+                                            .heightIn(min = 48.dp)
                                     ) {
-                                        Text("Start Investigation", fontSize = 10.sp)
+                                        Text("Start review", fontSize = 11.sp)
                                     }
                                     OutlinedButton(
                                         onClick = {
                                             caseToResolve = c
+                                            resolutionNotesInput = ""
                                             showResolveDialog = true
                                         },
-                                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
-                                        modifier = Modifier.weight(1f).height(30.dp)
+                                        modifier = Modifier
+                                            .weight(1f)
+                                            .heightIn(min = 48.dp)
                                     ) {
-                                        Text("Resolve Directly", fontSize = 10.sp)
+                                        Text("Resolve", fontSize = 11.sp)
                                     }
                                 }
                             } else if (c.status == "IN_PROGRESS") {
-                                Spacer(modifier = Modifier.height(6.dp))
+                                Spacer(modifier = Modifier.height(4.dp))
                                 Button(
                                     onClick = {
                                         caseToResolve = c
+                                        resolutionNotesInput = ""
                                         showResolveDialog = true
                                     },
                                     colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF16A34A)),
-                                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
-                                    modifier = Modifier.fillMaxWidth().height(30.dp)
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .heightIn(min = 48.dp)
                                 ) {
-                                    Text("Mark Resolved", fontSize = 10.sp)
+                                    Text("Mark resolved", fontSize = 11.sp)
                                 }
                             }
                         }
@@ -247,172 +272,39 @@ fun StaffSupportScreen(
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Text("L6 Return & Refund Cases (${snapshot.returnCases.size}):", fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                        Text("L6 Return & deposit cases (${snapshot.returnCases.size})", fontWeight = FontWeight.Bold, fontSize = 13.sp)
                         Button(
-                            onClick = { showNewReturnCaseDialog = true },
-                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
-                            modifier = Modifier.height(28.dp)
+                            onClick = {
+                                returnReasonInput = ""
+                                requestedRefundAmountInput = ""
+                                returnHoldingSerial = ""
+                                showNewReturnCaseDialog = true
+                            },
+                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
+                            modifier = Modifier
+                                .heightIn(min = 48.dp)
+                                .testTag("support_open_case_btn")
                         ) {
-                            Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(12.dp))
+                            Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(14.dp))
                             Spacer(modifier = Modifier.width(4.dp))
-                            Text("Open Return Case", fontSize = 10.sp)
+                            Text("Open case", fontSize = 11.sp)
                         }
                     }
-                    Spacer(modifier = Modifier.height(8.dp))
                 }
 
                 if (snapshot.returnCases.isEmpty()) {
-                    item { Text("No L6 return or refund cases on record.", fontSize = 11.sp, color = Color.Gray) }
+                    item {
+                        Text("No L6 return or refund cases on record.", fontSize = 11.sp, color = Color.Gray, modifier = Modifier.padding(vertical = 8.dp))
+                    }
                 } else {
-                    items(snapshot.returnCases) { rc ->
-                        Card(
-                            colors = CardDefaults.cardColors(containerColor = Color.White),
-                            border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFFCBD5E1)),
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(vertical = 4.dp)
-                        ) {
-                            Column(modifier = Modifier.padding(10.dp)) {
-                                Row(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    horizontalArrangement = Arrangement.SpaceBetween,
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    Text("Case ${rc.id} (${rc.type})", fontWeight = FontWeight.Bold, fontSize = 12.sp)
-                                    Surface(
-                                        color = when (rc.status) {
-                                            L6Status.CASE_CLOSED -> Color(0xFFDCFCE7)
-                                            L6Status.RETURN_REJECTED -> Color(0xFFFEE2E2)
-                                            else -> Color(0xFFDBEAFE)
-                                        },
-                                        shape = RoundedCornerShape(4.dp)
-                                    ) {
-                                        Text(
-                                            text = rc.status.name,
-                                            fontSize = 9.sp,
-                                            fontWeight = FontWeight.Bold,
-                                            color = when (rc.status) {
-                                                L6Status.CASE_CLOSED -> Color(0xFF166534)
-                                                L6Status.RETURN_REJECTED -> Color(0xFF991B1B)
-                                                else -> Color(0xFF1E40AF)
-                                            },
-                                            modifier = Modifier.padding(4.dp, 2.dp)
-                                        )
-                                    }
-                                }
-                                Text("Order: ${rc.orderId} • Claim Amount: ${formatPaisaToPkr(rc.requestedAmountPaisa)}", fontSize = 11.sp)
-                                Text("Reason: ${rc.reason}", fontSize = 10.sp, color = Color(0xFF475569))
-
-                                // Lifecycle Action Buttons
-                                Spacer(modifier = Modifier.height(8.dp))
-                                when (rc.status) {
-                                    L6Status.CASE_OPENED -> {
-                                        Button(
-                                            onClick = {
-                                                val (ok, msg) = store.moveReturnCase(rc.id, L6Status.UNDER_REVIEW, "Support team reviewing claim", "Support Lead", AccountableRole.SUPPORT)
-                                                onBanner(msg)
-                                            },
-                                            modifier = Modifier.fillMaxWidth().height(30.dp)
-                                        ) {
-                                            Text("Begin Formal Review", fontSize = 10.sp)
-                                        }
-                                    }
-                                    L6Status.UNDER_REVIEW -> {
-                                        Row(
-                                            modifier = Modifier.fillMaxWidth(),
-                                            horizontalArrangement = Arrangement.spacedBy(6.dp)
-                                        ) {
-                                            Button(
-                                                onClick = {
-                                                    val (ok, msg) = store.moveReturnCase(rc.id, L6Status.RETURN_AUTHORIZED, "Physical item return approved", "Support Lead", AccountableRole.SUPPORT)
-                                                    onBanner(msg)
-                                                },
-                                                modifier = Modifier.weight(1f).height(30.dp)
-                                            ) {
-                                                Text("Authorize Return", fontSize = 9.sp)
-                                            }
-                                            Button(
-                                                onClick = {
-                                                    val (ok, msg) = store.moveReturnCase(rc.id, L6Status.REFUND_REQUESTED, "Direct refund queued", "Support Lead", AccountableRole.SUPPORT)
-                                                    onBanner(msg)
-                                                },
-                                                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF16A34A)),
-                                                modifier = Modifier.weight(1f).height(30.dp)
-                                            ) {
-                                                Text("Direct Refund", fontSize = 9.sp)
-                                            }
-                                            OutlinedButton(
-                                                onClick = {
-                                                    val (ok, msg) = store.moveReturnCase(rc.id, L6Status.RETURN_REJECTED, "Claim rejected upon review", "Support Lead", AccountableRole.SUPPORT)
-                                                    onBanner(msg)
-                                                },
-                                                modifier = Modifier.weight(0.9f).height(30.dp)
-                                            ) {
-                                                Text("Reject", fontSize = 9.sp, color = Color(0xFFDC2626))
-                                            }
-                                        }
-                                    }
-                                    L6Status.RETURN_AUTHORIZED -> {
-                                        Button(
-                                            onClick = {
-                                                val (ok, msg) = store.moveReturnCase(rc.id, L6Status.AWAITING_ITEM_RETURN, "Pickup scheduled with rider", "Support Lead", AccountableRole.SUPPORT)
-                                                onBanner(msg)
-                                            },
-                                            modifier = Modifier.fillMaxWidth().height(30.dp)
-                                        ) {
-                                            Text("Schedule Pickup (Awaiting Return)", fontSize = 10.sp)
-                                        }
-                                    }
-                                    L6Status.AWAITING_ITEM_RETURN -> {
-                                        Button(
-                                            onClick = {
-                                                val (ok, msg) = store.moveReturnCase(rc.id, L6Status.ITEM_RETURNED, "Item received and inspected at depot", "Support Lead", AccountableRole.SUPPORT)
-                                                onBanner(msg)
-                                            },
-                                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF0284C7)),
-                                            modifier = Modifier.fillMaxWidth().height(30.dp)
-                                        ) {
-                                            Text("Confirm Item Received at Depot", fontSize = 10.sp)
-                                        }
-                                    }
-                                    L6Status.ITEM_RETURNED -> {
-                                        Button(
-                                            onClick = {
-                                                val (ok, msg) = store.moveReturnCase(rc.id, L6Status.REFUND_REQUESTED, "Item verified; refund requested from Finance", "Support Lead", AccountableRole.SUPPORT)
-                                                onBanner(msg)
-                                            },
-                                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF16A34A)),
-                                            modifier = Modifier.fillMaxWidth().height(30.dp)
-                                        ) {
-                                            Text("Request Finance Refund Queue", fontSize = 10.sp)
-                                        }
-                                    }
-                                    L6Status.REFUND_CONFIRMED -> {
-                                        Button(
-                                            onClick = {
-                                                val (ok, msg) = store.moveReturnCase(rc.id, L6Status.CASE_CLOSED, "Refund verified by customer; case closed", "Support Lead", AccountableRole.SUPPORT)
-                                                onBanner(msg)
-                                            },
-                                            modifier = Modifier.fillMaxWidth().height(30.dp)
-                                        ) {
-                                            Text("Conclude & Close Case", fontSize = 10.sp)
-                                        }
-                                    }
-                                    L6Status.RETURN_REJECTED -> {
-                                        Button(
-                                            onClick = {
-                                                val (ok, msg) = store.moveReturnCase(rc.id, L6Status.CASE_CLOSED, "Case concluded after rejection", "Support Lead", AccountableRole.SUPPORT)
-                                                onBanner(msg)
-                                            },
-                                            modifier = Modifier.fillMaxWidth().height(30.dp)
-                                        ) {
-                                            Text("Close Rejected Record", fontSize = 10.sp)
-                                        }
-                                    }
-                                    else -> {}
-                                }
-                            }
-                        }
+                    items(snapshot.returnCases, key = { it.id }) { rc ->
+                        SupportReturnCaseCard(
+                            rc = rc,
+                            store = store,
+                            snapshot = snapshot,
+                            onBanner = onBanner,
+                            onSelectOrder = onSelectOrder
+                        )
                     }
                 }
             }
@@ -428,25 +320,36 @@ fun StaffSupportScreen(
             },
             title = { Text("Resolve Support Case", fontWeight = FontWeight.Bold) },
             text = {
-                Column {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text("Enter resolution notes for Case ${caseToResolve?.id}:", fontSize = 12.sp)
-                    Spacer(modifier = Modifier.height(8.dp))
                     OutlinedTextField(
                         value = resolutionNotesInput,
                         onValueChange = { resolutionNotesInput = it },
-                        label = { Text("Resolution Notes") },
+                        label = { Text("Resolution notes") },
+                        placeholder = { Text("Explain how the issue was resolved", color = Color.Gray) },
                         modifier = Modifier.fillMaxWidth()
                     )
                 }
             },
             confirmButton = {
-                Button(onClick = {
-                    val (ok, msg) = store.resolveSupportCase(caseToResolve!!.id, resolutionNotesInput, "Support Lead")
-                    onBanner(msg)
-                    showResolveDialog = false
-                    caseToResolve = null
-                }) {
-                    Text("Confirm Resolution")
+                Button(
+                    onClick = {
+                        if (resolutionNotesInput.isBlank()) {
+                            onBanner("Please enter resolution notes before resolving.", true)
+                            return@Button
+                        }
+                        onBanner.report(
+                            store.resolveSupportCase(
+                                caseToResolve!!.id,
+                                resolutionNotesInput.trim(),
+                                AccountableRole.SUPPORT.displayName
+                            )
+                        )
+                        showResolveDialog = false
+                        caseToResolve = null
+                    }
+                ) {
+                    Text("Confirm resolution")
                 }
             },
             dismissButton = {
@@ -464,11 +367,10 @@ fun StaffSupportScreen(
     if (showNewCaseDialog) {
         AlertDialog(
             onDismissRequest = { showNewCaseDialog = false },
-            title = { Text("Raise New Complaint Case", fontWeight = FontWeight.Bold) },
+            title = { Text("Raise new complaint case", fontWeight = FontWeight.Bold) },
             text = {
-                Column {
-                    Text("Select Order to file dispute for:", fontSize = 12.sp)
-                    Spacer(modifier = Modifier.height(4.dp))
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("Select order:", fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
                     LazyRow(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.spacedBy(4.dp)
@@ -477,13 +379,12 @@ fun StaffSupportScreen(
                             FilterChip(
                                 selected = newCaseOrderId == ord.id,
                                 onClick = { newCaseOrderId = ord.id },
-                                label = { Text(ord.id, fontSize = 9.sp) }
+                                label = { Text(snapshot.orderLabel(ord.id), fontSize = 9.sp) }
                             )
                         }
                     }
 
-                    Spacer(modifier = Modifier.height(8.dp))
-                    Text("Issue Type:", fontSize = 12.sp)
+                    Text("Issue type:", fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
                     LazyRow(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.spacedBy(4.dp)
@@ -497,11 +398,11 @@ fun StaffSupportScreen(
                         }
                     }
 
-                    Spacer(modifier = Modifier.height(8.dp))
                     OutlinedTextField(
                         value = newCaseDescription,
                         onValueChange = { newCaseDescription = it },
                         label = { Text("Description") },
+                        placeholder = { Text("Describe the issue reported", color = Color.Gray) },
                         modifier = Modifier.fillMaxWidth()
                     )
                 }
@@ -509,13 +410,16 @@ fun StaffSupportScreen(
             confirmButton = {
                 Button(
                     onClick = {
-                        val (ok, msg) = store.raiseComplaint(newCaseOrderId, newCaseIssueType, newCaseDescription)
-                        onBanner(msg)
-                        showNewCaseDialog = false
-                    },
-                    enabled = newCaseOrderId.isNotEmpty() && newCaseDescription.isNotEmpty()
+                        if (newCaseOrderId.isBlank() || newCaseDescription.isBlank()) {
+                            onBanner("Select an order and enter a description.", true)
+                            return@Button
+                        }
+                        val res = store.raiseComplaint(newCaseOrderId, newCaseIssueType, newCaseDescription.trim())
+                        onBanner.report(res)
+                        if (res.first) showNewCaseDialog = false
+                    }
                 ) {
-                    Text("Create Case")
+                    Text("Create case")
                 }
             },
             dismissButton = {
@@ -526,73 +430,160 @@ fun StaffSupportScreen(
         )
     }
 
-    // New Return/Refund Case Dialog
+    // Open Return / Deposit Case Dialog
     if (showNewReturnCaseDialog) {
+        val customerHoldings = remember(snapshot.version, returnCustomerId) {
+            snapshot.customerHoldings.filter {
+                it.customerId == returnCustomerId &&
+                    (it.ownership == CylinderOwnership.DEPOSIT_HELD || it.ownership == CylinderOwnership.LOANED)
+            }
+        }
         AlertDialog(
             onDismissRequest = { showNewReturnCaseDialog = false },
-            title = { Text("Open Return / Refund Case (L6)", fontWeight = FontWeight.Bold) },
+            title = { Text("Open return / deposit case", fontWeight = FontWeight.Bold) },
             text = {
-                Column {
-                    Text("Select Completed Order:", fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
-                    LazyRow(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(4.dp)
-                    ) {
-                        items(completedOrders) { ord ->
-                            FilterChip(
-                                selected = returnOrderId == ord.id,
-                                onClick = { returnOrderId = ord.id },
-                                label = { Text(ord.id, fontSize = 9.sp) }
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("Case type:", fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
+                    LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        items(
+                            listOf(
+                                "CYLINDER_RETURN" to "Return my cylinder (deposit)",
+                                "RETURN" to "Physical return + refund",
+                                "REFUND_ONLY" to "Direct refund only"
                             )
-                        }
-                    }
-
-                    Spacer(modifier = Modifier.height(6.dp))
-                    Text("Claim Type:", fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        listOf("RETURN" to "Physical Return + Refund", "REFUND_ONLY" to "Direct Refund Only").forEach { (type, lbl) ->
+                        ) { (type, lbl) ->
                             FilterChip(
                                 selected = returnTypeInput == type,
                                 onClick = { returnTypeInput = type },
-                                label = { Text(lbl, fontSize = 9.sp) }
+                                label = { Text(lbl, fontSize = 10.sp) },
+                                modifier = Modifier.testTag("support_case_type_${type.lowercase()}")
                             )
                         }
                     }
 
-                    Spacer(modifier = Modifier.height(6.dp))
-                    OutlinedTextField(
-                        value = requestedRefundAmountInput,
-                        onValueChange = { requestedRefundAmountInput = it },
-                        label = { Text("Requested Amount (PKR)") },
-                        modifier = Modifier.fillMaxWidth()
-                    )
+                    if (returnTypeInput == "CYLINDER_RETURN") {
+                        Text("Customer:", fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
+                        LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            items(snapshot.customers) { cust ->
+                                FilterChip(
+                                    selected = returnCustomerId == cust.id,
+                                    onClick = {
+                                        returnCustomerId = cust.id
+                                        returnHoldingSerial = ""
+                                    },
+                                    label = { Text(cust.name, fontSize = 10.sp) }
+                                )
+                            }
+                        }
 
-                    Spacer(modifier = Modifier.height(6.dp))
+                        Text("Cylinder on deposit or loan:", fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
+                        if (customerHoldings.isEmpty()) {
+                            Text(
+                                text = "This customer has no active cylinders on deposit or loan.",
+                                fontSize = 11.sp,
+                                color = Color(0xFF64748B)
+                            )
+                        } else {
+                            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                customerHoldings.forEach { holding ->
+                                    val sku = snapshot.cylinders.find { it.serialNumber == holding.cylinderSerial }?.sku
+                                        ?: snapshot.depositAccounts.find { it.cylinderSerial == holding.cylinderSerial && it.customerId == holding.customerId }?.sku
+                                    val sizeLabel = if (sku != null) snapshot.skuLabel(sku) else "11.8 kg"
+                                    val depText = if (holding.depositPaisa > 0L && !holding.noDepositOnRecord) {
+                                        "Deposit ${formatRupees(holding.depositPaisa)}"
+                                    } else {
+                                        "No deposit on record"
+                                    }
+                                    val rowText = "${holding.cylinderSerial} · $sizeLabel · $depText"
+                                    FilterChip(
+                                        selected = returnHoldingSerial == holding.cylinderSerial,
+                                        onClick = { returnHoldingSerial = holding.cylinderSerial },
+                                        label = { Text(rowText, fontSize = 10.sp) },
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .testTag("support_holding_${holding.cylinderSerial}")
+                                    )
+                                }
+                            }
+                        }
+                    } else {
+                        Text("Completed order:", fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
+                        LazyRow(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            items(completedOrders) { ord ->
+                                FilterChip(
+                                    selected = returnOrderId == ord.id,
+                                    onClick = { returnOrderId = ord.id },
+                                    label = { Text(snapshot.orderLabel(ord.id), fontSize = 9.sp) }
+                                )
+                            }
+                        }
+
+                        OutlinedTextField(
+                            value = requestedRefundAmountInput,
+                            onValueChange = { requestedRefundAmountInput = it.filter { ch -> ch.isDigit() } },
+                            label = { Text("Requested amount (Rs)") },
+                            placeholder = { Text("Enter amount in rupees", color = Color.Gray) },
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    }
+
                     OutlinedTextField(
                         value = returnReasonInput,
                         onValueChange = { returnReasonInput = it },
-                        label = { Text("Return Reason") },
-                        modifier = Modifier.fillMaxWidth()
+                        label = { Text("Reason (required)") },
+                        placeholder = { Text("Enter why the customer is requesting this", color = Color.Gray) },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("support_open_case_reason")
                     )
                 }
             },
             confirmButton = {
                 Button(
                     onClick = {
-                        val pkr = requestedRefundAmountInput.toLongOrNull() ?: 4450L
-                        val (ok, msg) = store.openReturnCase(
-                            orderId = returnOrderId,
-                            type = returnTypeInput,
-                            reason = returnReasonInput,
-                            requestedAmountPaisa = pkr * 100L,
-                            actor = "Support Lead"
-                        )
-                        onBanner(msg)
-                        showNewReturnCaseDialog = false
+                        val cleanReason = returnReasonInput.trim()
+                        if (cleanReason.isEmpty()) {
+                            onBanner("Please enter a reason.", true)
+                            return@Button
+                        }
+                        if (returnTypeInput == "CYLINDER_RETURN") {
+                            if (returnCustomerId.isBlank() || returnHoldingSerial.isBlank()) {
+                                onBanner("Select a customer and one of their cylinders.", true)
+                                return@Button
+                            }
+                            val res = store.requestCylinderReturn(
+                                customerId = returnCustomerId,
+                                cylinderSerial = returnHoldingSerial,
+                                reason = cleanReason,
+                                actor = AccountableRole.SUPPORT.displayName
+                            )
+                            onBanner.report(res)
+                            if (res.first) showNewReturnCaseDialog = false
+                        } else {
+                            val pkr = requestedRefundAmountInput.trim().toLongOrNull()
+                            if (pkr == null || pkr <= 0L) {
+                                onBanner("Enter a valid requested refund amount in rupees.", true)
+                                return@Button
+                            }
+                            val res = store.openReturnCase(
+                                orderId = returnOrderId,
+                                type = returnTypeInput,
+                                reason = cleanReason,
+                                requestedAmountPaisa = pkr * 100L,
+                                actor = AccountableRole.SUPPORT.displayName
+                            )
+                            onBanner.report(res)
+                            if (res.first) showNewReturnCaseDialog = false
+                        }
                     },
-                    enabled = returnOrderId.isNotBlank() && returnReasonInput.isNotBlank()
+                    modifier = Modifier.testTag("support_submit_open_case_btn")
                 ) {
-                    Text("Open Case")
+                    Text("Open case")
                 }
             },
             dismissButton = {
@@ -600,6 +591,502 @@ fun StaffSupportScreen(
                     Text("Cancel")
                 }
             }
+        )
+    }
+}
+
+/**
+ * Renders an L6 Return/Refund case card, displaying the 8-step stepper for cylinder returns,
+ * deposit and condition details, blank required reason input, and role-scoped next actions.
+ */
+@Composable
+private fun SupportReturnCaseCard(
+    rc: ReturnRefundCase,
+    store: BlueGasStore,
+    snapshot: SharedAppState,
+    onBanner: StaffBanner,
+    onSelectOrder: (Order) -> Unit
+) {
+    val isCylinderReturn = rc.type == "CYLINDER_RETURN"
+    val deposit = remember(snapshot.version, rc.depositId, rc.cylinderSerial, rc.customerId) {
+        snapshot.depositAccounts.find { it.id == rc.depositId }
+            ?: snapshot.depositAccounts.find { it.customerId == rc.customerId && it.cylinderSerial == rc.cylinderSerial }
+    }
+    val cyl = remember(snapshot.version, rc.cylinderSerial) {
+        snapshot.cylinders.find { it.serialNumber == rc.cylinderSerial }
+    }
+    val sizeLabel = remember(snapshot.version, cyl?.sku, deposit?.sku) {
+        val sku = cyl?.sku ?: deposit?.sku
+        if (sku != null) snapshot.skuLabel(sku) else "11.8 kg"
+    }
+    val linkedRefund = remember(snapshot.version, rc.linkedRefundId, rc.id) {
+        snapshot.refunds.find { it.id == rc.linkedRefundId || it.linkedCaseId == rc.id }
+    }
+    val hasNoDepositOnRecord = isCylinderReturn && (deposit == null || deposit.noDepositOnRecord || deposit.amountPaisa == 0L)
+
+    var reasonInput by remember(rc.id) { mutableStateOf("") }
+
+    Card(
+        colors = CardDefaults.cardColors(containerColor = Color.White),
+        border = BorderStroke(1.dp, Color(0xFFCBD5E1)),
+        modifier = Modifier
+            .fillMaxWidth()
+            .testTag("support_return_card_${rc.id}")
+    ) {
+        Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = "${rc.id} · ${if (isCylinderReturn) "Cylinder deposit return" else rc.type}",
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 12.sp,
+                    modifier = Modifier.weight(1f)
+                )
+                Surface(
+                    color = when (rc.status) {
+                        L6Status.CASE_CLOSED, L6Status.REFUND_CONFIRMED -> Color(0xFFDCFCE7)
+                        L6Status.RETURN_REJECTED -> Color(0xFFFEE2E2)
+                        else -> Color(0xFFDBEAFE)
+                    },
+                    shape = RoundedCornerShape(4.dp)
+                ) {
+                    Text(
+                        text = rc.status.name,
+                        fontSize = 9.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = when (rc.status) {
+                            L6Status.CASE_CLOSED, L6Status.REFUND_CONFIRMED -> Color(0xFF166534)
+                            L6Status.RETURN_REJECTED -> Color(0xFF991B1B)
+                            else -> Color(0xFF1E40AF)
+                        },
+                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                    )
+                }
+            }
+
+            Text(
+                text = "Customer: ${snapshot.customerName(rc.customerId)}" +
+                    (rc.cylinderSerial?.let { " · Cylinder $it ($sizeLabel)" } ?: ""),
+                fontSize = 11.sp,
+                color = Color(0xFF0F172A)
+            )
+            if (rc.orderId.isNotBlank()) {
+                val orderObj = snapshot.orders.find { it.id == rc.orderId }
+                Text(
+                    text = snapshot.orderLabel(rc.orderId),
+                    fontSize = 11.sp,
+                    color = BlueGasPrimary,
+                    modifier = if (orderObj != null) Modifier else Modifier
+                )
+            }
+            Text("Reason: ${rc.reason}", fontSize = 11.sp, color = Color(0xFF475569))
+
+            if (isCylinderReturn) {
+                val depositSummary = if (hasNoDepositOnRecord) {
+                    "Deposit: No deposit on record"
+                } else {
+                    "Deposit: ${formatRupees(deposit!!.amountPaisa)} (${deposit.status.label})"
+                }
+                Text(depositSummary, fontSize = 11.sp, fontWeight = FontWeight.SemiBold, color = Color(0xFF0F172A))
+
+                if (rc.deductionPaisa > 0L) {
+                    Text(
+                        text = "Deduction: ${formatRupees(rc.deductionPaisa)} (${rc.deductionReason ?: "Damage"})",
+                        fontSize = 11.sp,
+                        color = Color(0xFFB45309)
+                    )
+                }
+                rc.conditionResult?.let { cond ->
+                    Text(
+                        text = "Hub check: ${cond.label}${rc.conditionNote?.let { " · $it" } ?: ""}",
+                        fontSize = 11.sp,
+                        color = Color(0xFF334155)
+                    )
+                }
+
+                CylinderReturnStepper(rc = rc)
+            } else {
+                Text(
+                    text = "Requested refund: ${formatRupees(rc.requestedAmountPaisa)}",
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.SemiBold
+                )
+            }
+
+            val rejectionText = rc.rejectionReason
+                ?: rc.history.lastOrNull { it.toStatus == L6Status.RETURN_REJECTED }?.reason
+            if (rc.status == L6Status.RETURN_REJECTED && !rejectionText.isNullOrBlank()) {
+                Surface(
+                    color = Color(0xFFFEE2E2),
+                    shape = RoundedCornerShape(6.dp),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text(
+                        text = "Rejected: $rejectionText",
+                        fontSize = 11.sp,
+                        color = Color(0xFF991B1B),
+                        modifier = Modifier.padding(8.dp)
+                    )
+                }
+            }
+
+            if (isCylinderReturn) {
+                when (rc.status) {
+                    L6Status.CASE_OPENED -> {
+                        SupportReasonInput(reasonInput, { reasonInput = it }, rc.id)
+                        Button(
+                            onClick = {
+                                if (reasonInput.isBlank()) {
+                                    onBanner("Please enter a reason before starting review.", true)
+                                } else {
+                                    onBanner.report(
+                                        store.moveCase(
+                                            caseId = rc.id,
+                                            target = L6Status.UNDER_REVIEW,
+                                            reason = reasonInput.trim(),
+                                            actor = AccountableRole.SUPPORT.displayName,
+                                            role = AccountableRole.SUPPORT
+                                        )
+                                    )
+                                }
+                            },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .heightIn(min = 48.dp)
+                                .testTag("support_start_review_${rc.id}")
+                        ) {
+                            Text("Start review", fontSize = 12.sp)
+                        }
+                    }
+
+                    L6Status.UNDER_REVIEW -> {
+                        if (hasNoDepositOnRecord) {
+                            Surface(
+                                color = Color(0xFFFFFBEB),
+                                shape = RoundedCornerShape(6.dp),
+                                border = BorderStroke(1.dp, Color(0xFFFCD34D)),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Text(
+                                    text = "No deposit on record — record the proof you saw before authorizing (open decision Q30).",
+                                    fontSize = 11.sp,
+                                    color = Color(0xFF92400E),
+                                    modifier = Modifier.padding(8.dp)
+                                )
+                            }
+                        }
+                        SupportReasonInput(reasonInput, { reasonInput = it }, rc.id)
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Button(
+                                onClick = {
+                                    if (reasonInput.isBlank()) {
+                                        onBanner("Enter a reason (and proof if applicable) to authorize.", true)
+                                    } else {
+                                        onBanner.report(
+                                            store.moveCase(
+                                                caseId = rc.id,
+                                                target = L6Status.RETURN_AUTHORIZED,
+                                                reason = reasonInput.trim(),
+                                                actor = AccountableRole.SUPPORT.displayName,
+                                                role = AccountableRole.SUPPORT
+                                            )
+                                        )
+                                    }
+                                },
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .heightIn(min = 48.dp)
+                                    .testTag("support_authorize_${rc.id}")
+                            ) {
+                                Text("Authorize", fontSize = 12.sp)
+                            }
+                            OutlinedButton(
+                                onClick = {
+                                    if (reasonInput.isBlank()) {
+                                        onBanner("Enter a rejection reason.", true)
+                                    } else {
+                                        onBanner.report(
+                                            store.moveCase(
+                                                caseId = rc.id,
+                                                target = L6Status.RETURN_REJECTED,
+                                                reason = reasonInput.trim(),
+                                                actor = AccountableRole.SUPPORT.displayName,
+                                                role = AccountableRole.SUPPORT
+                                            )
+                                        )
+                                    }
+                                },
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .heightIn(min = 48.dp)
+                                    .testTag("support_reject_${rc.id}")
+                            ) {
+                                Text("Reject", fontSize = 12.sp, color = Color(0xFFDC2626))
+                            }
+                        }
+                    }
+
+                    L6Status.RETURN_AUTHORIZED -> {
+                        SupportReadOnlyStatus("Waiting for Operations to book a rider")
+                    }
+
+                    L6Status.AWAITING_ITEM_RETURN -> {
+                        val msg = when (rc.collectionTask) {
+                            "AT_HUB" -> "Hub is checking"
+                            "COLLECTED" -> "Rider is returning cylinder to hub"
+                            "OFFERED", "ACCEPTED" -> "Rider is collecting"
+                            else -> "Waiting for Operations to assign a rider"
+                        }
+                        SupportReadOnlyStatus(msg)
+                    }
+
+                    L6Status.ITEM_RETURNED -> {
+                        SupportReadOnlyStatus("Finance decides the refund")
+                    }
+
+                    L6Status.REFUND_REQUESTED -> {
+                        val failed = linkedRefund?.state == PaymentState.PARTIAL_REFUND_FAILED ||
+                            linkedRefund?.state == PaymentState.FULL_REFUND_FAILED
+                        SupportReadOnlyStatus(
+                            message = if (failed) {
+                                "Payment failed — Finance will retry (EXC-27)"
+                            } else {
+                                "Finance is paying the refund"
+                            },
+                            isWarning = failed
+                        )
+                    }
+
+                    L6Status.REFUND_CONFIRMED, L6Status.RETURN_REJECTED -> {
+                        SupportReasonInput(reasonInput, { reasonInput = it }, rc.id)
+                        Button(
+                            onClick = {
+                                if (reasonInput.isBlank()) {
+                                    onBanner("Enter a closing reason.", true)
+                                } else {
+                                    onBanner.report(
+                                        store.moveCase(
+                                            caseId = rc.id,
+                                            target = L6Status.CASE_CLOSED,
+                                            reason = reasonInput.trim(),
+                                            actor = AccountableRole.SUPPORT.displayName,
+                                            role = AccountableRole.SUPPORT
+                                        )
+                                    )
+                                }
+                            },
+                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF16A34A)),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .heightIn(min = 48.dp)
+                                .testTag("support_close_case_${rc.id}")
+                        ) {
+                            Text("Close case", fontSize = 12.sp)
+                        }
+                    }
+
+                    L6Status.CASE_CLOSED -> {
+                        SupportReadOnlyStatus("Closed")
+                    }
+                }
+            } else {
+                when (rc.status) {
+                    L6Status.CASE_OPENED -> {
+                        SupportReasonInput(reasonInput, { reasonInput = it }, rc.id)
+                        Button(
+                            onClick = {
+                                if (reasonInput.isBlank()) {
+                                    onBanner("Please enter a review reason.", true)
+                                } else {
+                                    onBanner.report(
+                                        store.moveCase(rc.id, L6Status.UNDER_REVIEW, reasonInput.trim(), actor = AccountableRole.SUPPORT.displayName, role = AccountableRole.SUPPORT)
+                                    )
+                                }
+                            },
+                            modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)
+                        ) {
+                            Text("Start review", fontSize = 11.sp)
+                        }
+                    }
+                    L6Status.UNDER_REVIEW -> {
+                        SupportReasonInput(reasonInput, { reasonInput = it }, rc.id)
+                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            Button(
+                                onClick = {
+                                    if (reasonInput.isBlank()) onBanner("Enter a reason.", true)
+                                    else onBanner.report(store.moveCase(rc.id, L6Status.RETURN_AUTHORIZED, reasonInput.trim(), actor = AccountableRole.SUPPORT.displayName, role = AccountableRole.SUPPORT))
+                                },
+                                modifier = Modifier.weight(1f).heightIn(min = 48.dp)
+                            ) { Text("Authorize", fontSize = 10.sp) }
+                            Button(
+                                onClick = {
+                                    if (reasonInput.isBlank()) onBanner("Enter a reason.", true)
+                                    else onBanner.report(store.moveCase(rc.id, L6Status.REFUND_REQUESTED, reasonInput.trim(), actor = AccountableRole.SUPPORT.displayName, role = AccountableRole.SUPPORT))
+                                },
+                                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF16A34A)),
+                                modifier = Modifier.weight(1f).heightIn(min = 48.dp)
+                            ) { Text("Refund", fontSize = 10.sp) }
+                            OutlinedButton(
+                                onClick = {
+                                    if (reasonInput.isBlank()) onBanner("Enter a rejection reason.", true)
+                                    else onBanner.report(store.moveCase(rc.id, L6Status.RETURN_REJECTED, reasonInput.trim(), actor = AccountableRole.SUPPORT.displayName, role = AccountableRole.SUPPORT))
+                                },
+                                modifier = Modifier.weight(0.9f).heightIn(min = 48.dp)
+                            ) { Text("Reject", fontSize = 10.sp, color = Color(0xFFDC2626)) }
+                        }
+                    }
+                    L6Status.RETURN_AUTHORIZED -> {
+                        SupportReasonInput(reasonInput, { reasonInput = it }, rc.id)
+                        Button(
+                            onClick = {
+                                if (reasonInput.isBlank()) onBanner("Enter a reason.", true)
+                                else onBanner.report(store.moveCase(rc.id, L6Status.AWAITING_ITEM_RETURN, reasonInput.trim(), actor = AccountableRole.SUPPORT.displayName, role = AccountableRole.SUPPORT))
+                            },
+                            modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)
+                        ) { Text("Mark awaiting return", fontSize = 11.sp) }
+                    }
+                    L6Status.AWAITING_ITEM_RETURN -> {
+                        SupportReasonInput(reasonInput, { reasonInput = it }, rc.id)
+                        Button(
+                            onClick = {
+                                if (reasonInput.isBlank()) onBanner("Enter inspection details.", true)
+                                else onBanner.report(store.moveCase(rc.id, L6Status.ITEM_RETURNED, reasonInput.trim(), actor = AccountableRole.SUPPORT.displayName, role = AccountableRole.SUPPORT))
+                            },
+                            modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)
+                        ) { Text("Confirm item received at hub", fontSize = 11.sp) }
+                    }
+                    L6Status.ITEM_RETURNED -> {
+                        SupportReasonInput(reasonInput, { reasonInput = it }, rc.id)
+                        Button(
+                            onClick = {
+                                if (reasonInput.isBlank()) onBanner("Enter a reason.", true)
+                                else onBanner.report(store.moveCase(rc.id, L6Status.REFUND_REQUESTED, reasonInput.trim(), actor = AccountableRole.SUPPORT.displayName, role = AccountableRole.SUPPORT))
+                            },
+                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF16A34A)),
+                            modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)
+                        ) { Text("Request Finance refund", fontSize = 11.sp) }
+                    }
+                    L6Status.REFUND_CONFIRMED, L6Status.RETURN_REJECTED -> {
+                        SupportReasonInput(reasonInput, { reasonInput = it }, rc.id)
+                        Button(
+                            onClick = {
+                                if (reasonInput.isBlank()) onBanner("Enter a closing reason.", true)
+                                else onBanner.report(store.moveCase(rc.id, L6Status.CASE_CLOSED, reasonInput.trim(), actor = AccountableRole.SUPPORT.displayName, role = AccountableRole.SUPPORT))
+                            },
+                            modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)
+                        ) { Text("Close case", fontSize = 11.sp) }
+                    }
+                    else -> {}
+                }
+            }
+        }
+    }
+}
+
+/**
+ * Displays the 8-step cylinder return lifecycle stepper (Opened through Closed).
+ */
+@Composable
+private fun CylinderReturnStepper(rc: ReturnRefundCase) {
+    val steps = listOf(
+        "Opened",
+        "Review",
+        "Collection booked",
+        "Collected",
+        "Checked at hub",
+        "Refund requested",
+        "Refund paid",
+        "Closed"
+    )
+    val activeIdx = when (rc.status) {
+        L6Status.CASE_OPENED -> 0
+        L6Status.UNDER_REVIEW -> 1
+        L6Status.RETURN_AUTHORIZED -> 2
+        L6Status.AWAITING_ITEM_RETURN -> when (rc.collectionTask) {
+            "COLLECTED", "AT_HUB" -> 3
+            else -> 2
+        }
+        L6Status.ITEM_RETURNED -> 4
+        L6Status.REFUND_REQUESTED -> 5
+        L6Status.REFUND_CONFIRMED -> 6
+        L6Status.CASE_CLOSED -> 7
+        L6Status.RETURN_REJECTED -> -1
+    }
+
+    LazyRow(
+        horizontalArrangement = Arrangement.spacedBy(4.dp),
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 4.dp)
+    ) {
+        items(steps.indices.toList()) { idx ->
+            val completedOrCurrent = activeIdx >= 0 && idx <= activeIdx
+            val isCurrent = activeIdx == idx
+            val bg = when {
+                isCurrent -> Color(0xFF1D4ED8)
+                completedOrCurrent -> Color(0xFFDCFCE7)
+                else -> Color(0xFFF1F5F9)
+            }
+            val fg = when {
+                isCurrent -> Color.White
+                completedOrCurrent -> Color(0xFF166534)
+                else -> Color(0xFF64748B)
+            }
+            Surface(color = bg, shape = RoundedCornerShape(4.dp)) {
+                Text(
+                    text = "${idx + 1}. ${steps[idx]}",
+                    fontSize = 9.sp,
+                    fontWeight = if (isCurrent) FontWeight.Bold else FontWeight.Medium,
+                    color = fg,
+                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 3.dp)
+                )
+            }
+        }
+    }
+}
+
+/**
+ * Blank-by-default required reason input field used on Support L6 action cards.
+ */
+@Composable
+private fun SupportReasonInput(
+    value: String,
+    onValueChange: (String) -> Unit,
+    caseId: String
+) {
+    OutlinedTextField(
+        value = value,
+        onValueChange = onValueChange,
+        label = { Text("Reason (required)", fontSize = 11.sp) },
+        placeholder = { Text("Enter reason or notes for this step", color = Color.Gray, fontSize = 11.sp) },
+        modifier = Modifier
+            .fillMaxWidth()
+            .testTag("support_reason_input_$caseId")
+    )
+}
+
+/**
+ * Read-only status box showing which team owns the next action on a return case.
+ */
+@Composable
+private fun SupportReadOnlyStatus(message: String, isWarning: Boolean = false) {
+    Surface(
+        color = if (isWarning) Color(0xFFFEF3C7) else Color(0xFFF1F5F9),
+        shape = RoundedCornerShape(6.dp),
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Text(
+            text = message,
+            fontSize = 11.sp,
+            fontWeight = FontWeight.SemiBold,
+            color = if (isWarning) Color(0xFF92400E) else Color(0xFF334155),
+            modifier = Modifier.padding(8.dp)
         )
     }
 }

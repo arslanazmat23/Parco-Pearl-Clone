@@ -20,12 +20,18 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.example.bluegas.model.DepositStatus
+import com.example.bluegas.model.formatRupees
 import com.example.bluegas.model.FulfilmentMode
+import com.example.bluegas.model.L6Status
 import com.example.bluegas.model.Order
 import com.example.bluegas.model.OrderLine
 import com.example.bluegas.model.OrderType
 import com.example.bluegas.model.PaymentMethod
 import com.example.bluegas.model.PaymentState
+import com.example.bluegas.model.PlatformSettings
+import com.example.bluegas.model.Refund
+import com.example.bluegas.model.ReturnRefundCase
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 
@@ -69,8 +75,6 @@ fun DemoValuePill(text: String, modifier: Modifier = Modifier) {
     }
 }
 
-
-
 /**
  * Immutable carrier for reorder form prefill values transferred from order history to the checkout form.
  *
@@ -81,9 +85,9 @@ fun DemoValuePill(text: String, modifier: Modifier = Modifier) {
  * @property quantity Number of cylinders to order.
  * @property orderType Whether refill exchange or new cylinder.
  * @property addressId Saved customer address ID to prefill.
- * @property mode Doorstep delivery or depot pickup.
+ * @property mode Doorstep delivery or hub pickup.
  * @property paymentMethod Selected payment method.
- * @property pickupPointId Depot node ID if pickup mode.
+ * @property pickupPointId Hub node ID if pickup mode.
  * @property addAccessory Whether regulator and hose add-on is included.
  * @property nonce Unique timestamp identifier indicating when the prefill was generated.
  */
@@ -145,4 +149,150 @@ fun formatCustomerPaymentStatus(
 
 /** Order lines a customer should see as items. The DEPOSIT line is excluded because the deposit is shown on its own labelled row. */
 fun Order.customerVisibleItems(): List<OrderLine> = items.filter { it.lineType != "DEPOSIT" }
+
+/** Plain-language label for deposit account lifecycle status. */
+fun customerDepositStatusLabel(status: DepositStatus): String = when (status) {
+    DepositStatus.HELD -> "Held"
+    DepositStatus.REFUND_IN_PROGRESS -> "Refund in progress"
+    DepositStatus.REFUNDED -> "Refunded"
+    DepositStatus.REDUCED_OR_FORFEITED -> "Reduced or closed"
+}
+
+/** Formats preferred return collection time window options from [PlatformSettings]. */
+fun customerReturnWindowOptions(settings: PlatformSettings): List<String> {
+    val today = settings.deliveryWindowsHours.map { (start, end) ->
+        String.format("Today %02d:00–%02d:00", start, end)
+    }
+    val tomorrow = if (settings.tomorrowWindowsEnabled) {
+        settings.deliveryWindowsHours.map { (start, end) ->
+            String.format("Tomorrow %02d:00–%02d:00", start, end)
+        }
+    } else {
+        emptyList()
+    }
+    return today + tomorrow
+}
+
+/** Plain-language summary of a customer's cylinder return progress (7 steps, indices 0..6) with zero enum leakage. */
+data class CustomerReturnProgressInfo(
+    val currentStepIndex: Int,
+    val stepTitles: List<String>,
+    val statusDetail: String,
+    val isRejected: Boolean = false
+)
+
+fun mapCustomerReturnProgress(
+    caseItem: ReturnRefundCase,
+    linkedRefund: Refund? = null
+): CustomerReturnProgressInfo {
+    val isDealerNoDeposit = caseItem.requestedAmountPaisa <= 0L
+    val netRefundedPaisa = (linkedRefund?.amountPaisa ?: (caseItem.requestedAmountPaisa - caseItem.deductionPaisa))
+        .coerceAtLeast(0L)
+    val step7Title = if (isDealerNoDeposit) {
+        "Return completed"
+    } else {
+        "Deposit refunded — ${formatRupees(netRefundedPaisa)}"
+    }
+    val titles = listOf(
+        "Request received",
+        "Collection being arranged",
+        "Rider will collect your cylinder",
+        "Cylinder collected — being checked",
+        "Checked — refund being prepared",
+        "Refund in progress",
+        step7Title
+    )
+
+    val wasRejected = caseItem.status == L6Status.RETURN_REJECTED ||
+        (caseItem.status == L6Status.CASE_CLOSED && caseItem.history.any { it.toStatus == L6Status.RETURN_REJECTED })
+    if (wasRejected) {
+        val rejReason = caseItem.rejectionReason?.takeIf { it.isNotBlank() }
+            ?: caseItem.history.lastOrNull { it.toStatus == L6Status.RETURN_REJECTED }?.reason?.takeIf { it.isNotBlank() }
+        return CustomerReturnProgressInfo(
+            currentStepIndex = -1,
+            stepTitles = titles,
+            statusDetail = if (rejReason != null) "Request not accepted: $rejReason" else "Request not accepted",
+            isRejected = true
+        )
+    }
+
+    return when (caseItem.status) {
+        L6Status.CASE_OPENED, L6Status.UNDER_REVIEW -> CustomerReturnProgressInfo(
+            currentStepIndex = 0,
+            stepTitles = titles,
+            statusDetail = "Our team is reviewing your return request."
+        )
+        L6Status.RETURN_AUTHORIZED -> CustomerReturnProgressInfo(
+            currentStepIndex = 1,
+            stepTitles = titles,
+            statusDetail = "Collection is being arranged."
+        )
+        L6Status.AWAITING_ITEM_RETURN -> {
+            if (caseItem.collectionTask == "COLLECTED" || caseItem.collectionTask == "AT_HUB") {
+                CustomerReturnProgressInfo(
+                    currentStepIndex = 3,
+                    stepTitles = titles,
+                    statusDetail = if (caseItem.collectionTask == "AT_HUB") {
+                        "Cylinder arrived at our hub — being checked."
+                    } else {
+                        "Cylinder collected — being checked."
+                    }
+                )
+            } else {
+                val windowText = caseItem.preferredCollectionWindow?.takeIf { it.isNotBlank() }
+                val windowSuffix = if (windowText != null) " Preferred time: $windowText." else ""
+                val detail = when (caseItem.collectionTask) {
+                    "ACCEPTED" -> "Rider will collect your cylinder.$windowSuffix"
+                    "OFFERED" -> "Rider notified to collect your cylinder.$windowSuffix"
+                    else -> "Assigning a rider to collect your cylinder.$windowSuffix"
+                }
+                CustomerReturnProgressInfo(
+                    currentStepIndex = 2,
+                    stepTitles = titles,
+                    statusDetail = detail
+                )
+            }
+        }
+        L6Status.ITEM_RETURNED -> CustomerReturnProgressInfo(
+            currentStepIndex = 4,
+            stepTitles = titles,
+            statusDetail = "Cylinder checked — refund is being prepared."
+        )
+        L6Status.REFUND_REQUESTED -> {
+            val payoutFailed = linkedRefund?.state == PaymentState.FULL_REFUND_FAILED ||
+                linkedRefund?.state == PaymentState.PARTIAL_REFUND_FAILED
+            CustomerReturnProgressInfo(
+                currentStepIndex = 5,
+                stepTitles = titles,
+                statusDetail = if (payoutFailed) {
+                    "We're retrying your refund payment."
+                } else {
+                    "Your refund is in progress."
+                }
+            )
+        }
+        L6Status.REFUND_CONFIRMED, L6Status.CASE_CLOSED -> {
+            val detail = when {
+                isDealerNoDeposit -> "Return completed."
+                caseItem.deductionPaisa > 0L -> {
+                    val dedReason = caseItem.deductionReason?.takeIf { it.isNotBlank() } ?: "Condition adjustment"
+                    "${formatRupees(caseItem.deductionPaisa)} was kept: $dedReason"
+                }
+                else -> "Deposit refunded — ${formatRupees(netRefundedPaisa)}"
+            }
+            CustomerReturnProgressInfo(
+                currentStepIndex = 6,
+                stepTitles = titles,
+                statusDetail = detail
+            )
+        }
+        L6Status.RETURN_REJECTED -> CustomerReturnProgressInfo(
+            currentStepIndex = -1,
+            stepTitles = titles,
+            statusDetail = "Request not accepted",
+            isRejected = true
+        )
+    }
+}
+
 

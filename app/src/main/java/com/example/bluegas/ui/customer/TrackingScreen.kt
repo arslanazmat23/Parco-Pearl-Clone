@@ -301,7 +301,7 @@ fun TrackingScreen(
                 // Section 1: Order Status Hero Banner
                 item {
                     val isPickup = currentOrder.fulfilmentMode == FulfilmentMode.PICKUP
-                    val depotName = depotNode?.name ?: "Depot"
+                    val depotName = depotNode?.name ?: "BLUE GAS hub"
                     val remainingMs = (currentOrder.holdExpiresAt ?: 0L) - nowMillis
                     val countdownStr = formatCountdown(remainingMs)
 
@@ -327,14 +327,14 @@ fun TrackingScreen(
                             accent = Color(0xFF3B82F6),
                             icon = Icons.Default.CheckCircle,
                             title = "Order confirmed",
-                            subtitle = if (isPickup) "Your depot is being assigned." else "Your cylinder is reserved."
+                            subtitle = if (isPickup) "Your hub is being assigned." else "Your cylinder is reserved."
                         )
                         OrderStatus.ORD_ASGN -> HeroBannerConfig(
                             tint = Color(0xFFEFF6FF),
                             accent = Color(0xFF3B82F6),
                             icon = Icons.Default.PersonSearch,
                             title = "Assigned",
-                            subtitle = if (isPickup) "Your depot has been assigned." else "A delivery partner has been assigned."
+                            subtitle = if (isPickup) "Your hub has been assigned." else "A delivery partner has been assigned."
                         )
                         OrderStatus.ORD_ACPT -> HeroBannerConfig(
                             tint = Color(0xFFEFF6FF),
@@ -368,7 +368,7 @@ fun TrackingScreen(
                             tint = Color(0xFFF0FDF4),
                             accent = Color(0xFF10B981),
                             icon = Icons.Default.PinDrop,
-                            title = if (isPickup) "You're at the depot" else "Rider has arrived",
+                            title = if (isPickup) "You're at the hub" else "Rider has arrived",
                             subtitle = if (isPickup) "Show your handover code at the counter." else "Please share your handover code with the rider."
                         )
                         OrderStatus.ORD_INSP, OrderStatus.ORD_ADJ -> HeroBannerConfig(
@@ -621,7 +621,7 @@ fun TrackingScreen(
                                 Row(verticalAlignment = Alignment.CenterVertically) {
                                     Icon(Icons.Default.Store, contentDescription = null, tint = BlueGasPrimary, modifier = Modifier.size(20.dp))
                                     Spacer(modifier = Modifier.width(8.dp))
-                                    Text(depotNode?.name ?: "Pickup Depot", fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                                    Text(depotNode?.name ?: "Pickup Hub", fontWeight = FontWeight.Bold, fontSize = 14.sp)
                                 }
                                 Spacer(modifier = Modifier.height(4.dp))
                                 Text(depotNode?.address ?: "Hub address", fontSize = 12.sp, color = Color(0xFF475569))
@@ -646,7 +646,7 @@ fun TrackingScreen(
                                             ) {
                                                 Icon(Icons.Default.CheckCircle, contentDescription = null, tint = Color(0xFF16A34A), modifier = Modifier.size(18.dp))
                                                 Spacer(modifier = Modifier.width(6.dp))
-                                                Text("Depot notified", fontWeight = FontWeight.Bold, fontSize = 13.sp, color = Color(0xFF166534))
+                                                Text("Hub notified", fontWeight = FontWeight.Bold, fontSize = 13.sp, color = Color(0xFF166534))
                                             }
                                         }
                                     } else {
@@ -661,7 +661,7 @@ fun TrackingScreen(
                                         ) {
                                             Icon(Icons.Default.PinDrop, contentDescription = null, tint = Color.White)
                                             Spacer(modifier = Modifier.width(8.dp))
-                                            Text("I'm at the depot", fontWeight = FontWeight.Bold, color = Color.White)
+                                            Text("I'm at the hub", fontWeight = FontWeight.Bold, color = Color.White)
                                         }
                                     }
                                 }
@@ -722,7 +722,7 @@ fun TrackingScreen(
                                             ) {
                                                 Icon(Icons.Default.Store, contentDescription = null, tint = Color(0xFF93C5FD), modifier = Modifier.size(12.dp))
                                                 Spacer(modifier = Modifier.width(4.dp))
-                                                Text(depotNode?.name ?: "Depot Hub", fontSize = 9.sp, color = Color.White, fontWeight = FontWeight.Bold)
+                                                Text(depotNode?.name ?: "BLUE GAS hub", fontSize = 9.sp, color = Color.White, fontWeight = FontWeight.Bold)
                                             }
                                         }
                                     }
@@ -791,7 +791,7 @@ fun TrackingScreen(
                                         OrderStatus.ORD_DISP -> "On the way"
                                         OrderStatus.ORD_ATHO -> "At your door"
                                         OrderStatus.ORD_COMP -> "Delivered"
-                                        else -> "Preparing at ${depotNode?.name ?: "Depot"}"
+                                        else -> "Preparing at ${depotNode?.name ?: "BLUE GAS hub"}"
                                     }
                                     Surface(
                                         color = Color(0xDD000000),
@@ -831,7 +831,7 @@ fun TrackingScreen(
                                 ) {
                                     Column {
                                         Text("Fulfilment Route", fontSize = 10.sp, color = Color.Gray)
-                                        Text("Delivery from ${depotNode?.name ?: "Depot"}", fontWeight = FontWeight.Bold, fontSize = 11.sp)
+                                        Text("Delivery from ${depotNode?.name ?: "BLUE GAS hub"}", fontWeight = FontWeight.Bold, fontSize = 11.sp)
                                     }
                                     Surface(
                                         color = Color(0xFFEFF6FF),

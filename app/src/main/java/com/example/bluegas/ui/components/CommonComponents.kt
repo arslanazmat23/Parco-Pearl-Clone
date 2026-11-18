@@ -23,6 +23,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.bluegas.data.BlueGasStore
+import com.example.bluegas.data.markNotificationRead
 import com.example.bluegas.lifecycle.OrderStateMachine
 import com.example.bluegas.model.*
 import com.example.ui.theme.*
@@ -508,11 +509,30 @@ fun NotificationCenterDialog(store: BlueGasStore, onDismiss: () -> Unit) {
             } else {
                 LazyColumn(modifier = Modifier.heightIn(max = 400.dp)) {
                     items(store.notifications) { item ->
+                        val isCustomerCylNotif = item.code in setOf("NTF-19", "NTF-20", "NTF-21")
+                        val leadIcon = when (item.code) {
+                            "NTF-19" -> Icons.Default.Payments
+                            "NTF-20" -> Icons.Default.Inventory2
+                            "NTF-21" -> Icons.Default.VerifiedUser
+                            else -> null
+                        }
                         Card(
                             colors = CardDefaults.cardColors(containerColor = if (item.isRead) Color(0xFFF8FAFC) else Color(0xFFEFF6FF)),
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .padding(vertical = 4.dp)
+                                .then(
+                                    if (isCustomerCylNotif) {
+                                        Modifier.clickable {
+                                            store.markNotificationRead(item.id)
+                                            store.setSurface(AppSurface.CUSTOMER)
+                                            store.setCustomerTab("PROFILE")
+                                            onDismiss()
+                                        }
+                                    } else {
+                                        Modifier
+                                    }
+                                )
                         ) {
                             Column(modifier = Modifier.padding(8.dp)) {
                                 Row(
@@ -520,7 +540,21 @@ fun NotificationCenterDialog(store: BlueGasStore, onDismiss: () -> Unit) {
                                     horizontalArrangement = Arrangement.SpaceBetween,
                                     verticalAlignment = Alignment.CenterVertically
                                 ) {
-                                    Text(item.title, fontWeight = FontWeight.Bold, fontSize = 12.sp, modifier = Modifier.weight(1f))
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        modifier = Modifier.weight(1f)
+                                    ) {
+                                        if (leadIcon != null) {
+                                            Icon(
+                                                imageVector = leadIcon,
+                                                contentDescription = null,
+                                                tint = BlueGasPrimary,
+                                                modifier = Modifier.size(16.dp)
+                                            )
+                                            Spacer(modifier = Modifier.width(6.dp))
+                                        }
+                                        Text(item.title, fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                                    }
                                     Spacer(modifier = Modifier.width(4.dp))
                                     Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                                         if (item.channels.contains(NotifyChannel.SMS)) {

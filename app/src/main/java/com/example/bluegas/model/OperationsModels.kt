@@ -229,7 +229,8 @@ data class ReturnRefundCase(
     var collectionRiderId: String? = null,
     var collectionTask: String? = null, // "OFFERED", "ACCEPTED", "DECLINED", "COMPLETED"
     val openedAt: Long = System.currentTimeMillis(),
-    var closedAt: Long? = null
+    var closedAt: Long? = null,
+    var preferredCollectionWindow: String? = null
 )
 
 // --- Lifecycle 7: Safety (HSE) Incidents ---

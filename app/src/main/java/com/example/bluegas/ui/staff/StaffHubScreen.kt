@@ -85,6 +85,42 @@ fun StaffHubScreen(
         snapshot.cylinders.filter { it.pendingHubScanIn && (it.pointId == null || it.pointId == hubId) }
     }
     val stockBadgeCount = incomingTransfers.size + pendingReturnCylinders.size
+    val hubReturnCases = remember(snapshot.version, hubId) {
+        snapshot.returnCases.filter { rc ->
+            rc.type == "CYLINDER_RETURN" &&
+                ((rc.status == L6Status.AWAITING_ITEM_RETURN && rc.collectionTask == "AT_HUB") ||
+                    (rc.status == L6Status.ITEM_RETURNED && rc.conditionResult != null)) &&
+                run {
+                    val riderHub = rc.collectionRiderId?.let { rid ->
+                        snapshot.riders.find { it.id == rid }?.pointId
+                    }
+                    val orderHub = snapshot.orders.find { it.id == rc.orderId }?.fulfilmentPointId
+                    val addrHub = snapshot.addresses.find { it.customerId == rc.customerId && it.isDefault }?.servingPointId
+                    (riderHub ?: orderHub ?: addrHub) == hubId
+                }
+        }
+    }
+    val pendingReturnChecksCount = remember(snapshot.version, hubId) {
+        hubReturnCases.count { it.status == L6Status.AWAITING_ITEM_RETURN && it.collectionTask == "AT_HUB" }
+    }
+    val hubRiderCashWaiting = remember(snapshot.version, hubId) {
+        snapshot.cashHandovers.filter { ch ->
+            ch.recipient == "HUB" &&
+                ch.status == "SUBMITTED" &&
+                snapshot.riders.find { it.id == ch.collectorId }?.pointId == hubId
+        }
+    }
+    val hubCounterCashOrders = remember(snapshot.version, hubId) {
+        snapshot.orders.filter { ord ->
+            ord.fulfilmentMode == FulfilmentMode.PICKUP &&
+                ord.paymentMethod == PaymentMethod.CASH_ON_DELIVERY &&
+                ord.status == OrderStatus.ORD_COMP &&
+                (ord.pickupPointId ?: ord.fulfilmentPointId) == hubId &&
+                snapshot.payments.filter { it.orderId == ord.id }.lastOrNull()?.state == PaymentState.CASH_COLLECTED &&
+                snapshot.cashHandovers.none { ch -> ch.orderIds.contains(ord.id) }
+        }
+    }
+    val cashBadgeCount = hubRiderCashWaiting.size + if (hubCounterCashOrders.isNotEmpty()) 1 else 0
 
     LazyColumn(
         modifier = Modifier
@@ -137,7 +173,8 @@ fun StaffHubScreen(
                     val count = when (tab) {
                         HubTab.ORDERS -> activeOrdersCount
                         HubTab.STOCK -> stockBadgeCount
-                        HubTab.RETURNS, HubTab.CASH -> 0
+                        HubTab.RETURNS -> pendingReturnChecksCount
+                        HubTab.CASH -> cashBadgeCount
                     }
                     val selected = selectedTab == tab
                     Surface(
@@ -223,9 +260,28 @@ fun StaffHubScreen(
                 }
             }
 
-            HubTab.RETURNS, HubTab.CASH -> {
+            HubTab.RETURNS -> {
                 item {
-                    HubEmptyCard("Available in the next update")
+                    HubReturnsTabContent(
+                        hubId = hubId,
+                        store = store,
+                        snapshot = snapshot,
+                        hubReturnCases = hubReturnCases,
+                        onBanner = onBanner
+                    )
+                }
+            }
+
+            HubTab.CASH -> {
+                item {
+                    HubCashTabContent(
+                        hubId = hubId,
+                        store = store,
+                        snapshot = snapshot,
+                        riderHandovers = hubRiderCashWaiting,
+                        counterOrders = hubCounterCashOrders,
+                        onBanner = onBanner
+                    )
                 }
             }
         }
@@ -477,7 +533,7 @@ private fun HubOrderCard(
                             .heightIn(min = 48.dp)
                             .testTag("hub_arrived_btn_${order.id}")
                     ) {
-                        Text("Customer arrived at depot", fontSize = 12.sp)
+                        Text("Customer at the counter", fontSize = 12.sp)
                     }
                 }
 
@@ -1170,6 +1226,596 @@ private fun HubRequestStockDialog(
             OutlinedButton(onClick = onDismiss) { Text("Cancel") }
         }
     )
+}
+
+/**
+ * Displays the Returns & empties tab for [hubId]:
+ * 1) Sending available empties back to the plant per SKU, and
+ * 2) Recording hub inspection condition for customer cylinders handed in by riders.
+ */
+@Composable
+private fun HubReturnsTabContent(
+    hubId: String,
+    store: BlueGasStore,
+    snapshot: SharedAppState,
+    hubReturnCases: List<ReturnRefundCase>,
+    onBanner: StaffBanner
+) {
+    val openEmptiesBySku = remember(snapshot.version, hubId) {
+        snapshot.stockTransfers
+            .filter { it.direction == "EMPTIES_TO_PLANT" && it.fromPointId == hubId && it.status == "DISPATCHED" }
+            .flatMap { it.lines }
+            .groupBy { it.skuId }
+            .mapValues { (_, lines) -> lines.sumOf { it.qtySent } }
+    }
+    val availableEmptiesBySku = remember(snapshot.version, hubId) {
+        listOf("SKU-LPG-11-8", "SKU-LPG-45-4").associateWith { sku ->
+            val empty = snapshot.stockBalances.find { it.pointId == hubId && it.skuId == sku }?.emptyQty ?: 0
+            (empty - (openEmptiesBySku[sku] ?: 0)).coerceAtLeast(0)
+        }
+    }
+
+    var empties118Input by remember(hubId) { mutableStateOf("") }
+    var empties454Input by remember(hubId) { mutableStateOf("") }
+    var gatePassInput by remember(hubId) { mutableStateOf("") }
+    var vehicleInput by remember(hubId) { mutableStateOf("") }
+    var driverInput by remember(hubId) { mutableStateOf("") }
+
+    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        Text(
+            text = "Empties to send back to the plant",
+            fontWeight = FontWeight.Bold,
+            fontSize = 13.sp,
+            color = Color(0xFF0F172A)
+        )
+
+        Card(
+            colors = CardDefaults.cardColors(containerColor = Color.White),
+            border = BorderStroke(1.dp, Color(0xFFCBD5E1)),
+            modifier = Modifier
+                .fillMaxWidth()
+                .testTag("hub_empties_return_card")
+        ) {
+            Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                listOf("SKU-LPG-11-8" to empties118Input, "SKU-LPG-45-4" to empties454Input).forEach { (sku, qtyStr) ->
+                    val avail = availableEmptiesBySku[sku] ?: 0
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(snapshot.skuLabel(sku), fontWeight = FontWeight.SemiBold, fontSize = 12.sp)
+                            Text("$avail empties available", fontSize = 11.sp, color = Color(0xFF475569))
+                        }
+                        OutlinedTextField(
+                            value = qtyStr,
+                            onValueChange = { raw ->
+                                val digits = raw.filter { it.isDigit() }
+                                if (sku == "SKU-LPG-11-8") empties118Input = digits else empties454Input = digits
+                            },
+                            label = { Text("Qty", fontSize = 10.sp) },
+                            placeholder = { Text("0", color = Color.Gray, fontSize = 11.sp) },
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                            singleLine = true,
+                            modifier = Modifier
+                                .width(100.dp)
+                                .testTag("hub_empties_qty_${sku}")
+                        )
+                    }
+                }
+
+                OutlinedTextField(
+                    value = gatePassInput,
+                    onValueChange = { gatePassInput = it },
+                    label = { Text("Gate pass (optional)", fontSize = 11.sp) },
+                    placeholder = { Text("Enter gate pass number", color = Color.Gray, fontSize = 11.sp) },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    OutlinedTextField(
+                        value = vehicleInput,
+                        onValueChange = { vehicleInput = it },
+                        label = { Text("Vehicle (optional)", fontSize = 11.sp) },
+                        placeholder = { Text("Plate number", color = Color.Gray, fontSize = 11.sp) },
+                        singleLine = true,
+                        modifier = Modifier.weight(1f)
+                    )
+                    OutlinedTextField(
+                        value = driverInput,
+                        onValueChange = { driverInput = it },
+                        label = { Text("Driver (optional)", fontSize = 11.sp) },
+                        placeholder = { Text("Driver name", color = Color.Gray, fontSize = 11.sp) },
+                        singleLine = true,
+                        modifier = Modifier.weight(1f)
+                    )
+                }
+
+                Button(
+                    onClick = {
+                        val lines = buildMap {
+                            val q118 = empties118Input.trim().toIntOrNull() ?: 0
+                            val q454 = empties454Input.trim().toIntOrNull() ?: 0
+                            if (q118 > 0) put("SKU-LPG-11-8", q118)
+                            if (q454 > 0) put("SKU-LPG-45-4", q454)
+                        }
+                        val res = store.requestEmptiesReturn(
+                            pointId = hubId,
+                            lines = lines,
+                            gatePassNo = gatePassInput.trim(),
+                            vehicleNo = vehicleInput.trim(),
+                            driverName = driverInput.trim(),
+                            actor = AccountableRole.HUB.displayName
+                        )
+                        onBanner.report(res)
+                        if (res.first) {
+                            empties118Input = ""
+                            empties454Input = ""
+                            gatePassInput = ""
+                            vehicleInput = ""
+                            driverInput = ""
+                        }
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = BlueGasPrimary),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(min = 48.dp)
+                        .testTag("hub_send_empties_btn")
+                ) {
+                    Text("Send empties to plant", fontSize = 12.sp)
+                }
+            }
+        }
+
+        Text(
+            text = "Customer cylinders handed in at this hub (${hubReturnCases.size})",
+            fontWeight = FontWeight.Bold,
+            fontSize = 13.sp,
+            color = Color(0xFF0F172A)
+        )
+
+        if (hubReturnCases.isEmpty()) {
+            HubEmptyCard("No customer return cylinders awaiting inspection at this hub.")
+        } else {
+            hubReturnCases.forEach { rc ->
+                HubReturnInspectionCard(
+                    rc = rc,
+                    store = store,
+                    snapshot = snapshot,
+                    onBanner = onBanner
+                )
+            }
+        }
+    }
+}
+
+/**
+ * Displays a single customer cylinder return check card at the hub, allowing Hub Staff to inspect
+ * and record condition or flag a suspected hazard for HSE triage.
+ */
+@Composable
+private fun HubReturnInspectionCard(
+    rc: ReturnRefundCase,
+    store: BlueGasStore,
+    snapshot: SharedAppState,
+    onBanner: StaffBanner
+) {
+    val cyl = remember(snapshot.version, rc.cylinderSerial) {
+        snapshot.cylinders.find { it.serialNumber == rc.cylinderSerial }
+    }
+    val dep = remember(snapshot.version, rc.depositId, rc.cylinderSerial) {
+        snapshot.depositAccounts.find { it.id == rc.depositId }
+            ?: snapshot.depositAccounts.find { it.customerId == rc.customerId && it.cylinderSerial == rc.cylinderSerial }
+    }
+    val sizeText = remember(snapshot.version, cyl?.sku, dep?.sku) {
+        val sku = cyl?.sku ?: dep?.sku
+        if (sku != null) snapshot.skuLabel(sku) else "11.8 kg"
+    }
+    val depositText = if (rc.requestedAmountPaisa > 0L) {
+        formatRupees(rc.requestedAmountPaisa)
+    } else {
+        "No deposit on record"
+    }
+
+    var selectedCondition by remember(rc.id) { mutableStateOf(ReturnCondition.GOOD) }
+    var noteInput by remember(rc.id) { mutableStateOf("") }
+    var hazardSuspected by remember(rc.id) { mutableStateOf(false) }
+
+    Card(
+        colors = CardDefaults.cardColors(containerColor = Color.White),
+        border = BorderStroke(1.dp, Color(0xFFCBD5E1)),
+        modifier = Modifier
+            .fillMaxWidth()
+            .testTag("hub_return_check_card_${rc.id}")
+    ) {
+        Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = "${snapshot.customerName(rc.customerId)} · ${rc.cylinderSerial ?: "No serial"}",
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 13.sp,
+                    color = Color(0xFF0F172A),
+                    modifier = Modifier.weight(1f)
+                )
+                Surface(color = Color(0xFFDBEAFE), shape = RoundedCornerShape(6.dp)) {
+                    Text(
+                        text = sizeText,
+                        fontSize = 10.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = Color(0xFF1E40AF),
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
+                    )
+                }
+            }
+
+            Text(
+                text = "Case ${rc.id} · Deposit: $depositText",
+                fontSize = 11.sp,
+                color = Color(0xFF475569)
+            )
+
+            if (rc.status == L6Status.ITEM_RETURNED) {
+                Surface(
+                    color = Color(0xFFDCFCE7),
+                    shape = RoundedCornerShape(6.dp),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(modifier = Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                        Text(
+                            text = "Condition recorded: ${rc.conditionResult?.label ?: "Checked"}",
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = Color(0xFF166534)
+                        )
+                        if (!rc.conditionNote.isNullOrBlank()) {
+                            Text("Note: ${rc.conditionNote}", fontSize = 11.sp, color = Color(0xFF166534))
+                        }
+                        Text(
+                            text = "Waiting for Finance to decide the deposit refund",
+                            fontSize = 11.sp,
+                            color = Color(0xFF166534)
+                        )
+                    }
+                }
+            } else {
+                Text("Condition check", fontWeight = FontWeight.SemiBold, fontSize = 11.sp, color = Color(0xFF334155))
+                LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    items(ReturnCondition.entries) { cond ->
+                        FilterChip(
+                            selected = selectedCondition == cond,
+                            onClick = { selectedCondition = cond },
+                            label = { Text(cond.label, fontSize = 11.sp) }
+                        )
+                    }
+                }
+
+                OutlinedTextField(
+                    value = noteInput,
+                    onValueChange = { noteInput = it },
+                    label = {
+                        Text(
+                            text = if (selectedCondition == ReturnCondition.GOOD && !hazardSuspected) {
+                                "Inspection note (optional)"
+                            } else {
+                                "Inspection note (required)"
+                            },
+                            fontSize = 11.sp
+                        )
+                    },
+                    placeholder = { Text("Enter condition details", color = Color.Gray, fontSize = 11.sp) },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("hub_return_note_${rc.id}")
+                )
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text("Suspected hazard", fontWeight = FontWeight.SemiBold, fontSize = 12.sp, color = Color(0xFF0F172A))
+                        if (hazardSuspected) {
+                            Text(
+                                text = "An HSE incident will be raised and the cylinder placed on hold",
+                                fontSize = 10.sp,
+                                color = Color(0xFFB45309)
+                            )
+                        }
+                    }
+                    Switch(
+                        checked = hazardSuspected,
+                        onCheckedChange = { hazardSuspected = it },
+                        modifier = Modifier.testTag("hub_return_hazard_${rc.id}")
+                    )
+                }
+
+                Button(
+                    onClick = {
+                        val trimmedNote = noteInput.trim()
+                        if (hazardSuspected && trimmedNote.isEmpty()) {
+                            onBanner("Please enter a note explaining the suspected hazard.", true)
+                            return@Button
+                        }
+                        val res = store.hubRecordReturnCondition(
+                            caseId = rc.id,
+                            condition = selectedCondition,
+                            note = trimmedNote.takeIf { it.isNotEmpty() },
+                            hazardSuspected = hazardSuspected,
+                            actor = AccountableRole.HUB.displayName
+                        )
+                        onBanner.report(res)
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = BlueGasPrimary),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(min = 48.dp)
+                        .testTag("hub_record_condition_btn_${rc.id}")
+                ) {
+                    Text("Record result", fontSize = 12.sp)
+                }
+            }
+        }
+    }
+}
+
+/**
+ * Displays the Cash tab for [hubId]:
+ * 1) Rider cash hand-overs awaiting hub cashier receipt,
+ * 2) Unhanded counter pickup COD cash ready to hand over to Finance, and
+ * 3) History of hub cash hand-overs.
+ */
+@Composable
+private fun HubCashTabContent(
+    hubId: String,
+    store: BlueGasStore,
+    snapshot: SharedAppState,
+    riderHandovers: List<CashHandover>,
+    counterOrders: List<Order>,
+    onBanner: StaffBanner
+) {
+    val counterTotalPaisa = remember(snapshot.version, hubId) {
+        counterOrders.sumOf { it.amountReceivedPaisa ?: it.totalAmountPaisa }
+    }
+    var counterDeclaredInput by remember(hubId) { mutableStateOf("") }
+
+    val hubHistory = remember(snapshot.version, hubId) {
+        snapshot.cashHandovers.filter { ch ->
+            (ch.recipient == "HUB" && snapshot.riders.find { it.id == ch.collectorId }?.pointId == hubId) ||
+                (ch.collectorType == "DEPOT" && ch.collectorId == hubId)
+        }
+    }
+
+    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        Text(
+            text = "Rider hand-overs to this hub (${riderHandovers.size})",
+            fontWeight = FontWeight.Bold,
+            fontSize = 13.sp,
+            color = Color(0xFF0F172A)
+        )
+
+        if (riderHandovers.isEmpty()) {
+            HubEmptyCard("No rider cash hand-overs waiting at this hub.")
+        } else {
+            riderHandovers.forEach { csh ->
+                var countedRsInput by remember(csh.id) { mutableStateOf("") }
+                var diffReasonInput by remember(csh.id) { mutableStateOf("") }
+                val enteredPaisa = countedRsInput.trim().toLongOrNull()?.times(100L)
+                val differs = enteredPaisa != null && enteredPaisa != csh.declaredPaisa
+
+                Card(
+                    colors = CardDefaults.cardColors(containerColor = Color.White),
+                    border = BorderStroke(1.dp, Color(0xFFCBD5E1)),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("hub_rider_cash_card_${csh.id}")
+                ) {
+                    Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = snapshot.riderName(csh.collectorId),
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 13.sp,
+                                color = Color(0xFF0F172A)
+                            )
+                            Text(
+                                text = "${csh.orderIds.size} orders",
+                                fontSize = 11.sp,
+                                color = Color(0xFF475569)
+                            )
+                        }
+                        Text(
+                            text = "Declared: ${formatRupees(csh.declaredPaisa)} (including deposits)",
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            color = Color(0xFF0F172A)
+                        )
+                        OutlinedTextField(
+                            value = countedRsInput,
+                            onValueChange = { countedRsInput = it.filter { ch -> ch.isDigit() } },
+                            label = { Text("Counted amount (Rs)", fontSize = 11.sp) },
+                            placeholder = { Text("Enter cash received in rupees", color = Color.Gray, fontSize = 11.sp) },
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                            singleLine = true,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .testTag("hub_cash_counted_${csh.id}")
+                        )
+                        if (differs) {
+                            OutlinedTextField(
+                                value = diffReasonInput,
+                                onValueChange = { diffReasonInput = it },
+                                label = { Text("Difference reason (required)", fontSize = 11.sp) },
+                                placeholder = { Text("Explain cash variance", color = Color.Gray, fontSize = 11.sp) },
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .testTag("hub_cash_reason_${csh.id}")
+                            )
+                        }
+                        Button(
+                            onClick = {
+                                val rs = countedRsInput.trim().toLongOrNull()
+                                if (rs == null) {
+                                    onBanner("Enter the counted cash amount.", true)
+                                    return@Button
+                                }
+                                val countedPaisa = rs * 100L
+                                if (countedPaisa != csh.declaredPaisa && diffReasonInput.isBlank()) {
+                                    onBanner("Please enter a reason because the counted cash differs from declared.", true)
+                                    return@Button
+                                }
+                                val res = store.hubReceiveRiderCash(
+                                    handoverId = csh.id,
+                                    countedPaisa = countedPaisa,
+                                    reason = diffReasonInput.trim().takeIf { it.isNotEmpty() },
+                                    actor = AccountableRole.HUB.displayName
+                                )
+                                onBanner.report(res)
+                            },
+                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF16A34A)),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .heightIn(min = 48.dp)
+                                .testTag("hub_receive_cash_btn_${csh.id}")
+                        ) {
+                            Text("Receive cash", fontSize = 12.sp)
+                        }
+                    }
+                }
+            }
+        }
+
+        Text(
+            text = "Counter cash (${counterOrders.size} pickup COD orders)",
+            fontWeight = FontWeight.Bold,
+            fontSize = 13.sp,
+            color = Color(0xFF0F172A)
+        )
+        Card(
+            colors = CardDefaults.cardColors(containerColor = Color.White),
+            border = BorderStroke(1.dp, Color(0xFFCBD5E1)),
+            modifier = Modifier
+                .fillMaxWidth()
+                .testTag("hub_counter_cash_card")
+        ) {
+            Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                if (counterOrders.isEmpty()) {
+                    Text(
+                        text = "No pickup COD cash waiting at this hub.",
+                        fontSize = 12.sp,
+                        color = Color(0xFF64748B)
+                    )
+                } else {
+                    Text(
+                        text = "Collected at counter: ${formatRupees(counterTotalPaisa)} (including deposits)",
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        color = Color(0xFF0F172A)
+                    )
+                    OutlinedTextField(
+                        value = counterDeclaredInput,
+                        onValueChange = { counterDeclaredInput = it.filter { ch -> ch.isDigit() } },
+                        label = { Text("Declared amount to Finance (Rs)", fontSize = 11.sp) },
+                        placeholder = { Text("Enter amount in rupees", color = Color.Gray, fontSize = 11.sp) },
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        singleLine = true,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("hub_counter_cash_input")
+                    )
+                    Button(
+                        onClick = {
+                            val rs = counterDeclaredInput.trim().toLongOrNull()
+                            if (rs == null) {
+                                onBanner("Enter the counter cash amount to hand over.", true)
+                                return@Button
+                            }
+                            val res = store.hubSubmitCashHandover(hubId, rs * 100L)
+                            onBanner.report(res)
+                            if (res.first) counterDeclaredInput = ""
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = BlueGasPrimary),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(min = 48.dp)
+                            .testTag("hub_handover_finance_btn")
+                    ) {
+                        Text("Hand over to Finance", fontSize = 12.sp)
+                    }
+                }
+            }
+        }
+
+        Text(
+            text = "Hub cash hand-over history (${hubHistory.size})",
+            fontWeight = FontWeight.Bold,
+            fontSize = 13.sp,
+            color = Color(0xFF0F172A)
+        )
+        if (hubHistory.isEmpty()) {
+            HubEmptyCard("No cash hand-over history for this hub yet.")
+        } else {
+            hubHistory.forEach { ch ->
+                val collectorLabel = if (ch.collectorType == "RIDER") {
+                    snapshot.riderName(ch.collectorId)
+                } else {
+                    snapshot.pointName(ch.collectorId)
+                }
+                val (badgeBg, badgeFg) = when (ch.status) {
+                    "RECONCILED" -> Color(0xFFDCFCE7) to Color(0xFF166534)
+                    "RECEIVED_BY_HUB" -> Color(0xFFDBEAFE) to Color(0xFF1E40AF)
+                    "DISPUTED" -> Color(0xFFFEE2E2) to Color(0xFF991B1B)
+                    else -> Color(0xFFFEF3C7) to Color(0xFF92400E)
+                }
+                Card(
+                    colors = CardDefaults.cardColors(containerColor = Color.White),
+                    border = BorderStroke(1.dp, Color(0xFFE2E8F0)),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(10.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text("${ch.id} · $collectorLabel", fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                            Text(
+                                text = "Declared: ${formatRupees(ch.declaredPaisa)} (including deposits)",
+                                fontSize = 11.sp,
+                                color = Color(0xFF475569)
+                            )
+                            ch.hubReceivedPaisa?.let { rec ->
+                                Text("Hub counted: ${formatRupees(rec)}", fontSize = 11.sp, color = Color(0xFF1E40AF))
+                            }
+                        }
+                        Surface(color = badgeBg, shape = RoundedCornerShape(6.dp)) {
+                            Text(
+                                text = ch.status,
+                                fontSize = 9.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = badgeFg,
+                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 3.dp)
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
 }
 
 /**

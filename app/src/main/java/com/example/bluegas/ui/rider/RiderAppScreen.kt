@@ -111,6 +111,53 @@ private fun isCompletedForRider(order: Order, riderId: String): Boolean {
     return order.assignedRiderId == riderId && order.status == OrderStatus.ORD_COMP
 }
 
+private fun isPendingCollectionForRider(rc: ReturnRefundCase, riderId: String): Boolean {
+    return rc.type == "CYLINDER_RETURN" &&
+        rc.collectionRiderId == riderId &&
+        rc.status == L6Status.AWAITING_ITEM_RETURN &&
+        rc.collectionTask == "OFFERED"
+}
+
+private fun isActiveCollectionForRider(rc: ReturnRefundCase, riderId: String): Boolean {
+    return rc.type == "CYLINDER_RETURN" &&
+        rc.collectionRiderId == riderId &&
+        rc.status == L6Status.AWAITING_ITEM_RETURN &&
+        (rc.collectionTask == "ACCEPTED" || rc.collectionTask == "COLLECTED")
+}
+
+private fun isCompletedCollectionForRider(rc: ReturnRefundCase, riderId: String): Boolean {
+    return rc.type == "CYLINDER_RETURN" &&
+        rc.collectionRiderId == riderId &&
+        (rc.collectionTask == "AT_HUB" ||
+            rc.status == L6Status.ITEM_RETURNED ||
+            rc.status == L6Status.REFUND_REQUESTED ||
+            rc.status == L6Status.REFUND_CONFIRMED ||
+            rc.status == L6Status.CASE_CLOSED)
+}
+
+/**
+ * Pure helper mapping a rider's [CashHandover] route and status into plain-language labels
+ * shown on completed delivery cards.
+ *
+ * @param handover Submitted cash hand-over record.
+ * @return Human-readable hand-over status label.
+ */
+fun riderCashStatusLabel(handover: CashHandover): String {
+    val isFinance = handover.recipient.equals("FINANCE", ignoreCase = true)
+    return if (isFinance) {
+        when (handover.status) {
+            "RECONCILED", "RECONCILED_WITH_DIFFERENCE" -> "Reconciled"
+            else -> "Waiting for Finance"
+        }
+    } else {
+        when (handover.status) {
+            "RECEIVED_BY_HUB" -> "Received by hub"
+            "RECONCILED", "RECONCILED_WITH_DIFFERENCE" -> "Reconciled"
+            else -> "Waiting for hub cashier"
+        }
+    }
+}
+
 /**
  * Root rider application console displaying task lists, status banners, and offline outbox controls.
  *
@@ -140,6 +187,8 @@ fun RiderAppScreen(store: BlueGasStore) {
 
     // Dialog states
     var showDeclineOrderId by remember { mutableStateOf<String?>(null) }
+    var showDeclineReturnCaseId by remember { mutableStateOf<String?>(null) }
+    var showCollectReturnCaseId by remember { mutableStateOf<String?>(null) }
     var showVerifyCylinderOrderId by remember { mutableStateOf<String?>(null) }
     var showIssueOrderId by remember { mutableStateOf<String?>(null) }
     var showPodOrderId by remember { mutableStateOf<String?>(null) }
@@ -156,13 +205,17 @@ fun RiderAppScreen(store: BlueGasStore) {
         return
     }
 
-    // Partition orders for this rider
-    val pendingOrders = remember(appState.orders, activeRider.id) {
+    val riderHubName = remember(appState.version, activeRider.pointId) {
+        appState.nodes.find { it.id == activeRider.pointId }?.name ?: activeRider.pointId
+    }
+
+    // Partition delivery orders and cylinder collection tasks for this rider
+    val pendingOrders = remember(appState.version, activeRider.id) {
         appState.orders.filter { isPendingForRider(it, activeRider.id) }
             .sortedByDescending { it.riderOfferedAt ?: it.createdAt }
     }
 
-    val activeOrders = remember(appState.orders, activeRider.id) {
+    val activeOrders = remember(appState.version, activeRider.id) {
         appState.orders.filter { isActiveForRider(it, activeRider.id) }
             .sortedWith(compareByDescending { ord ->
                 when (ord.status) {
@@ -177,22 +230,41 @@ fun RiderAppScreen(store: BlueGasStore) {
             })
     }
 
-    val completedOrders = remember(appState.orders, activeRider.id) {
+    val completedOrders = remember(appState.version, activeRider.id) {
         appState.orders.filter { isCompletedForRider(it, activeRider.id) }
             .sortedByDescending { it.completedAt ?: it.createdAt }
     }
 
+    val pendingCollections = remember(appState.version, activeRider.id) {
+        appState.returnCases.filter { isPendingCollectionForRider(it, activeRider.id) }
+            .sortedByDescending { it.openedAt }
+    }
+
+    val activeCollections = remember(appState.version, activeRider.id) {
+        appState.returnCases.filter { isActiveCollectionForRider(it, activeRider.id) }
+            .sortedByDescending { it.openedAt }
+    }
+
+    val completedCollections = remember(appState.version, activeRider.id) {
+        appState.returnCases.filter { isCompletedCollectionForRider(it, activeRider.id) }
+            .sortedByDescending { it.openedAt }
+    }
+
+    val pendingTotalCount = pendingOrders.size + pendingCollections.size
+    val activeTotalCount = activeOrders.size + activeCollections.size
+    val completedTotalCount = completedOrders.size + completedCollections.size
+
     // Calculate pending COD cash to hand over using store helper
-    val pendingCashPaisa = remember(appState.orders, appState.cashHandovers, appState.payments, activeRider.id) {
+    val pendingCashPaisa = remember(appState.version, activeRider.id) {
         store.ridersCashWaiting(activeRider.id).sumOf { it.amountReceivedPaisa ?: it.totalAmountPaisa }
     }
 
     // Count orders delivered on today's calendar date
-    val deliveredTodayCount = remember(completedOrders) {
+    val deliveredTodayCount = remember(appState.version, completedOrders) {
         completedOrders.count { it.completedAt != null && isToday(it.completedAt!!) }
     }
 
-    val pendingOutboxCount = remember(appState.riderOutbox) {
+    val pendingOutboxCount = remember(appState.version) {
         appState.riderOutbox.count { it.syncStatus == "PENDING" }
     }
 
@@ -280,8 +352,14 @@ fun RiderAppScreen(store: BlueGasStore) {
                                 }
 
                                 Text(
-                                    text = "${activeRider.zoneName} · ${if (activeRider.status == "ACTIVE") "On shift" else "Off shift"}",
+                                    text = riderHubName,
                                     fontSize = 11.sp,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = Color(0xFFE2E8F0)
+                                )
+                                Text(
+                                    text = "${activeRider.zoneName} · ${if (activeRider.status == "ACTIVE") "On shift" else "Off shift"}",
+                                    fontSize = 10.sp,
                                     color = Color(0xFFCBD5E1)
                                 )
                             }
@@ -582,8 +660,8 @@ fun RiderAppScreen(store: BlueGasStore) {
                             Row(verticalAlignment = Alignment.CenterVertically) {
                                 Text("Pending", fontSize = 13.sp)
                                 Spacer(modifier = Modifier.width(6.dp))
-                                Badge(containerColor = if (pendingOrders.isNotEmpty()) Color(0xFFDC2626) else Color(0xFF94A3B8)) {
-                                    Text("${pendingOrders.size}", color = Color.White, fontSize = 10.sp)
+                                Badge(containerColor = if (pendingTotalCount > 0) Color(0xFFDC2626) else Color(0xFF94A3B8)) {
+                                    Text("$pendingTotalCount", color = Color.White, fontSize = 10.sp)
                                 }
                             }
                         }
@@ -595,8 +673,8 @@ fun RiderAppScreen(store: BlueGasStore) {
                             Row(verticalAlignment = Alignment.CenterVertically) {
                                 Text("Active", fontSize = 13.sp)
                                 Spacer(modifier = Modifier.width(6.dp))
-                                Badge(containerColor = if (activeOrders.isNotEmpty()) BlueGasPrimary else Color(0xFF94A3B8)) {
-                                    Text("${activeOrders.size}", color = Color.White, fontSize = 10.sp)
+                                Badge(containerColor = if (activeTotalCount > 0) BlueGasPrimary else Color(0xFF94A3B8)) {
+                                    Text("$activeTotalCount", color = Color.White, fontSize = 10.sp)
                                 }
                             }
                         }
@@ -609,7 +687,7 @@ fun RiderAppScreen(store: BlueGasStore) {
                                 Text("Completed", fontSize = 13.sp)
                                 Spacer(modifier = Modifier.width(6.dp))
                                 Badge(containerColor = Color(0xFF166534)) {
-                                    Text("${completedOrders.size}", color = Color.White, fontSize = 10.sp)
+                                    Text("$completedTotalCount", color = Color.White, fontSize = 10.sp)
                                 }
                             }
                         }
@@ -626,16 +704,36 @@ fun RiderAppScreen(store: BlueGasStore) {
                 ) {
                     when (selectedTab) {
                         RiderTab.PENDING -> {
-                            if (pendingOrders.isEmpty()) {
+                            if (pendingTotalCount == 0) {
                                 item {
                                     EmptyStateView(
                                         icon = Icons.Default.AssignmentLate,
-                                        title = "No Pending Orders",
-                                        subtitle = "No new deliveries assigned to you right now."
+                                        title = "No Pending Tasks",
+                                        subtitle = "No new deliveries or collections assigned to you right now."
                                     )
                                 }
                             } else {
-                                items(pendingOrders) { ord ->
+                                items(pendingCollections, key = { "pending_col_${it.id}" }) { rc ->
+                                    PendingCollectionCard(
+                                        returnCase = rc,
+                                        snapshot = appState,
+                                        isOffline = appState.isRiderOffline,
+                                        onAccept = {
+                                            val (ok, msg) = store.riderAcceptReturn(rc.id, activeRider.id)
+                                            actionBanner = msg
+                                            isErrorBanner = !ok
+                                        },
+                                        onDecline = {
+                                            if (appState.isRiderOffline) {
+                                                actionBanner = "Collections need a connection. Switch Offline off to continue."
+                                                isErrorBanner = true
+                                            } else {
+                                                showDeclineReturnCaseId = rc.id
+                                            }
+                                        }
+                                    )
+                                }
+                                items(pendingOrders, key = { "pending_ord_${it.id}" }) { ord ->
                                     PendingOrderCard(
                                         order = ord,
                                         snapshot = appState,
@@ -653,16 +751,37 @@ fun RiderAppScreen(store: BlueGasStore) {
                         }
 
                         RiderTab.ACTIVE -> {
-                            if (activeOrders.isEmpty()) {
+                            if (activeTotalCount == 0) {
                                 item {
                                     EmptyStateView(
                                         icon = Icons.Default.DeliveryDining,
-                                        title = "No Active Deliveries",
-                                        subtitle = "No deliveries in progress."
+                                        title = "No Active Tasks",
+                                        subtitle = "No deliveries or collections in progress."
                                     )
                                 }
                             } else {
-                                items(activeOrders) { ord ->
+                                items(activeCollections, key = { "active_col_${it.id}" }) { rc ->
+                                    ActiveCollectionCard(
+                                        returnCase = rc,
+                                        hubName = riderHubName,
+                                        snapshot = appState,
+                                        isOffline = appState.isRiderOffline,
+                                        onCollectCylinder = {
+                                            if (appState.isRiderOffline) {
+                                                actionBanner = "Collections need a connection. Switch Offline off to continue."
+                                                isErrorBanner = true
+                                            } else {
+                                                showCollectReturnCaseId = rc.id
+                                            }
+                                        },
+                                        onHandInAtHub = {
+                                            val (ok, msg) = store.riderHandInReturn(rc.id, activeRider.id)
+                                            actionBanner = msg
+                                            isErrorBanner = !ok
+                                        }
+                                    )
+                                }
+                                items(activeOrders, key = { "active_ord_${it.id}" }) { ord ->
                                     ActiveOrderCard(
                                         order = ord,
                                         snapshot = appState,
@@ -695,16 +814,23 @@ fun RiderAppScreen(store: BlueGasStore) {
                         }
 
                         RiderTab.COMPLETED -> {
-                            if (completedOrders.isEmpty()) {
+                            if (completedTotalCount == 0) {
                                 item {
                                     EmptyStateView(
                                         icon = Icons.Default.CheckCircleOutline,
-                                        title = "No Completed Deliveries",
-                                        subtitle = "No completed deliveries yet."
+                                        title = "No Completed Tasks",
+                                        subtitle = "No completed deliveries or collections yet."
                                     )
                                 }
                             } else {
-                                items(completedOrders) { ord ->
+                                items(completedCollections, key = { "done_col_${it.id}" }) { rc ->
+                                    CompletedCollectionCard(
+                                        returnCase = rc,
+                                        hubName = riderHubName,
+                                        snapshot = appState
+                                    )
+                                }
+                                items(completedOrders, key = { "done_ord_${it.id}" }) { ord ->
                                     CompletedOrderCard(
                                         order = ord,
                                         snapshot = appState,
@@ -803,6 +929,110 @@ fun RiderAppScreen(store: BlueGasStore) {
                 }
             }
         )
+    }
+
+    // --- DIALOG 1B: DECLINE COLLECTION TASK DIALOG ---
+    if (showDeclineReturnCaseId != null) {
+        val rc = appState.returnCases.find { it.id == showDeclineReturnCaseId }
+        var chosenReason by remember(rc?.id) { mutableStateOf("Too far") }
+        var customReason by remember(rc?.id) { mutableStateOf("") }
+        val declineOptions = listOf("Too far", "Vehicle problem", "Off shift", "Other")
+
+        AlertDialog(
+            onDismissRequest = { showDeclineReturnCaseId = null },
+            title = {
+                Text("Decline Collection Task", fontWeight = FontWeight.Bold, fontSize = 16.sp)
+            },
+            text = {
+                if (rc == null) {
+                    Text(
+                        text = "This collection task is no longer available.",
+                        fontSize = 13.sp,
+                        color = Color(0xFF475569)
+                    )
+                } else {
+                    Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
+                        Text(
+                            text = "This cylinder collection will go back to Operations to assign to another rider.",
+                            fontSize = 12.sp,
+                            color = Color(0xFF475569),
+                            lineHeight = 16.sp
+                        )
+                        Spacer(modifier = Modifier.height(12.dp))
+                        Text("Select reason:", fontWeight = FontWeight.SemiBold, fontSize = 12.sp)
+                        Spacer(modifier = Modifier.height(6.dp))
+
+                        declineOptions.forEach { r ->
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable { chosenReason = r }
+                                    .padding(vertical = 4.dp)
+                            ) {
+                                RadioButton(selected = chosenReason == r, onClick = { chosenReason = r })
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text(r, fontSize = 13.sp)
+                            }
+                        }
+
+                        if (chosenReason == "Other") {
+                            Spacer(modifier = Modifier.height(6.dp))
+                            OutlinedTextField(
+                                value = customReason,
+                                onValueChange = { customReason = it },
+                                label = { Text("Please explain reason *") },
+                                modifier = Modifier.fillMaxWidth(),
+                                singleLine = true
+                            )
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                if (rc != null) {
+                    val effectiveReason = if (chosenReason == "Other") customReason.trim() else chosenReason
+                    Button(
+                        onClick = {
+                            val (ok, msg) = store.riderDeclineReturn(rc.id, activeRider.id, effectiveReason)
+                            actionBanner = msg
+                            isErrorBanner = !ok
+                            showDeclineReturnCaseId = null
+                        },
+                        enabled = chosenReason != "Other" || customReason.trim().isNotBlank(),
+                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFDC2626))
+                    ) {
+                        Text("Decline Task")
+                    }
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showDeclineReturnCaseId = null }) {
+                    Text(if (rc == null) "Close" else "Keep Task")
+                }
+            }
+        )
+    }
+
+    // --- DIALOG 1C: COLLECT RETURN CYLINDER DIALOG ---
+    if (showCollectReturnCaseId != null) {
+        val rc = appState.returnCases.find { it.id == showCollectReturnCaseId }
+        if (rc != null) {
+            val cyl = appState.cylinders.find { it.serialNumber == rc.cylinderSerial }
+            val sizeLabel = cyl?.let { "${it.weightKg} kg" } ?: "Cylinder"
+            CollectReturnDialog(
+                returnCase = rc,
+                expectedSizeLabel = sizeLabel,
+                riderId = activeRider.id,
+                store = store,
+                onDismiss = { showCollectReturnCaseId = null },
+                onCollected = { msg ->
+                    actionBanner = msg
+                    isErrorBanner = false
+                    showCollectReturnCaseId = null
+                }
+            )
+        }
     }
 
     // --- DIALOG 2: VERIFY CYLINDER SERIAL (S1.5a) ---
@@ -1087,16 +1317,16 @@ fun RiderAppScreen(store: BlueGasStore) {
 
                         Text("Hand over to:", fontSize = 12.sp, fontWeight = FontWeight.Medium)
                         Spacer(modifier = Modifier.height(4.dp))
-                        listOf("HUB", "Finance").forEach { r ->
+                        listOf("HUB" to "Hub cashier", "Finance" to "Finance").forEach { (value, label) ->
                             Row(
                                 verticalAlignment = Alignment.CenterVertically,
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .clickable { recipient = r }
+                                    .clickable { recipient = value }
                             ) {
-                                RadioButton(selected = recipient == r, onClick = { recipient = r })
+                                RadioButton(selected = recipient == value, onClick = { recipient = value })
                                 Spacer(modifier = Modifier.width(4.dp))
-                                Text(r, fontSize = 12.sp)
+                                Text(label, fontSize = 12.sp)
                             }
                         }
 
@@ -1110,7 +1340,7 @@ fun RiderAppScreen(store: BlueGasStore) {
                                     amountError = null
                                 }
                             },
-                            label = { Text("Declared Amount (PKR) *") },
+                            label = { Text("Cash handed over (including deposits)") },
                             modifier = Modifier.fillMaxWidth(),
                             singleLine = true
                         )
@@ -1140,7 +1370,7 @@ fun RiderAppScreen(store: BlueGasStore) {
                             value = notes,
                             onValueChange = { notes = it },
                             label = { Text(if (isDifference) "Reason for difference *" else "Notes (optional)") },
-                            placeholder = { Text(if (isDifference) "Reason for difference..." else "e.g. Handed to hub cashier") },
+                            placeholder = { Text(if (isDifference) "Reason for difference..." else "e.g. Handed to the hub cashier") },
                             modifier = Modifier.fillMaxWidth(),
                             singleLine = true
                         )
@@ -1485,15 +1715,15 @@ private fun PendingOrderCard(
             }
 
             Spacer(modifier = Modifier.height(4.dp))
-            // Cylinder & Depot lines (T8)
+            // Cylinder & Hub lines
             Text(
-                text = if (order.allocatedSerial != null) "Cylinder ${order.allocatedSerial} ready at the depot" else "Cylinder will be confirmed at the depot",
+                text = if (order.allocatedSerial != null) "Cylinder ${order.allocatedSerial} ready at the hub" else "Cylinder will be confirmed at the hub",
                 fontSize = 12.sp,
                 fontWeight = FontWeight.Medium,
                 color = BlueGasDark
             )
             Text(
-                text = "Depot: ${depotNode?.name ?: "Not available"}",
+                text = "Hub: ${depotNode?.name ?: "Not available"}",
                 fontSize = 11.sp,
                 color = Color(0xFF64748B)
             )
@@ -1982,7 +2212,10 @@ private fun CompletedOrderCard(
     val isCod = order.paymentMethod == PaymentMethod.CASH_ON_DELIVERY
 
     // Check cash handover reconciliation status
-    val isHandedOver = isCod && snapshot.cashHandovers.any { it.orderIds.contains(order.id) }
+    val latestHandover = remember(snapshot.version, order.id) {
+        snapshot.cashHandovers.lastOrNull { it.orderIds.contains(order.id) }
+    }
+    val isHandedOver = isCod && latestHandover != null
     val payment = snapshot.payments.find { it.orderId == order.id }
     val isReconciled = payment?.state == PaymentState.SETTLED
 
@@ -2038,6 +2271,13 @@ private fun CompletedOrderCard(
                 fontWeight = FontWeight.Bold,
                 color = if (isCod) Color(0xFFD97706) else Color(0xFF16A34A)
             )
+            if (order.orderType == OrderType.NEW_CYLINDER && order.depositTotalPaisa > 0L) {
+                Text(
+                    text = "includes refundable deposit ${formatRupees(order.depositTotalPaisa)}",
+                    fontSize = 11.sp,
+                    color = Color(0xFF475569)
+                )
+            }
 
             Text(
                 text = "Installation: ${order.installationResult?.displayName ?: "Completed"}",
@@ -2055,25 +2295,26 @@ private fun CompletedOrderCard(
             }
 
             if (isCod) {
+                val cashLabel = when {
+                    latestHandover != null -> riderCashStatusLabel(latestHandover)
+                    isReconciled -> "Reconciled"
+                    else -> "Cash not yet handed over"
+                }
                 Spacer(modifier = Modifier.height(4.dp))
                 Surface(
                     color = when {
-                        isReconciled -> Color(0xFFDCFCE7)
+                        isReconciled || cashLabel == "Reconciled" -> Color(0xFFDCFCE7)
                         isHandedOver -> Color(0xFFEFF6FF)
                         else -> Color(0xFFFEF3C7)
                     },
                     shape = RoundedCornerShape(4.dp)
                 ) {
                     Text(
-                        text = when {
-                            isReconciled -> "Payment reconciled by Finance"
-                            isHandedOver -> "Cash handed over — awaiting Finance"
-                            else -> "Cash not yet handed over"
-                        },
+                        text = cashLabel,
                         fontSize = 10.sp,
                         fontWeight = FontWeight.SemiBold,
                         color = when {
-                            isReconciled -> Color(0xFF166534)
+                            isReconciled || cashLabel == "Reconciled" -> Color(0xFF166534)
                             isHandedOver -> Color(0xFF1D4ED8)
                             else -> Color(0xFF92400E)
                         },
@@ -2126,5 +2367,324 @@ private fun EmptyStateView(
             color = Color(0xFF64748B),
             textAlign = androidx.compose.ui.text.style.TextAlign.Center
         )
+    }
+}
+
+@Composable
+private fun CylinderReturnPill() {
+    Surface(
+        color = Color(0xFFF3E8FF),
+        border = BorderStroke(1.dp, Color(0xFFD8B4FE)),
+        shape = RoundedCornerShape(6.dp)
+    ) {
+        Text(
+            text = "Cylinder return",
+            fontSize = 10.sp,
+            fontWeight = FontWeight.Bold,
+            color = Color(0xFF7E22CE),
+            modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
+        )
+    }
+}
+
+@Composable
+private fun PendingCollectionCard(
+    returnCase: ReturnRefundCase,
+    snapshot: SharedAppState,
+    isOffline: Boolean,
+    onAccept: () -> Unit,
+    onDecline: () -> Unit
+) {
+    val cust = snapshot.customers.find { it.id == returnCase.customerId }
+    val linkedOrder = snapshot.orders.find { it.id == returnCase.orderId }
+    val addr = snapshot.addresses.find { it.id == linkedOrder?.addressId }
+        ?: snapshot.addresses.firstOrNull { it.customerId == returnCase.customerId && it.isDefault }
+        ?: snapshot.addresses.firstOrNull { it.customerId == returnCase.customerId }
+    val cyl = snapshot.cylinders.find { it.serialNumber == returnCase.cylinderSerial }
+    val sizeLabel = cyl?.let { "${it.weightKg} kg cylinder" } ?: "BLUE GAS cylinder"
+    val fullAddress = listOfNotNull(
+        addr?.street?.takeIf { it.isNotBlank() },
+        addr?.area?.takeIf { it.isNotBlank() },
+        addr?.city?.takeIf { it.isNotBlank() }
+    ).joinToString(", ").ifBlank { "Customer address" }
+
+    Card(
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        border = BorderStroke(1.dp, Color(0xFFD8B4FE)),
+        shape = RoundedCornerShape(12.dp),
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 6.dp)
+            .testTag("pending_collection_card_${returnCase.id}")
+    ) {
+        Column(
+            modifier = Modifier.padding(14.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                CylinderReturnPill()
+                Text(
+                    text = sizeLabel,
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    color = Color(0xFF475569)
+                )
+            }
+
+            Text(
+                text = cust?.name ?: "Customer",
+                fontSize = 14.sp,
+                fontWeight = FontWeight.Bold,
+                color = BlueGasDark
+            )
+            Text(
+                text = fullAddress,
+                fontSize = 12.sp,
+                color = Color(0xFF475569),
+                lineHeight = 16.sp
+            )
+
+            if (!returnCase.preferredCollectionWindow.isNullOrBlank()) {
+                Text(
+                    text = "Customer prefers: ${returnCase.preferredCollectionWindow}",
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    color = Color(0xFF6B21A8)
+                )
+            }
+
+            if (isOffline) {
+                Text(
+                    text = "Collections need a connection. Switch Offline off to continue.",
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.Medium,
+                    color = Color(0xFF92400E)
+                )
+            }
+
+            Spacer(modifier = Modifier.height(2.dp))
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Button(
+                    onClick = onAccept,
+                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF16A34A)),
+                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp),
+                    modifier = Modifier
+                        .weight(1f)
+                        .heightIn(min = 48.dp)
+                        .testTag("accept_collection_btn_${returnCase.id}")
+                ) {
+                    Icon(Icons.Default.Check, contentDescription = null, modifier = Modifier.size(16.dp))
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text("Accept", fontSize = 12.sp)
+                }
+
+                OutlinedButton(
+                    onClick = onDecline,
+                    colors = ButtonDefaults.outlinedButtonColors(contentColor = Color(0xFFDC2626)),
+                    border = BorderStroke(1.dp, Color(0xFFDC2626)),
+                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp),
+                    modifier = Modifier
+                        .weight(1f)
+                        .heightIn(min = 48.dp)
+                        .testTag("decline_collection_btn_${returnCase.id}")
+                ) {
+                    Icon(Icons.Default.Close, contentDescription = null, modifier = Modifier.size(16.dp))
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text("Decline", fontSize = 12.sp)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ActiveCollectionCard(
+    returnCase: ReturnRefundCase,
+    hubName: String,
+    snapshot: SharedAppState,
+    isOffline: Boolean,
+    onCollectCylinder: () -> Unit,
+    onHandInAtHub: () -> Unit
+) {
+    val cust = snapshot.customers.find { it.id == returnCase.customerId }
+    val linkedOrder = snapshot.orders.find { it.id == returnCase.orderId }
+    val addr = snapshot.addresses.find { it.id == linkedOrder?.addressId }
+        ?: snapshot.addresses.firstOrNull { it.customerId == returnCase.customerId && it.isDefault }
+        ?: snapshot.addresses.firstOrNull { it.customerId == returnCase.customerId }
+    val cyl = snapshot.cylinders.find { it.serialNumber == returnCase.cylinderSerial }
+    val sizeLabel = cyl?.let { "${it.weightKg} kg cylinder" } ?: "BLUE GAS cylinder"
+    val fullAddress = listOfNotNull(
+        addr?.street?.takeIf { it.isNotBlank() },
+        addr?.area?.takeIf { it.isNotBlank() },
+        addr?.city?.takeIf { it.isNotBlank() }
+    ).joinToString(", ").ifBlank { "Customer address" }
+    val isCollected = returnCase.collectionTask == "COLLECTED"
+
+    Card(
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        border = BorderStroke(1.dp, Color(0xFFD8B4FE)),
+        shape = RoundedCornerShape(12.dp),
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 6.dp)
+            .testTag("active_collection_card_${returnCase.id}")
+    ) {
+        Column(
+            modifier = Modifier.padding(14.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                CylinderReturnPill()
+                Text(
+                    text = sizeLabel,
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    color = Color(0xFF475569)
+                )
+            }
+
+            Text(
+                text = cust?.name ?: "Customer",
+                fontSize = 14.sp,
+                fontWeight = FontWeight.Bold,
+                color = BlueGasDark
+            )
+
+            if (isCollected) {
+                Surface(
+                    color = Color(0xFFFAF5FF),
+                    shape = RoundedCornerShape(8.dp),
+                    border = BorderStroke(1.dp, Color(0xFFE9D5FF)),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text(
+                        text = "Take this cylinder to $hubName",
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        color = Color(0xFF6B21A8),
+                        modifier = Modifier.padding(10.dp)
+                    )
+                }
+            } else {
+                Text(
+                    text = fullAddress,
+                    fontSize = 12.sp,
+                    color = Color(0xFF475569),
+                    lineHeight = 16.sp
+                )
+                if (!returnCase.preferredCollectionWindow.isNullOrBlank()) {
+                    Text(
+                        text = "Customer prefers: ${returnCase.preferredCollectionWindow}",
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        color = Color(0xFF6B21A8)
+                    )
+                }
+            }
+
+            if (isOffline) {
+                Text(
+                    text = "Collections need a connection. Switch Offline off to continue.",
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.Medium,
+                    color = Color(0xFF92400E)
+                )
+            }
+
+            Spacer(modifier = Modifier.height(2.dp))
+            Button(
+                onClick = if (isCollected) onHandInAtHub else onCollectCylinder,
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = if (isCollected) Color(0xFF7E22CE) else BlueGasPrimary
+                ),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(min = 48.dp)
+                    .testTag(
+                        if (isCollected) "hand_in_collection_btn_${returnCase.id}"
+                        else "collect_cylinder_btn_${returnCase.id}"
+                    )
+            ) {
+                Icon(
+                    imageVector = if (isCollected) Icons.Default.Inventory else Icons.Default.QrCodeScanner,
+                    contentDescription = null,
+                    modifier = Modifier.size(16.dp)
+                )
+                Spacer(modifier = Modifier.width(6.dp))
+                Text(
+                    text = if (isCollected) "Hand in at hub" else "Collect cylinder",
+                    fontSize = 12.sp
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun CompletedCollectionCard(
+    returnCase: ReturnRefundCase,
+    hubName: String,
+    snapshot: SharedAppState
+) {
+    val cust = snapshot.customers.find { it.id == returnCase.customerId }
+    val cyl = snapshot.cylinders.find { it.serialNumber == returnCase.cylinderSerial }
+    val sizeLabel = cyl?.let { "${it.weightKg} kg cylinder" } ?: "BLUE GAS cylinder"
+    val handInTime = remember(snapshot.version, returnCase.id, returnCase.cylinderSerial) {
+        val ts = snapshot.cylinderCustodyEvents
+            .lastOrNull { it.serialNumber == returnCase.cylinderSerial && it.toCustody == CylinderCustody.HUB }
+            ?.timestamp ?: returnCase.openedAt
+        formatTimeOnly(ts)
+    }
+
+    Card(
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        border = BorderStroke(1.dp, Color(0xFFD8B4FE)),
+        shape = RoundedCornerShape(12.dp),
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 4.dp)
+            .testTag("completed_collection_card_${returnCase.id}")
+    ) {
+        Column(
+            modifier = Modifier.padding(14.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                CylinderReturnPill()
+                Text(
+                    text = sizeLabel,
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    color = Color(0xFF475569)
+                )
+            }
+            Text(
+                text = cust?.name ?: "Customer",
+                fontSize = 13.sp,
+                fontWeight = FontWeight.Bold,
+                color = BlueGasDark
+            )
+            Text(
+                text = "Handed in at $hubName · $handInTime",
+                fontSize = 12.sp,
+                color = Color(0xFF166534),
+                fontWeight = FontWeight.Medium
+            )
+        }
     }
 }

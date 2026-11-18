@@ -54,6 +54,15 @@ fun StaffOperationsScreen(
                 it.riderTaskStatus != RiderTaskStatus.ACCEPTED
         }
     }
+    val returnCollectionCases = remember(snapshot.version) {
+        snapshot.returnCases.filter { rc ->
+            rc.type == "CYLINDER_RETURN" &&
+                (rc.status == L6Status.RETURN_AUTHORIZED ||
+                    (rc.status == L6Status.AWAITING_ITEM_RETURN &&
+                        rc.collectionTask != "COLLECTED" &&
+                        rc.collectionTask != "AT_HUB"))
+        }
+    }
     val exceptionOrders = remember(snapshot.version) {
         snapshot.orders.filter { it.status == OrderStatus.ORD_EXC }
     }
@@ -103,7 +112,7 @@ fun StaffOperationsScreen(
             ) {
                 OperationsTab.entries.forEach { tab ->
                     val count = when (tab) {
-                        OperationsTab.DISPATCH -> dispatchOrders.size
+                        OperationsTab.DISPATCH -> dispatchOrders.size + returnCollectionCases.size
                         OperationsTab.EXCEPTIONS -> exceptionOrders.size
                         OperationsTab.PARTNERS -> pendingPartners.size
                         OperationsTab.ALL_ORDERS -> snapshot.orders.size
@@ -217,6 +226,42 @@ fun StaffOperationsScreen(
                         snapshot = snapshot,
                         onBanner = onBanner,
                         onSelectOrder = onSelectOrder
+                    )
+                }
+            }
+
+            item {
+                Spacer(modifier = Modifier.height(10.dp))
+                Text(
+                    text = "Cylinder return collections (${returnCollectionCases.size})",
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 13.sp,
+                    color = Color(0xFF0F172A)
+                )
+                Spacer(modifier = Modifier.height(4.dp))
+            }
+            if (returnCollectionCases.isEmpty()) {
+                item {
+                    Card(
+                        colors = CardDefaults.cardColors(containerColor = Color.White),
+                        border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFFE2E8F0)),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text(
+                            text = "No authorized cylinder return collections waiting for rider dispatch.",
+                            fontSize = 12.sp,
+                            color = Color.Gray,
+                            modifier = Modifier.padding(16.dp)
+                        )
+                    }
+                }
+            } else {
+                items(returnCollectionCases, key = { it.id }) { rc ->
+                    OperationsReturnCollectionCard(
+                        rc = rc,
+                        store = store,
+                        snapshot = snapshot,
+                        onBanner = onBanner
                     )
                 }
             }
@@ -996,6 +1041,190 @@ private fun OperationsDispatchCard(
                         text = if (order.riderTaskStatus == RiderTaskStatus.DECLINED) "Offer to another rider" else "Offer to rider",
                         fontSize = 12.sp
                     )
+                }
+            }
+        }
+    }
+}
+
+/**
+ * Renders a Dispatch card for an authorized or pending cylinder return collection case (C3.3),
+ * letting Operations offer a qualified on-shift rider of the customer's hub via [offerReturnCollection].
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun OperationsReturnCollectionCard(
+    rc: ReturnRefundCase,
+    store: BlueGasStore,
+    snapshot: SharedAppState,
+    onBanner: StaffBanner
+) {
+    val customerAddress = remember(snapshot.version, rc.customerId, rc.orderId) {
+        val ordAddrId = snapshot.orders.find { it.id == rc.orderId }?.addressId
+        snapshot.addresses.find { it.id == ordAddrId }
+            ?: snapshot.addresses.find { it.customerId == rc.customerId && it.isDefault }
+            ?: snapshot.addresses.firstOrNull { it.customerId == rc.customerId }
+    }
+    val customerHubId = remember(snapshot.version, rc.id, customerAddress?.id) {
+        snapshot.orders.find { it.id == rc.orderId }?.fulfilmentPointId
+            ?: customerAddress?.servingPointId
+            ?: snapshot.serviceZones.find { it.id == customerAddress?.zoneId }?.servingPointIds?.firstOrNull()
+    }
+    val eligibleRiders = remember(snapshot.version, customerHubId) {
+        snapshot.riders.filter { r ->
+            (customerHubId == null || r.pointId == customerHubId) &&
+                r.onboardingStatus == "APPROVED" &&
+                r.status == "ACTIVE" &&
+                r.installationTrained
+        }
+    }
+    val declineReason = remember(snapshot.version, rc.id) {
+        snapshot.auditLogs
+            .lastOrNull { it.entityId == rc.id && it.action == "DECLINE_RETURN_COLLECTION" }
+            ?.details
+            ?.removePrefix("Declined: ")
+    }
+
+    var dropdownExpanded by remember { mutableStateOf(false) }
+    var selectedRiderId by remember(snapshot.version, rc.id) {
+        mutableStateOf(rc.collectionRiderId ?: "")
+    }
+    val selectedRider = remember(snapshot.version, selectedRiderId) {
+        eligibleRiders.find { it.id == selectedRiderId }
+    }
+
+    val (chipBg, chipFg, chipText) = when {
+        rc.collectionTask == "OFFERED" -> Triple(
+            Color(0xFFDBEAFE),
+            Color(0xFF1E40AF),
+            "Offered to ${snapshot.riderName(rc.collectionRiderId)}"
+        )
+        rc.collectionTask == "ACCEPTED" -> Triple(
+            Color(0xFFDCFCE7),
+            Color(0xFF166534),
+            "Accepted by ${snapshot.riderName(rc.collectionRiderId)}"
+        )
+        rc.status == L6Status.AWAITING_ITEM_RETURN && rc.collectionTask == null -> Triple(
+            Color(0xFFFEF3C7),
+            Color(0xFF92400E),
+            if (declineReason.isNullOrBlank()) "Declined" else "Declined: $declineReason"
+        )
+        else -> Triple(Color(0xFFF1F5F9), Color(0xFF334155), "Awaiting rider offer")
+    }
+
+    Card(
+        colors = CardDefaults.cardColors(containerColor = Color.White),
+        border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFFCBD5E1)),
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 4.dp)
+            .testTag("ops_return_dispatch_card_${rc.id}")
+    ) {
+        Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = "${snapshot.customerName(rc.customerId)} · ${rc.cylinderSerial ?: "No serial"}",
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 13.sp,
+                    color = Color(0xFF0F172A),
+                    modifier = Modifier.weight(1f)
+                )
+                Surface(color = chipBg, shape = RoundedCornerShape(6.dp)) {
+                    Text(
+                        text = chipText,
+                        fontSize = 10.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        color = chipFg,
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                    )
+                }
+            }
+
+            Text(
+                text = "Address: ${snapshot.addressLine(customerAddress?.id).ifBlank { "Customer address on file" }}",
+                fontSize = 11.sp,
+                color = Color(0xFF475569)
+            )
+            Text(
+                text = "Case ${rc.id} · Hub: ${snapshot.pointName(customerHubId)}",
+                fontSize = 11.sp,
+                color = Color(0xFF475569)
+            )
+            if (!rc.preferredCollectionWindow.isNullOrBlank()) {
+                Text(
+                    text = "Customer prefers: ${rc.preferredCollectionWindow}",
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.Medium,
+                    color = Color(0xFF1D4ED8)
+                )
+            }
+
+            if (rc.status == L6Status.RETURN_AUTHORIZED) {
+                if (eligibleRiders.isEmpty()) {
+                    Text(
+                        text = "No qualified on-shift trained riders at ${snapshot.pointName(customerHubId)}.",
+                        fontSize = 11.sp,
+                        color = Color(0xFFB45309)
+                    )
+                } else {
+                    ExposedDropdownMenuBox(
+                        expanded = dropdownExpanded,
+                        onExpandedChange = { dropdownExpanded = !dropdownExpanded }
+                    ) {
+                        OutlinedTextField(
+                            value = selectedRider?.let { "${it.name} · ${snapshot.pointName(it.pointId)}" } ?: "",
+                            onValueChange = {},
+                            readOnly = true,
+                            label = { Text("Select rider", fontSize = 11.sp) },
+                            placeholder = { Text("Choose an eligible rider", color = Color.Gray, fontSize = 11.sp) },
+                            trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = dropdownExpanded) },
+                            modifier = Modifier
+                                .menuAnchor()
+                                .fillMaxWidth()
+                                .testTag("ops_return_rider_dropdown_${rc.id}")
+                        )
+                        ExposedDropdownMenu(
+                            expanded = dropdownExpanded,
+                            onDismissRequest = { dropdownExpanded = false }
+                        ) {
+                            eligibleRiders.forEach { rider ->
+                                DropdownMenuItem(
+                                    text = { Text("${rider.name} · ${snapshot.pointName(rider.pointId)}", fontSize = 12.sp) },
+                                    onClick = {
+                                        selectedRiderId = rider.id
+                                        dropdownExpanded = false
+                                    }
+                                )
+                            }
+                        }
+                    }
+
+                    Button(
+                        onClick = {
+                            if (selectedRiderId.isBlank()) {
+                                onBanner("Choose a rider from the list first.", true)
+                            } else {
+                                onBanner.report(
+                                    store.offerReturnCollection(
+                                        caseId = rc.id,
+                                        riderId = selectedRiderId,
+                                        actor = AccountableRole.OPERATIONS.displayName
+                                    )
+                                )
+                            }
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = BlueGasPrimary),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(min = 48.dp)
+                            .testTag("ops_offer_return_btn_${rc.id}")
+                    ) {
+                        Text("Offer collection to rider", fontSize = 12.sp)
+                    }
                 }
             }
         }

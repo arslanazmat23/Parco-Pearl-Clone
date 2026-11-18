@@ -24,6 +24,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
@@ -34,14 +35,21 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.OffsetMapping
+import androidx.compose.ui.text.input.TransformedText
+import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.bluegas.data.BlueGasStore
 import com.example.bluegas.data.PricingEngine
+import com.example.bluegas.data.captureCnic
 import com.example.bluegas.data.confirmPaymentAndAdvance
 import com.example.bluegas.data.createOrder
+import com.example.bluegas.data.needsCnicForDeposit
 import com.example.bluegas.model.*
 import com.example.ui.theme.BlueGasDark
 import com.example.ui.theme.BlueGasPrimary
@@ -93,9 +101,14 @@ fun HomeScreen(
     var addAccessory by rememberSaveable { mutableStateOf(false) }
     var selectedPickupNodeId by rememberSaveable { mutableStateOf("") }
 
-    // Dialog state for payment execution
+    // Dialog state for payment execution, CNIC deposit capture, and deposit info sheet
     var createdOrderIdForPayment by remember { mutableStateOf<String?>(null) }
     var showPaymentGatewayDialog by remember { mutableStateOf(false) }
+    var showDepositInfoSheet by remember { mutableStateOf(false) }
+    var showCnicCaptureDialog by remember { mutableStateOf(false) }
+    var cnicDigitsInput by remember { mutableStateOf("") }
+    var cnicConsentChecked by remember { mutableStateOf(false) }
+    var cnicModalError by remember { mutableStateOf<String?>(null) }
 
     // Track active customer to ensure form resets only on actual customer switches
     var lastCustomerId by rememberSaveable { mutableStateOf(activeCustomer.id) }
@@ -246,7 +259,7 @@ fun HomeScreen(
                         )
                         Spacer(modifier = Modifier.height(4.dp))
                         Text(
-                            text = "Order LPG for doorstep delivery or depot pickup.",
+                            text = "Order LPG for doorstep delivery or hub pickup.",
                             fontSize = 11.sp,
                             color = Color(0xFF94A3B8)
                         )
@@ -465,14 +478,17 @@ fun HomeScreen(
                                 horizontalArrangement = Arrangement.SpaceBetween,
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
-                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    modifier = Modifier.weight(1f)
+                                ) {
                                     RadioButton(
                                         selected = isSelected,
                                         onClick = { selectedSku = pv.sku },
                                         colors = RadioButtonDefaults.colors(selectedColor = BlueGasPrimary)
                                     )
                                     Spacer(modifier = Modifier.width(6.dp))
-                                    Column {
+                                    Column(modifier = Modifier.weight(1f)) {
                                         Text(
                                             text = pv.name,
                                             fontWeight = FontWeight.Bold,
@@ -484,6 +500,14 @@ fun HomeScreen(
                                             fontSize = 11.sp,
                                             color = Color(0xFF64748B)
                                         )
+                                        if (orderType == OrderType.NEW_CYLINDER && depositPaisa > 0L) {
+                                            Text(
+                                                text = "Gas ${formatRupees(basePricePaisa)} + Refundable deposit ${formatRupees(depositPaisa)}",
+                                                fontSize = 11.sp,
+                                                fontWeight = FontWeight.Medium,
+                                                color = Color(0xFF92400E)
+                                            )
+                                        }
                                     }
                                 }
                                 Text(
@@ -619,7 +643,7 @@ fun HomeScreen(
                     FilterChip(
                         selected = isPickup,
                         onClick = { selectedMode = FulfilmentMode.PICKUP },
-                        label = { Text("Depot Pickup", fontSize = 11.sp) },
+                        label = { Text("Hub Pickup", fontSize = 11.sp) },
                         leadingIcon = {
                             Icon(Icons.Default.Storefront, contentDescription = null, modifier = Modifier.size(14.dp))
                         },
@@ -642,7 +666,7 @@ fun HomeScreen(
                             Icon(Icons.Default.Info, contentDescription = null, tint = Color(0xFFDC2626), modifier = Modifier.size(14.dp))
                             Spacer(modifier = Modifier.width(6.dp))
                             Text(
-                                text = "This address is outside the current delivery area. Depot pickup is available.",
+                                text = "This address is outside the current delivery area. Hub pickup is available.",
                                 fontSize = 10.sp,
                                 color = Color(0xFF991B1B)
                             )
@@ -717,7 +741,7 @@ fun HomeScreen(
                     Column(modifier = Modifier.padding(12.dp)) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Text(
-                                text = "Select Pickup Depot (${activeAddress.city})",
+                                text = "Select Pickup Hub (${activeAddress.city})",
                                 fontWeight = FontWeight.Bold,
                                 fontSize = 12.sp,
                                 color = Color(0xFF0F172A)
@@ -729,7 +753,7 @@ fun HomeScreen(
 
                         if (cityPickupNodes.isEmpty()) {
                             Text(
-                                text = "No depot is available in your city yet.",
+                                text = "No BLUE GAS hub is available in your city yet.",
                                 fontSize = 11.sp,
                                 color = Color(0xFFDC2626)
                             )
@@ -883,7 +907,7 @@ fun HomeScreen(
 
                     if (quote.depositTotalPaisa > 0) {
                         QuoteLineRow(
-                            label = "Cylinder Security Deposit",
+                            label = "Refundable security deposit",
                             value = formatRupees(quote.depositTotalPaisa),
                             isHighlight = true,
                             highlightColor = Color(0xFFB45309)
@@ -893,13 +917,28 @@ fun HomeScreen(
                             shape = RoundedCornerShape(4.dp),
                             modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)
                         ) {
-                            Text(
-                                text = "Security deposit — refund terms follow the BLUE GAS deposit policy (Q03). A deposit does not make you the owner.",
-                                fontSize = 9.sp,
-                                color = Color(0xFF92400E),
-                                modifier = Modifier.padding(6.dp),
-                                lineHeight = 13.sp
-                            )
+                            Column(modifier = Modifier.padding(6.dp)) {
+                                Text(
+                                    text = "Security deposit — refund terms follow the BLUE GAS deposit policy (Q03). A deposit does not make you the owner.",
+                                    fontSize = 10.sp,
+                                    color = Color(0xFF92400E),
+                                    lineHeight = 14.sp
+                                )
+                                TextButton(
+                                    onClick = { showDepositInfoSheet = true },
+                                    contentPadding = PaddingValues(horizontal = 0.dp, vertical = 2.dp),
+                                    modifier = Modifier
+                                        .heightIn(min = 32.dp)
+                                        .testTag("how_deposit_refunds_work_button")
+                                ) {
+                                    Text(
+                                        text = "How deposit refunds work",
+                                        fontSize = 11.sp,
+                                        fontWeight = FontWeight.SemiBold,
+                                        color = BlueGasPrimary
+                                    )
+                                }
+                            }
                         }
                     }
 
@@ -937,46 +976,54 @@ fun HomeScreen(
         }
 
         // Section 5: Place Order Button with double-tap protection
-        // Validates checkout eligibility based on delivery zone serviceability or depot selection.
+        // Validates checkout eligibility based on delivery zone serviceability or hub selection.
         // Disables the place order action while payment gateway modal is active to prevent duplicate orders.
         item {
             val isPickupValid = selectedMode == FulfilmentMode.PICKUP && cityPickupNodes.isNotEmpty() && selectedPickupNodeId.isNotEmpty()
             val isCheckoutAllowed = (selectedMode == FulfilmentMode.DELIVERY && activeAddress.isServiceable) || isPickupValid
 
+            fun placeOrderNow() {
+                val (newOrder, err) = store.createOrder(
+                    customerId = activeCustomer.id,
+                    addressId = activeAddress.id,
+                    fulfilmentMode = selectedMode,
+                    sku = selectedSku,
+                    quantity = quantity,
+                    includeDeposit = false,
+                    paymentMethod = paymentMethodChoice,
+                    orderType = orderType,
+                    pickupPointId = if (selectedMode == FulfilmentMode.PICKUP) selectedPickupNodeId else null,
+                    accessories = accessoriesList
+                )
+
+                if (err != null) {
+                    onActionMessage(err, true)
+                } else if (newOrder != null) {
+                    onOrderCreated(newOrder)
+                    onActionMessage("Order ${newOrder.id} placed.", false)
+
+                    if (paymentMethodChoice == PaymentMethod.ONLINE_HOSTED) {
+                        createdOrderIdForPayment = newOrder.id
+                        showPaymentGatewayDialog = true
+                    } else {
+                        // COD advances directly to Confirmed status
+                        val (codOk, codMsg) = store.confirmPaymentAndAdvance(newOrder.id, actor = activeCustomer.id)
+                        onActionMessage(codMsg, !codOk)
+                        onNavigateToOrders()
+                    }
+                }
+            }
+
             Column(modifier = Modifier.fillMaxWidth()) {
                 Button(
                     onClick = {
-                        val (newOrder, err) = store.createOrder(
-                            customerId = activeCustomer.id,
-                            addressId = activeAddress.id,
-                            fulfilmentMode = selectedMode,
-                            sku = selectedSku,
-                            quantity = quantity,
-                            // Note: includeDeposit = false is passed because cylinder deposits are governed
-                            // directly by orderType (NEW_CYLINDER) and platform settings (DEPOSIT vs SOLD),
-                            // rather than by a client-side boolean flag.
-                            includeDeposit = false,
-                            paymentMethod = paymentMethodChoice,
-                            orderType = orderType,
-                            pickupPointId = if (selectedMode == FulfilmentMode.PICKUP) selectedPickupNodeId else null,
-                            accessories = accessoriesList
-                        )
-
-                        if (err != null) {
-                            onActionMessage(err, true)
-                        } else if (newOrder != null) {
-                            onOrderCreated(newOrder)
-                            onActionMessage("Order ${newOrder.id} placed.", false)
-
-                            if (paymentMethodChoice == PaymentMethod.ONLINE_HOSTED) {
-                                createdOrderIdForPayment = newOrder.id
-                                showPaymentGatewayDialog = true
-                            } else {
-                                // COD advances directly to Confirmed status
-                                val (codOk, codMsg) = store.confirmPaymentAndAdvance(newOrder.id, actor = activeCustomer.id)
-                                onActionMessage(codMsg, !codOk)
-                                onNavigateToOrders()
-                            }
+                        if (store.needsCnicForDeposit(activeCustomer.id, orderType)) {
+                            cnicDigitsInput = ""
+                            cnicConsentChecked = false
+                            cnicModalError = null
+                            showCnicCaptureDialog = true
+                        } else {
+                            placeOrderNow()
                         }
                     },
                     modifier = Modifier
@@ -997,9 +1044,9 @@ fun HomeScreen(
 
                 if (!isCheckoutAllowed) {
                     val notAllowedText = if (selectedMode == FulfilmentMode.PICKUP && cityPickupNodes.isEmpty()) {
-                        "No depot is available in your city yet."
+                        "No BLUE GAS hub is available in your city yet."
                     } else {
-                        "Selected address is outside our delivery area. Switch to depot pickup above to proceed."
+                        "Selected address is outside our delivery area. Switch to hub pickup above to proceed."
                     }
                     Spacer(modifier = Modifier.height(4.dp))
                     Text(
@@ -1014,6 +1061,197 @@ fun HomeScreen(
         item {
             Spacer(modifier = Modifier.height(24.dp))
         }
+    }
+
+    // Refundable deposit explanation bottom sheet
+    if (showDepositInfoSheet) {
+        val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+        ModalBottomSheet(
+            onDismissRequest = { showDepositInfoSheet = false },
+            sheetState = sheetState
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 20.dp, vertical = 12.dp)
+                    .testTag("deposit_info_bottom_sheet"),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = "How deposit refunds work",
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 16.sp,
+                        color = Color(0xFF0F172A)
+                    )
+                    DemoValuePill("Demo value · Q03")
+                }
+                Text(
+                    text = "1. Cylinder custody: Your security deposit lets you hold a BLUE GAS cylinder. The cylinder itself remains BLUE GAS property.",
+                    fontSize = 12.sp,
+                    color = Color(0xFF334155),
+                    lineHeight = 17.sp
+                )
+                Text(
+                    text = "2. Refill exchanges: When ordering a refill, you hand over your empty cylinder in exchange for a filled one — your deposit automatically carries over.",
+                    fontSize = 12.sp,
+                    color = Color(0xFF334155),
+                    lineHeight = 17.sp
+                )
+                Text(
+                    text = "3. Returning a cylinder: Open Profile -> My cylinders and tap Return my cylinder. After our rider collects it and our hub checks its condition, your refundable deposit is refunded to you.",
+                    fontSize = 12.sp,
+                    color = Color(0xFF334155),
+                    lineHeight = 17.sp
+                )
+                Spacer(modifier = Modifier.height(4.dp))
+                Button(
+                    onClick = { showDepositInfoSheet = false },
+                    colors = ButtonDefaults.buttonColors(containerColor = BlueGasPrimary),
+                    modifier = Modifier.fillMaxWidth().height(48.dp)
+                ) {
+                    Text("Got it")
+                }
+                Spacer(modifier = Modifier.height(12.dp))
+            }
+        }
+    }
+
+    // CNIC capture modal for first-time deposit orders (Q18)
+    if (showCnicCaptureDialog) {
+        val formattedPreview = formatCnicDigits(cnicDigitsInput)
+        val isCnicValid = cnicDigitsInput.length == 13
+        AlertDialog(
+            onDismissRequest = { showCnicCaptureDialog = false },
+            title = {
+                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Text(
+                        text = "CNIC required for cylinder deposit",
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 15.sp
+                    )
+                    DemoValuePill("Demo value · Q18")
+                }
+            },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text(
+                        text = "Please provide your 13-digit CNIC before placing your first deposit order.",
+                        fontSize = 12.sp,
+                        color = Color(0xFF475569),
+                        lineHeight = 16.sp
+                    )
+                    OutlinedTextField(
+                        value = cnicDigitsInput,
+                        onValueChange = { raw ->
+                            val digits = raw.filter { it.isDigit() }.take(13)
+                            cnicDigitsInput = digits
+                            cnicModalError = null
+                        },
+                        label = { Text("CNIC (12345-1234567-1)") },
+                        placeholder = { Text("35201-1234567-1") },
+                        supportingText = {
+                            Text(
+                                text = if (cnicDigitsInput.isNotEmpty()) {
+                                    "CNIC: $formattedPreview (${cnicDigitsInput.length}/13 digits)"
+                                } else {
+                                    "Enter 13 digits — dashes are added automatically"
+                                },
+                                fontSize = 10.sp
+                            )
+                        },
+                        singleLine = true,
+                        visualTransformation = CnicVisualTransformation,
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("cnic_capture_input")
+                    )
+
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(min = 48.dp)
+                            .clickable { cnicConsentChecked = !cnicConsentChecked }
+                    ) {
+                        Checkbox(
+                            checked = cnicConsentChecked,
+                            onCheckedChange = { cnicConsentChecked = it },
+                            modifier = Modifier.testTag("cnic_capture_consent_checkbox")
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(
+                            text = "I agree BLUE GAS may store my CNIC for this refundable cylinder deposit",
+                            fontSize = 11.sp,
+                            color = Color(0xFF1E293B),
+                            lineHeight = 15.sp,
+                            modifier = Modifier.weight(1f)
+                        )
+                    }
+
+                    if (!cnicModalError.isNullOrBlank()) {
+                        Text(
+                            text = cnicModalError ?: "",
+                            fontSize = 11.sp,
+                            color = Color(0xFFDC2626)
+                        )
+                    }
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        val (ok, msg) = store.captureCnic(activeCustomer.id, formattedPreview)
+                        if (!ok) {
+                            cnicModalError = msg
+                        } else {
+                            showCnicCaptureDialog = false
+                            val (newOrder, err) = store.createOrder(
+                                customerId = activeCustomer.id,
+                                addressId = activeAddress.id,
+                                fulfilmentMode = selectedMode,
+                                sku = selectedSku,
+                                quantity = quantity,
+                                includeDeposit = false,
+                                paymentMethod = paymentMethodChoice,
+                                orderType = orderType,
+                                pickupPointId = if (selectedMode == FulfilmentMode.PICKUP) selectedPickupNodeId else null,
+                                accessories = accessoriesList
+                            )
+                            if (err != null) {
+                                onActionMessage(err, true)
+                            } else if (newOrder != null) {
+                                onOrderCreated(newOrder)
+                                onActionMessage("Order ${newOrder.id} placed.", false)
+                                if (paymentMethodChoice == PaymentMethod.ONLINE_HOSTED) {
+                                    createdOrderIdForPayment = newOrder.id
+                                    showPaymentGatewayDialog = true
+                                } else {
+                                    val (codOk, codMsg) = store.confirmPaymentAndAdvance(newOrder.id, actor = activeCustomer.id)
+                                    onActionMessage(codMsg, !codOk)
+                                    onNavigateToOrders()
+                                }
+                            }
+                        }
+                    },
+                    enabled = isCnicValid && cnicConsentChecked,
+                    colors = ButtonDefaults.buttonColors(containerColor = BlueGasPrimary),
+                    modifier = Modifier.testTag("cnic_capture_confirm_button")
+                ) {
+                    Text("Save & Place Order")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showCnicCaptureDialog = false }) {
+                    Text("Cancel")
+                }
+            }
+        )
     }
 
     // Shared Demo Payment Dialog
@@ -1032,6 +1270,43 @@ fun HomeScreen(
                 onNavigateToOrders()
             }
         )
+    }
+}
+
+private fun formatCnicDigits(digits: String): String {
+    val clean = digits.filter { it.isDigit() }.take(13)
+    return buildString {
+        clean.forEachIndexed { idx, ch ->
+            if (idx == 5 || idx == 12) append('-')
+            append(ch)
+        }
+    }
+}
+
+private object CnicVisualTransformation : VisualTransformation {
+    override fun filter(text: AnnotatedString): TransformedText {
+        val raw = text.text.take(13)
+        val formatted = formatCnicDigits(raw)
+        val offsetMapping = object : OffsetMapping {
+            override fun originalToTransformed(offset: Int): Int {
+                val o = offset.coerceIn(0, raw.length)
+                return when {
+                    o <= 5 -> o
+                    o <= 12 -> o + 1
+                    else -> o + 2
+                }
+            }
+
+            override fun transformedToOriginal(offset: Int): Int {
+                val f = offset.coerceIn(0, formatted.length)
+                return when {
+                    f <= 5 -> f
+                    f <= 13 -> (f - 1).coerceAtLeast(5)
+                    else -> (f - 2).coerceAtLeast(12)
+                }.coerceAtMost(raw.length)
+            }
+        }
+        return TransformedText(AnnotatedString(formatted), offsetMapping)
     }
 }
 

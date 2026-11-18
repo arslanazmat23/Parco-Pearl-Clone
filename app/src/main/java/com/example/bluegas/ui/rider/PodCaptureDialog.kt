@@ -1017,6 +1017,14 @@ fun PodCaptureDialog(
                                         label = "Payment",
                                         value = if (isCod) "Cash received: ${formatRupees(recPaisa)}" + (if (cashDifference != 0L) " (${if (cashDifference > 0) "Change: " else "Short: "}${formatRupees(kotlin.math.abs(cashDifference))})" else "") else "Paid online"
                                     )
+                                    if (order.orderType == OrderType.NEW_CYLINDER && order.depositTotalPaisa > 0L) {
+                                        Text(
+                                            text = "includes refundable deposit ${formatRupees(order.depositTotalPaisa)}",
+                                            fontSize = 11.sp,
+                                            color = Color(0xFF475569),
+                                            modifier = Modifier.padding(bottom = 4.dp)
+                                        )
+                                    }
                                     if (isCod && cashDifference != 0L && cashDifferenceReason.isNotBlank()) {
                                         ReviewSummaryRow(
                                             label = "Difference Reason",

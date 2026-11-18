@@ -590,20 +590,41 @@ private fun CustomerOrderCard(
                     fontWeight = FontWeight.Bold,
                     color = BlueGasPrimary
                 )
-                Surface(
-                    color = Color(0xFFF1F5F9),
-                    shape = RoundedCornerShape(4.dp)
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Text(
-                        text = when (order.paymentMethod) {
-                            PaymentMethod.ONLINE_HOSTED -> "Online payment"
-                            PaymentMethod.CASH_ON_DELIVERY -> "Cash on delivery"
-                        },
-                        fontSize = 10.sp,
-                        fontWeight = FontWeight.SemiBold,
-                        color = Color(0xFF475569),
-                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
-                    )
+                    if (order.status == OrderStatus.ORD_COMP && order.depositTotalPaisa > 0L) {
+                        Surface(
+                            color = Color(0xFFFEF3C7),
+                            shape = RoundedCornerShape(4.dp)
+                        ) {
+                            Text(
+                                text = "Deposit ${formatRupees(order.depositTotalPaisa)}",
+                                fontSize = 10.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                color = Color(0xFF92400E),
+                                modifier = Modifier
+                                    .padding(horizontal = 6.dp, vertical = 2.dp)
+                                    .testTag("order_deposit_chip_${order.id}")
+                            )
+                        }
+                    }
+                    Surface(
+                        color = Color(0xFFF1F5F9),
+                        shape = RoundedCornerShape(4.dp)
+                    ) {
+                        Text(
+                            text = when (order.paymentMethod) {
+                                PaymentMethod.ONLINE_HOSTED -> "Online payment"
+                                PaymentMethod.CASH_ON_DELIVERY -> "Cash on delivery"
+                            },
+                            fontSize = 10.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            color = Color(0xFF475569),
+                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                        )
+                    }
                 }
             }
 

@@ -266,3 +266,53 @@ fun BlueGasStore.setActiveCustomer(customerId: String): Pair<Boolean, String> {
     notifyChanged()
     return Pair(true, "Switched to ${cust.name}")
 }
+
+/**
+ * Returns true if placing an order of [orderType] for [customerId] requires capturing
+ * and recording the customer's CNIC against the deposit policy.
+ */
+fun BlueGasStore.needsCnicForDeposit(
+    customerId: String,
+    orderType: OrderType
+): Boolean {
+    if (orderType != OrderType.NEW_CYLINDER) return false
+    if (!settings.cnicRequiredForDeposit) return false
+    val cust = customers.find { it.id == customerId } ?: return false
+    return cust.cnicCapturedAt == null
+}
+
+/**
+ * Validates a 13-digit Pakistani CNIC (#####-#######-#), persists it on the customer record,
+ * stamps [Customer.cnicCapturedAt], and writes a governance audit entry.
+ */
+fun BlueGasStore.captureCnic(
+    customerId: String,
+    cnic: String
+): Pair<Boolean, String> {
+    val trimmed = cnic.trim()
+    val cnicPattern = Regex("^\\d{5}-\\d{7}-\\d$")
+    if (!cnicPattern.matches(trimmed)) {
+        return Pair(false, "Enter your 13-digit CNIC in 12345-1234567-1 format.")
+    }
+    val idx = customers.indexOfFirst { it.id == customerId }
+    if (idx == -1) {
+        return Pair(false, "Customer profile not found.")
+    }
+    val existing = customers[idx]
+    customers[idx] = existing.copy(
+        cnic = trimmed,
+        isCnicVerified = true,
+        cnicCapturedAt = System.currentTimeMillis()
+    )
+    logAudit(
+        entityType = "Customer",
+        entityId = customerId,
+        action = "CAPTURE_CNIC",
+        actor = existing.name,
+        role = AccountableRole.SUPPORT,
+        details = "Captured CNIC for cylinder deposit"
+    )
+    notifyChanged()
+    return Pair(true, "CNIC saved.")
+}
+

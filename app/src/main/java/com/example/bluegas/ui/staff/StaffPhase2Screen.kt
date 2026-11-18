@@ -287,7 +287,7 @@ fun StaffPhase2Screen(
                                     Text("Asset ${sur.id} (${sur.brand})", fontWeight = FontWeight.Bold, fontSize = 12.sp)
                                     Text(sur.status.name, fontSize = 9.sp, fontWeight = FontWeight.Bold, color = BlueGasPrimary)
                                 }
-                                Text("Serial: ${sur.serialText} • Location: Depot Quarantine", fontSize = 10.sp)
+                                Text("Serial: ${sur.serialText} • Location: Hub quarantine", fontSize = 10.sp)
 
                                 if (sur.status == SurrenderStatus.COLLECTED || sur.status == SurrenderStatus.RECEIVED_AT_DEPOT) {
                                     Spacer(modifier = Modifier.height(6.dp))

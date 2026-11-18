@@ -205,7 +205,7 @@ fun StaffPortalScreen(store: BlueGasStore) {
                     StaffSubRole.FINANCE -> StaffFinanceScreen(
                         store = store,
                         snapshot = snapshot,
-                        onBanner = { msg -> showBanner(msg, false) },
+                        onBanner = showBanner,
                         onSelectOrder = { selectedOrderForDetail = it }
                     )
                     StaffSubRole.COMMERCIAL -> StaffCommercialScreen(
@@ -216,7 +216,7 @@ fun StaffPortalScreen(store: BlueGasStore) {
                     StaffSubRole.SUPPORT -> StaffSupportScreen(
                         store = store,
                         snapshot = snapshot,
-                        onBanner = { msg -> showBanner(msg, false) },
+                        onBanner = showBanner,
                         onSelectOrder = { selectedOrderForDetail = it }
                     )
                     StaffSubRole.SAFETY_HSE -> StaffSafetyHseScreen(

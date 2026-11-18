@@ -139,6 +139,28 @@ fun BlueGasStore.processRefund(
     }
 }
 
+/**
+ * Automatically executes a pending refund via the platform system actor (e.g. post-capture cancel refunds).
+ * Suppresses internal Finance notifications on success so Finance is notified only on failure.
+ *
+ * @param refundId Target refund identifier.
+ * @return Pair of execution flag and outcome message.
+ */
+internal fun BlueGasStore.autoExecuteRefund(refundId: String): Pair<Boolean, String> {
+    val priorNotifIds = notifications.map { it.id }.toSet()
+    val res = processRefund(refundId, succeed = true, actor = "BLUE GAS platform (system)")
+    val refAfter = refunds.find { it.id == refundId }
+    if (res.first && refAfter?.state == PaymentState.FULLY_REFUNDED) {
+        notifications.removeAll {
+            it.id !in priorNotifIds &&
+                it.surface == AppSurface.STAFF &&
+                it.staffRole == StaffSubRole.FINANCE
+        }
+        notifyChanged()
+    }
+    return res
+}
+
 fun BlueGasStore.retryRefund(refundId: String): Pair<Boolean, String> {
     val refund = refunds.find { it.id == refundId }
         ?: return Pair(false, "Refund $refundId not found.")

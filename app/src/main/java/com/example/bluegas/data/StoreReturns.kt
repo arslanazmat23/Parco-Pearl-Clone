@@ -22,7 +22,8 @@ fun BlueGasStore.requestCylinderReturn(
     customerId: String,
     cylinderSerial: String,
     reason: String = "No longer needed",
-    actor: String = "Customer"
+    actor: String = "Customer",
+    preferredWindow: String? = null
 ): Pair<Boolean, String> {
     if (reason.isBlank()) {
         return Pair(false, "Reason is required.")
@@ -65,6 +66,7 @@ fun BlueGasStore.requestCylinderReturn(
         }
     }
 
+    val normalizedWindow = preferredWindow?.trim()?.ifBlank { null }
     val caseId = "CASE-RET-" + UUID.randomUUID().toString().take(6)
     val rrc = ReturnRefundCase(
         id = caseId,
@@ -75,7 +77,8 @@ fun BlueGasStore.requestCylinderReturn(
         type = "CYLINDER_RETURN",
         reason = reason,
         requestedAmountPaisa = depositAmount,
-        status = L6Status.CASE_OPENED
+        status = L6Status.CASE_OPENED,
+        preferredCollectionWindow = normalizedWindow
     )
     rrc.history.add(
         CaseHistory(
@@ -83,7 +86,11 @@ fun BlueGasStore.requestCylinderReturn(
             toStatus = L6Status.CASE_OPENED,
             actor = actor,
             role = AccountableRole.SUPPORT,
-            reason = "Cylinder return requested: $reason"
+            reason = if (normalizedWindow != null) {
+                "Cylinder return requested ($normalizedWindow): $reason"
+            } else {
+                "Cylinder return requested: $reason"
+            }
         )
     )
     returnCases.add(0, rrc)
@@ -128,8 +135,10 @@ fun BlueGasStore.offerReturnCollection(
     val caseItem = returnCases.find { it.id == caseId }
         ?: return Pair(false, "Return case $caseId not found.")
 
-    if (caseItem.status != L6Status.RETURN_AUTHORIZED) {
-        return Pair(false, "Collection can only be offered for cases in RETURN_AUTHORIZED state (current: ${caseItem.status}).")
+    val canOfferInitial = caseItem.status == L6Status.RETURN_AUTHORIZED
+    val canReofferDeclined = caseItem.status == L6Status.AWAITING_ITEM_RETURN && caseItem.collectionTask == null
+    if (!canOfferInitial && !canReofferDeclined) {
+        return Pair(false, "Collection can only be offered for cases in RETURN_AUTHORIZED state or unassigned awaiting return (current: ${caseItem.status}).")
     }
 
     val rider = riders.find { it.id == riderId }
@@ -137,17 +146,19 @@ fun BlueGasStore.offerReturnCollection(
         return Pair(false, "Rider must be active and approved.")
     }
 
+    if (canOfferInitial) {
+        val (moveOk, moveMsg) = moveCase(
+            caseId = caseId,
+            target = L6Status.AWAITING_ITEM_RETURN,
+            reason = "Collection offered to rider ${rider.name} ($riderId)",
+            actor = actor,
+            role = AccountableRole.OPERATIONS
+        )
+        if (!moveOk) return Pair(false, moveMsg)
+    }
+
     caseItem.collectionRiderId = riderId
     caseItem.collectionTask = "OFFERED"
-
-    val (moveOk, moveMsg) = moveCase(
-        caseId = caseId,
-        target = L6Status.AWAITING_ITEM_RETURN,
-        reason = "Collection offered to rider ${rider.name} ($riderId)",
-        actor = actor,
-        role = AccountableRole.OPERATIONS
-    )
-    if (!moveOk) return Pair(false, moveMsg)
 
     addNotification(
         surface = AppSurface.RIDER,
@@ -179,6 +190,9 @@ fun BlueGasStore.riderAcceptReturn(
     caseId: String,
     riderId: String
 ): Pair<Boolean, String> {
+    if (isRiderOffline) {
+        return Pair(false, "Collections need a connection. Switch Offline off to continue.")
+    }
     val caseItem = returnCases.find { it.id == caseId }
         ?: return Pair(false, "Return case $caseId not found.")
 
@@ -201,6 +215,9 @@ fun BlueGasStore.riderDeclineReturn(
     riderId: String,
     reason: String
 ): Pair<Boolean, String> {
+    if (isRiderOffline) {
+        return Pair(false, "Collections need a connection. Switch Offline off to continue.")
+    }
     if (reason.isBlank()) {
         return Pair(false, "Reason is required.")
     }
@@ -244,6 +261,9 @@ fun BlueGasStore.riderCollectCylinder(
     scannedSerial: String,
     photoCaptured: Boolean
 ): Pair<Boolean, String> {
+    if (isRiderOffline) {
+        return Pair(false, "Collections need a connection. Switch Offline off to continue.")
+    }
     val caseItem = returnCases.find { it.id == caseId }
         ?: return Pair(false, "Return case $caseId not found.")
 
@@ -297,6 +317,9 @@ fun BlueGasStore.riderHandInReturn(
     caseId: String,
     riderId: String
 ): Pair<Boolean, String> {
+    if (isRiderOffline) {
+        return Pair(false, "Collections need a connection. Switch Offline off to continue.")
+    }
     val caseItem = returnCases.find { it.id == caseId }
         ?: return Pair(false, "Return case $caseId not found.")
 

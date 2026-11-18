@@ -303,7 +303,7 @@ fun StaffSafetyHseScreen(
                     OutlinedTextField(
                         value = incidentSourceInput,
                         onValueChange = { incidentSourceInput = it },
-                        label = { Text("Source (e.g. Rider, Depot, Customer)") },
+                        label = { Text("Source (e.g. Rider, Hub, Customer)") },
                         modifier = Modifier.fillMaxWidth()
                     )
                     Spacer(modifier = Modifier.height(4.dp))

@@ -39,6 +39,9 @@ fun StaffAdminScreen(
     var maxQtyPerOrder by remember(currentSettings.maxQuantityPerOrder) { mutableStateOf(currentSettings.maxQuantityPerOrder.toString()) }
     var refillModelEnabled by remember(currentSettings.refillModel) { mutableStateOf(currentSettings.refillModel) }
     var phase2PreviewEnabled by remember(currentSettings.phase2PreviewEnabled) { mutableStateOf(currentSettings.phase2PreviewEnabled) }
+    var cnicRequiredForDeposit by remember(currentSettings.cnicRequiredForDeposit) { mutableStateOf(currentSettings.cnicRequiredForDeposit) }
+    var backupCylinderAllowed by remember(currentSettings.backupCylinderAllowed) { mutableStateOf(currentSettings.backupCylinderAllowed) }
+    var maxDepositCylindersPerSize by remember(currentSettings.maxDepositCylindersPerSize) { mutableStateOf(currentSettings.maxDepositCylindersPerSize.toString()) }
 
     LazyColumn(
         modifier = Modifier
@@ -167,9 +170,105 @@ fun StaffAdminScreen(
                                 Text("Phase 2 Brand Swap Preview Enabled", fontSize = 11.sp)
                             }
 
+                            Spacer(modifier = Modifier.height(8.dp))
+                            HorizontalDivider(color = Color(0xFFE2E8F0))
+                            Spacer(modifier = Modifier.height(8.dp))
+
+                            // 1. CNIC required for cylinder deposit
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Column(modifier = Modifier.weight(1f).padding(end = 8.dp)) {
+                                    Text(
+                                        text = "CNIC required for cylinder deposit",
+                                        fontWeight = FontWeight.SemiBold,
+                                        fontSize = 11.sp,
+                                        color = Color(0xFF1E293B)
+                                    )
+                                    Spacer(modifier = Modifier.height(2.dp))
+                                    Surface(color = Color(0xFFDBEAFE), shape = RoundedCornerShape(4.dp)) {
+                                        Text(
+                                            text = "Recommended — awaiting approval",
+                                            fontSize = 9.sp,
+                                            fontWeight = FontWeight.SemiBold,
+                                            color = Color(0xFF1D4ED8),
+                                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                        )
+                                    }
+                                }
+                                Switch(
+                                    checked = cnicRequiredForDeposit,
+                                    onCheckedChange = { cnicRequiredForDeposit = it },
+                                    modifier = Modifier.testTag("admin_cnic_deposit_switch")
+                                )
+                            }
+
+                            Spacer(modifier = Modifier.height(8.dp))
+
+                            // 2. Backup cylinder on deposit
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Column(modifier = Modifier.weight(1f).padding(end = 8.dp)) {
+                                    Text(
+                                        text = "Backup cylinder on deposit",
+                                        fontWeight = FontWeight.SemiBold,
+                                        fontSize = 11.sp,
+                                        color = Color(0xFF1E293B)
+                                    )
+                                    Spacer(modifier = Modifier.height(2.dp))
+                                    Surface(color = Color(0xFFE2E8F0), shape = RoundedCornerShape(4.dp)) {
+                                        Text(
+                                            text = "Demo value",
+                                            fontSize = 9.sp,
+                                            fontWeight = FontWeight.SemiBold,
+                                            color = Color(0xFF475569),
+                                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                        )
+                                    }
+                                }
+                                Switch(
+                                    checked = backupCylinderAllowed,
+                                    onCheckedChange = { backupCylinderAllowed = it },
+                                    modifier = Modifier.testTag("admin_backup_cylinder_switch")
+                                )
+                            }
+
+                            Spacer(modifier = Modifier.height(6.dp))
+
+                            // 3. Max deposit cylinders per size
+                            OutlinedTextField(
+                                value = maxDepositCylindersPerSize,
+                                onValueChange = { maxDepositCylindersPerSize = it },
+                                label = { Text("Max deposit cylinders per size [1-5]") },
+                                supportingText = {
+                                    Text(
+                                        text = if (backupCylinderAllowed) {
+                                            "Active limit per cylinder size (Demo value)"
+                                        } else {
+                                            "Used when backup cylinder on deposit is enabled; otherwise limit is 1"
+                                        },
+                                        fontSize = 10.sp
+                                    )
+                                },
+                                singleLine = true,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .testTag("admin_max_deposit_per_size_input")
+                            )
+
                             Spacer(modifier = Modifier.height(12.dp))
                             Button(
                                 onClick = {
+                                    val parsedMaxDeposits = maxDepositCylindersPerSize.trim().toIntOrNull()
+                                    if (parsedMaxDeposits == null || parsedMaxDeposits !in 1..5) {
+                                        onBanner("Max deposit cylinders per size must be between 1 and 5.")
+                                        return@Button
+                                    }
                                     val newSettings = currentSettings.copy(
                                         holdTtlMinutes = holdTtl.toIntOrNull() ?: currentSettings.holdTtlMinutes,
                                         hubAcceptanceWindowMins = acceptanceWindow.toIntOrNull() ?: currentSettings.hubAcceptanceWindowMins,
@@ -179,13 +278,18 @@ fun StaffAdminScreen(
                                         evidenceRetentionDays = evidenceRetentionDays.toIntOrNull() ?: currentSettings.evidenceRetentionDays,
                                         maxQuantityPerOrder = maxQtyPerOrder.toIntOrNull() ?: currentSettings.maxQuantityPerOrder,
                                         refillModel = refillModelEnabled,
-                                        phase2PreviewEnabled = phase2PreviewEnabled
+                                        phase2PreviewEnabled = phase2PreviewEnabled,
+                                        cnicRequiredForDeposit = cnicRequiredForDeposit,
+                                        backupCylinderAllowed = backupCylinderAllowed,
+                                        maxDepositCylindersPerSize = parsedMaxDeposits
                                     )
                                     val (ok, msg) = store.updateSettings(newSettings, "System Administrator")
                                     onBanner(msg)
                                 },
                                 colors = ButtonDefaults.buttonColors(containerColor = BlueGasPrimary),
-                                modifier = Modifier.fillMaxWidth()
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .testTag("admin_save_parameters_button")
                             ) {
                                 Text("Save Platform Parameters")
                             }
@@ -342,12 +446,6 @@ private fun ToBeOptionsReadOnlyCard(
 
     val expressText = "${if (settings.expressEnabled) "Enabled" else "Disabled"} • Fee: ${formatRupees(settings.expressFeePaisa)} • Target: ${settings.expressHours} hours"
 
-    val backupText = if (settings.backupCylinderAllowed) {
-        "Allowed (up to ${settings.maxDepositCylindersPerSize} per size)"
-    } else {
-        "Not allowed (limit 1 per size)"
-    }
-
     val hubMinimumsText = if (settings.hubMinimumFilled.isEmpty()) {
         "None configured"
     } else {
@@ -417,16 +515,6 @@ private fun ToBeOptionsReadOnlyCard(
             ToBeSettingRow(
                 label = "Free re-deliveries allowed",
                 value = "${settings.freeRedeliveries}",
-                isDemoValue = true
-            )
-            ToBeSettingRow(
-                label = "CNIC required for cylinder deposit",
-                value = if (settings.cnicRequiredForDeposit) "Yes" else "No",
-                isRecommended = true
-            )
-            ToBeSettingRow(
-                label = "Backup cylinder on deposit",
-                value = backupText,
                 isDemoValue = true
             )
             ToBeSettingRow(

@@ -76,16 +76,16 @@ fun buildReceiptRows(order: Order, snapshot: SharedAppState): List<ReceiptRow> {
             rows.add(ReceiptRow("Delivery address", "${address.street}, ${address.area}, ${address.city}"))
         }
     } else {
-        val depotId = order.pickupPointId ?: order.fulfilmentPointId
-        val depot = snapshot.nodes.find { it.id == depotId }
-        if (depot != null) {
-            rows.add(ReceiptRow("Pickup depot", "${depot.name}, ${depot.address}, ${depot.city}"))
+        val hubId = order.pickupPointId ?: order.fulfilmentPointId
+        val hubNode = snapshot.nodes.find { it.id == hubId }
+        if (hubNode != null) {
+            rows.add(ReceiptRow("Pickup hub", "${hubNode.name}, ${hubNode.address}, ${hubNode.city}"))
         }
     }
 
     // Fulfilment node servicing the order
-    val pointName = snapshot.nodes.find { it.id == order.fulfilmentPointId }?.name ?: order.fulfilmentPointId ?: "Depot"
-    val modeLabel = if (order.fulfilmentMode == FulfilmentMode.DELIVERY) "Doorstep delivery" else "Depot pickup"
+    val pointName = snapshot.nodes.find { it.id == order.fulfilmentPointId }?.name ?: order.fulfilmentPointId ?: "BLUE GAS hub"
+    val modeLabel = if (order.fulfilmentMode == FulfilmentMode.DELIVERY) "Doorstep delivery" else "Hub pickup"
     rows.add(ReceiptRow("Fulfilment", "$modeLabel · $pointName"))
 
     // Itemized lines
@@ -97,9 +97,9 @@ fun buildReceiptRows(order: Order, snapshot: SharedAppState): List<ReceiptRow> {
         rows.add(ReceiptRow(desc, formatRupees(lineTotal)))
     }
 
-    // Deposit: cylinder security deposit if present
+    // Deposit: refundable cylinder security deposit if present
     if (order.depositTotalPaisa > 0) {
-        rows.add(ReceiptRow("Cylinder security deposit", formatRupees(order.depositTotalPaisa)))
+        rows.add(ReceiptRow("Refundable security deposit", formatRupees(order.depositTotalPaisa)))
     }
 
     // Platform fee if non-zero
@@ -204,14 +204,19 @@ fun ReceiptDialog(
     onDismiss: () -> Unit
 ) {
     val context = LocalContext.current
-    val rows = remember(order, snapshot) { buildReceiptRows(order, snapshot) }
+    val rows = remember(order.id, snapshot.version) { buildReceiptRows(order, snapshot) }
 
-    val shareText = remember(rows) {
+    val shareText = remember(rows, order.depositTotalPaisa) {
         buildString {
             appendLine("BLUE GAS — Delivery Receipt")
             appendLine("================================")
             rows.forEach { row ->
                 appendLine("${row.label}: ${row.value}")
+            }
+            if (order.depositTotalPaisa > 0) {
+                appendLine("--------------------------------")
+                appendLine("Security deposit held by BLUE GAS — cylinder remains BLUE GAS property.")
+                appendLine("Refundable in full when the cylinder is returned in good condition (Q03).")
             }
             appendLine("================================")
             appendLine("Prices, fees and tax are demo settings pending client decisions (Q03, Q04, Q22, Q24).")
@@ -273,6 +278,23 @@ fun ReceiptDialog(
                             }
                         }
                     }
+                }
+
+                if (order.depositTotalPaisa > 0) {
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Text(
+                        text = "Security deposit held by BLUE GAS — cylinder remains BLUE GAS property.",
+                        fontSize = 10.sp,
+                        fontWeight = FontWeight.Medium,
+                        color = Color(0xFF92400E),
+                        lineHeight = 13.sp
+                    )
+                    Text(
+                        text = "Refundable in full when the cylinder is returned in good condition (Q03).",
+                        fontSize = 10.sp,
+                        color = Color(0xFF92400E),
+                        lineHeight = 13.sp
+                    )
                 }
 
                 Spacer(modifier = Modifier.height(8.dp))

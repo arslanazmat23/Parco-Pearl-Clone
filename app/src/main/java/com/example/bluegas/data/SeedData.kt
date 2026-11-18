@@ -51,7 +51,7 @@ internal fun BlueGasStore.seedAll() {
     stockBalances.add(StockBalance("NODE-LHR-1", "SKU-LPG-45-4", 4, 1, 0, 0, 4, 1))
 
     stockBalances.add(StockBalance("NODE-ISB-1", "SKU-LPG-11-8", 6, 1, 0, 0, 6, 1))
-    stockBalances.add(StockBalance("NODE-ISB-1", "SKU-LPG-45-4", 2, 0, 0, 0, 2, 0))
+    stockBalances.add(StockBalance("NODE-ISB-1", "SKU-LPG-45-4", 3, 0, 0, 0, 3, 0))
 
     stockBalances.add(StockBalance("PLANT-01", "SKU-LPG-11-8", 40, 10, 0, 0, 40, 10))
     stockBalances.add(StockBalance("PLANT-01", "SKU-LPG-45-4", 8, 2, 0, 0, 8, 2))
@@ -77,6 +77,10 @@ internal fun BlueGasStore.seedAll() {
     // NODE-ISB-1
     cylinders.add(Cylinder("BG-ISB-014", "SKU-LPG-11-8", 11.8, InventoryState.INV_AVAIL, CylinderCustody.HUB, "Islamabad Hub", pointId = "NODE-ISB-1", lastFillDate = fillDateDaysAgo(16), lastFillWeightKg = 11.8, nextTestDueDate = "2025-08-10"))
     cylinders.add(Cylinder("BG-ISB-118-001", "SKU-LPG-11-8", 11.8, InventoryState.INV_AVAIL, CylinderCustody.HUB, "Islamabad Hub", pointId = "NODE-ISB-1", lastFillDate = fillDateDaysAgo(7), lastFillWeightKg = 11.8, nextTestDueDate = "2030-06-15"))
+    cylinders.add(Cylinder("BG-ISB-118-002", "SKU-LPG-11-8", 11.8, InventoryState.INV_AVAIL, CylinderCustody.HUB, "Islamabad Hub", pointId = "NODE-ISB-1", lastFillDate = fillDateDaysAgo(3), lastFillWeightKg = 11.8, nextTestDueDate = "2029-11-20"))
+    cylinders.add(Cylinder("BG-ISB-118-003", "SKU-LPG-11-8", 11.8, InventoryState.INV_AVAIL, CylinderCustody.HUB, "Islamabad Hub", pointId = "NODE-ISB-1", lastFillDate = fillDateDaysAgo(5), lastFillWeightKg = 11.8, nextTestDueDate = "2030-03-10"))
+    cylinders.add(Cylinder("BG-ISB-118-004", "SKU-LPG-11-8", 11.8, InventoryState.INV_AVAIL, CylinderCustody.HUB, "Islamabad Hub", pointId = "NODE-ISB-1", lastFillDate = fillDateDaysAgo(9), lastFillWeightKg = 11.8, nextTestDueDate = "2030-09-25"))
+    cylinders.add(Cylinder("BG-ISB-118-005", "SKU-LPG-11-8", 11.8, InventoryState.INV_AVAIL, CylinderCustody.HUB, "Islamabad Hub", pointId = "NODE-ISB-1", lastFillDate = fillDateDaysAgo(11), lastFillWeightKg = 11.8, nextTestDueDate = "2031-01-18"))
 
     // PLANT-01
     for (i in 1..12) {
@@ -95,6 +99,56 @@ internal fun BlueGasStore.seedAll() {
                 lastFillDate = fillDateDaysAgo((i % 19) + 1),
                 lastFillWeightKg = 11.8,
                 nextTestDueDate = "$year-$month-15"
+            )
+        )
+    }
+
+    // 45.4 kg Cylinders across NODE-LHR-1 (4), NODE-ISB-1 (3), and PLANT-01 (4)
+    for (i in 1..4) {
+        cylinders.add(
+            Cylinder(
+                serialNumber = String.format("BG-LHR-454-%03d", i),
+                sku = "SKU-LPG-45-4",
+                weightKg = 45.4,
+                status = InventoryState.INV_AVAIL,
+                custody = CylinderCustody.HUB,
+                currentLocationLabel = "Lahore Hub",
+                pointId = "NODE-LHR-1",
+                lastFillDate = fillDateDaysAgo(i + 1),
+                lastFillWeightKg = 45.4,
+                nextTestDueDate = String.format("2029-%02d-15", i + 2)
+            )
+        )
+    }
+    for (i in 1..3) {
+        cylinders.add(
+            Cylinder(
+                serialNumber = String.format("BG-ISB-454-%03d", i),
+                sku = "SKU-LPG-45-4",
+                weightKg = 45.4,
+                status = InventoryState.INV_AVAIL,
+                custody = CylinderCustody.HUB,
+                currentLocationLabel = "Islamabad Hub",
+                pointId = "NODE-ISB-1",
+                lastFillDate = fillDateDaysAgo(i + 2),
+                lastFillWeightKg = 45.4,
+                nextTestDueDate = String.format("2030-%02d-15", i + 3)
+            )
+        )
+    }
+    for (i in 1..4) {
+        cylinders.add(
+            Cylinder(
+                serialNumber = String.format("BG-PLT-454-%03d", i),
+                sku = "SKU-LPG-45-4",
+                weightKg = 45.4,
+                status = InventoryState.INV_AVAIL,
+                custody = CylinderCustody.PLANT,
+                currentLocationLabel = "Plant Site",
+                pointId = "PLANT-01",
+                lastFillDate = fillDateDaysAgo(i + 3),
+                lastFillWeightKg = 45.4,
+                nextTestDueDate = String.format("2031-%02d-15", i + 4)
             )
         )
     }

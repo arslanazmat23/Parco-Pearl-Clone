@@ -18,6 +18,7 @@ package com.example.bluegas.ui.customer
 
 import android.content.Intent
 import android.net.Uri
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -26,6 +27,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -48,11 +50,13 @@ import com.example.bluegas.data.BlueGasStore
 import com.example.bluegas.data.addAddress
 import com.example.bluegas.data.markNotificationRead
 import com.example.bluegas.data.raiseSafetyConcern
+import com.example.bluegas.data.requestCylinderReturn
 import com.example.bluegas.data.setActiveCustomer
 import com.example.bluegas.data.setDefaultAddress
 import com.example.bluegas.model.*
 import com.example.ui.theme.BlueGasDark
 import com.example.ui.theme.BlueGasPrimary
+import kotlinx.coroutines.launch
 
 /**
  * Privacy masking rule for Pakistani National Identity Cards (CNIC).
@@ -75,7 +79,7 @@ fun maskCnic(cnic: String): String {
  * @param onActionMessage Customer notification banner callback receiving (message: String, isError: Boolean).
  * @param modifier Optional layout modifier.
  */
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
 fun ProfileScreen(
     store: BlueGasStore,
@@ -87,6 +91,11 @@ fun ProfileScreen(
     val activeCustomer = snapshot.activeCustomer ?: return
     val customerAddresses = snapshot.addresses.filter { it.customerId == activeCustomer.id }
     val customerHoldings = snapshot.customerHoldings.filter { it.customerId == activeCustomer.id }
+    val activeHoldings = customerHoldings.filter { it.status == "ACTIVE" && it.ownership != CylinderOwnership.RETURNED }
+    val returnedHoldings = customerHoldings.filter { it.status != "ACTIVE" || it.ownership == CylinderOwnership.RETURNED }
+    val customerReturnCases = snapshot.returnCases.filter {
+        it.customerId == activeCustomer.id && it.type == "CYLINDER_RETURN"
+    }.sortedByDescending { it.openedAt }
     val customerCases = snapshot.supportCases.filter { it.customerId == activeCustomer.id }
     val customerOrders = snapshot.orders.filter { it.customerId == activeCustomer.id }.sortedByDescending { it.createdAt }
     val customerOrdersCount = customerOrders.size
@@ -94,13 +103,23 @@ fun ProfileScreen(
     var showCustomerSwitchMenu by remember { mutableStateOf(false) }
     var showSafetyConcernDialog by remember { mutableStateOf(false) }
     var showAddAddressDialog by remember { mutableStateOf(false) }
+    var returnedExpanded by remember { mutableStateOf(false) }
+    var returnDialogSerial by remember { mutableStateOf<String?>(null) }
+    var returnReasonInput by remember { mutableStateOf("") }
+    var returnPreferredWindow by remember { mutableStateOf<String?>(null) }
 
-    val totalDepositPaidPaisa = customerHoldings.sumOf { it.depositPaisa }
+    val totalDepositPaidPaisa = activeHoldings
+        .filter { it.ownership == CylinderOwnership.DEPOSIT_HELD && !it.noDepositOnRecord }
+        .sumOf { it.depositPaisa }
 
     // Dialog state for rating a completed order (using shared RateOrderDialog)
     var ratingOrderId by remember { mutableStateOf<String?>(null) }
 
+    val listState = rememberLazyListState()
+    val coroutineScope = rememberCoroutineScope()
+
     LazyColumn(
+        state = listState,
         modifier = modifier
             .fillMaxSize()
             .padding(horizontal = 14.dp, vertical = 8.dp)
@@ -214,8 +233,8 @@ fun ProfileScreen(
                             Text("Orders Placed", fontSize = 10.sp, color = Color.Gray)
                         }
                         Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                            Text(customerHoldings.size.toString(), fontWeight = FontWeight.Bold, fontSize = 16.sp, color = Color(0xFF047857))
-                            Text("Held Cylinders", fontSize = 10.sp, color = Color.Gray)
+                            Text(activeHoldings.size.toString(), fontWeight = FontWeight.Bold, fontSize = 16.sp, color = Color(0xFF047857))
+                            Text("Cylinders Held", fontSize = 10.sp, color = Color.Gray)
                         }
                         Column(horizontalAlignment = Alignment.CenterHorizontally) {
                             Text(customerCases.size.toString(), fontWeight = FontWeight.Bold, fontSize = 16.sp, color = Color(0xFFD97706))
@@ -226,11 +245,7 @@ fun ProfileScreen(
             }
         }
 
-        // Cylinder holdings & deposit liabilities: tracks physical custody of cylinders held by the customer.
-        // Under the deposit model (Q03), holding a cylinder against a security deposit does NOT transfer ownership
-        // to the customer; the cylinder remains an asset of BLUE GAS and a deposit liability on the ledger.
-        // Each unit records the cylinder serial number, physical gas capacity in kg, and custody status.
-        // Serialized custody enables traceability through testing cycles, safety recertification, and asset returns.
+        // My cylinders card: tracks physical custody and refundable security deposits
         item {
             Card(
                 colors = CardDefaults.cardColors(containerColor = Color(0xFFFFFBEB)),
@@ -250,9 +265,9 @@ fun ProfileScreen(
                             Icon(Icons.Default.Inventory2, contentDescription = null, tint = Color(0xFFB45309), modifier = Modifier.size(18.dp))
                             Spacer(modifier = Modifier.width(6.dp))
                             Text(
-                                text = "Cylinder Holdings & Deposit Liabilities",
+                                text = "My cylinders",
                                 fontWeight = FontWeight.Bold,
-                                fontSize = 13.sp,
+                                fontSize = 14.sp,
                                 color = Color(0xFF78350F)
                             )
                         }
@@ -261,7 +276,7 @@ fun ProfileScreen(
                             shape = RoundedCornerShape(4.dp)
                         ) {
                             Text(
-                                text = "${customerHoldings.size} Units Held",
+                                text = "${activeHoldings.size} ${if (activeHoldings.size == 1) "cylinder" else "cylinders"}",
                                 fontSize = 10.sp,
                                 fontWeight = FontWeight.Bold,
                                 color = Color(0xFFB45309),
@@ -272,7 +287,7 @@ fun ProfileScreen(
 
                     Spacer(modifier = Modifier.height(6.dp))
                     Text(
-                        text = "Security deposits held: ${formatRupees(totalDepositPaidPaisa)}",
+                        text = "${activeHoldings.size} ${if (activeHoldings.size == 1) "cylinder" else "cylinders"} · Refundable deposits held: ${formatRupees(totalDepositPaidPaisa)}",
                         fontWeight = FontWeight.Bold,
                         fontSize = 12.sp,
                         color = Color(0xFF92400E)
@@ -285,7 +300,7 @@ fun ProfileScreen(
                     ) {
                         Column(modifier = Modifier.padding(8.dp)) {
                             Text(
-                                text = "A security deposit does not transfer ownership of the cylinder. Refund terms follow the BLUE GAS deposit policy.",
+                                text = "A security deposit lets you hold a BLUE GAS cylinder — the cylinder stays BLUE GAS property. Refund terms follow the BLUE GAS deposit policy.",
                                 fontSize = 10.sp,
                                 fontWeight = FontWeight.Medium,
                                 color = Color(0xFFB45309),
@@ -296,40 +311,56 @@ fun ProfileScreen(
                         }
                     }
 
-                    if (customerHoldings.isNotEmpty()) {
+                    if (activeHoldings.isEmpty()) {
                         Spacer(modifier = Modifier.height(8.dp))
-                        customerHoldings.forEach { holding ->
+                        Text(
+                            text = "You don't hold any BLUE GAS cylinders right now.",
+                            fontSize = 11.sp,
+                            color = Color(0xFF78350F)
+                        )
+                    } else {
+                        Spacer(modifier = Modifier.height(8.dp))
+                        activeHoldings.forEach { holding ->
                             val cyl = snapshot.cylinders.find { it.serialNumber == holding.cylinderSerial }
                             val sizeLabel = cyl?.let { "${it.weightKg} kg" }
-                            val ownershipLabel = when (holding.ownership) {
-                                CylinderOwnership.DEPOSIT_HELD -> "Deposit held"
-                                CylinderOwnership.LOANED -> "Loaned"
-                                CylinderOwnership.RETURNED -> "Returned/Released"
-                                CylinderOwnership.SURRENDERED_ASSET -> "Surrendered"
+                            val depAccount = snapshot.depositAccounts.firstOrNull {
+                                it.customerId == activeCustomer.id && it.cylinderSerial == holding.cylinderSerial
+                            }
+                            val depStatus = depAccount?.status ?: holding.depositStatus
+                            val hasOpenReturn = customerReturnCases.any {
+                                it.cylinderSerial == holding.cylinderSerial &&
+                                    it.status != L6Status.CASE_CLOSED &&
+                                    it.status != L6Status.RETURN_REJECTED &&
+                                    it.status != L6Status.REFUND_CONFIRMED
+                            }
+                            val custodyLine = when {
+                                holding.noDepositOnRecord || holding.ownership == CylinderOwnership.LOANED ->
+                                    "Dealer cylinder — no deposit on record"
+                                holding.ownership == CylinderOwnership.DEPOSIT_HELD ->
+                                    "Deposit ${formatRupees(holding.depositPaisa)} · ${customerDepositStatusLabel(depStatus)}"
+                                else -> "Surrendered — pending check"
                             }
 
                             Surface(
                                 color = Color.White,
-                                shape = RoundedCornerShape(6.dp),
+                                shape = RoundedCornerShape(8.dp),
                                 border = BorderStroke(0.5.dp, Color(0xFFFDE68A)),
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .padding(vertical = 2.dp)
+                                    .padding(vertical = 3.dp)
                             ) {
-                                Row(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .padding(horizontal = 8.dp, vertical = 6.dp),
-                                    horizontalArrangement = Arrangement.SpaceBetween,
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    Column {
-                                        Row(verticalAlignment = Alignment.CenterVertically) {
+                                Column(modifier = Modifier.padding(10.dp)) {
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
                                             Icon(Icons.Default.QrCode, contentDescription = null, tint = Color(0xFF78350F), modifier = Modifier.size(14.dp))
                                             Spacer(modifier = Modifier.width(4.dp))
                                             Text(
                                                 text = holding.cylinderSerial,
-                                                fontSize = 11.sp,
+                                                fontSize = 12.sp,
                                                 fontFamily = FontFamily.Monospace,
                                                 fontWeight = FontWeight.Bold
                                             )
@@ -349,18 +380,278 @@ fun ProfileScreen(
                                                 }
                                             }
                                         }
+                                        if (!holding.noDepositOnRecord && holding.depositPaisa > 0L) {
+                                            Text(
+                                                text = formatRupees(holding.depositPaisa),
+                                                fontSize = 12.sp,
+                                                fontWeight = FontWeight.Bold,
+                                                color = Color(0xFF78350F)
+                                            )
+                                        }
+                                    }
+                                    Spacer(modifier = Modifier.height(2.dp))
+                                    Text(
+                                        text = custodyLine,
+                                        fontSize = 11.sp,
+                                        color = Color(0xFF475569)
+                                    )
+                                    if (holding.ownership == CylinderOwnership.DEPOSIT_HELD || holding.ownership == CylinderOwnership.LOANED) {
+                                        Spacer(modifier = Modifier.height(6.dp))
+                                        OutlinedButton(
+                                            onClick = {
+                                                returnReasonInput = ""
+                                                returnPreferredWindow = customerReturnWindowOptions(snapshot.settings).firstOrNull()
+                                                returnDialogSerial = holding.cylinderSerial
+                                            },
+                                            enabled = !hasOpenReturn,
+                                            border = BorderStroke(1.dp, if (hasOpenReturn) Color(0xFFCBD5E1) else Color(0xFFB45309)),
+                                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .heightIn(min = 48.dp)
+                                                .testTag("return_cylinder_btn_${holding.cylinderSerial}")
+                                        ) {
+                                            Text(
+                                                text = if (hasOpenReturn) "Return requested" else "Return my cylinder",
+                                                fontSize = 12.sp,
+                                                fontWeight = FontWeight.SemiBold,
+                                                color = if (hasOpenReturn) Color(0xFF64748B) else Color(0xFF92400E)
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    if (returnedHoldings.isNotEmpty()) {
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .heightIn(min = 48.dp)
+                                .clickable { returnedExpanded = !returnedExpanded }
+                                .testTag("returned_cylinders_toggle"),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = "Returned cylinders (${returnedHoldings.size})",
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                color = Color(0xFF78350F)
+                            )
+                            Icon(
+                                imageVector = if (returnedExpanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
+                                contentDescription = if (returnedExpanded) "Collapse returned cylinders" else "Expand returned cylinders",
+                                tint = Color(0xFF78350F)
+                            )
+                        }
+                        AnimatedVisibility(visible = returnedExpanded) {
+                            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                returnedHoldings.forEach { rh ->
+                                    val cyl = snapshot.cylinders.find { it.serialNumber == rh.cylinderSerial }
+                                    val sizeLabel = cyl?.let { " · ${it.weightKg} kg" } ?: ""
+                                    val depStatus = snapshot.depositAccounts.firstOrNull {
+                                        it.customerId == activeCustomer.id && it.cylinderSerial == rh.cylinderSerial
+                                    }?.status ?: rh.depositStatus
+                                    Surface(
+                                        color = Color(0xFFFEFCE8),
+                                        shape = RoundedCornerShape(6.dp),
+                                        border = BorderStroke(0.5.dp, Color(0xFFFDE68A)),
+                                        modifier = Modifier.fillMaxWidth()
+                                    ) {
+                                        Row(
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .padding(8.dp),
+                                            horizontalArrangement = Arrangement.SpaceBetween,
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            Text(
+                                                text = "${rh.cylinderSerial}$sizeLabel",
+                                                fontSize = 11.sp,
+                                                fontFamily = FontFamily.Monospace,
+                                                color = Color(0xFF475569)
+                                            )
+                                            Text(
+                                                text = "Returned · ${customerDepositStatusLabel(depStatus)}",
+                                                fontSize = 10.sp,
+                                                fontWeight = FontWeight.Medium,
+                                                color = Color(0xFF166534)
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Plain-language Return progress stepper for active and recent cylinder returns
+        if (customerReturnCases.isNotEmpty()) {
+            item {
+                Card(
+                    colors = CardDefaults.cardColors(containerColor = Color.White),
+                    shape = RoundedCornerShape(12.dp),
+                    border = BorderStroke(1.dp, Color(0xFFE2E8F0)),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("customer_return_progress_card")
+                ) {
+                    Column(modifier = Modifier.padding(12.dp)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(Icons.Default.AssignmentReturn, contentDescription = null, tint = BlueGasPrimary, modifier = Modifier.size(18.dp))
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text(
+                                text = "Return progress",
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 13.sp,
+                                color = BlueGasDark
+                            )
+                        }
+                        Spacer(modifier = Modifier.height(8.dp))
+
+                        customerReturnCases.forEach { rc ->
+                            val linkedRefund = snapshot.refunds.firstOrNull { it.id == rc.linkedRefundId || it.linkedCaseId == rc.id }
+                            val progress = mapCustomerReturnProgress(rc, linkedRefund)
+                            Surface(
+                                color = Color(0xFFF8FAFC),
+                                shape = RoundedCornerShape(8.dp),
+                                border = BorderStroke(1.dp, Color(0xFFE2E8F0)),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(vertical = 4.dp)
+                            ) {
+                                Column(modifier = Modifier.padding(10.dp)) {
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
                                         Text(
-                                            text = "Ownership: $ownershipLabel",
+                                            text = "Cylinder ${rc.cylinderSerial ?: ""}",
+                                            fontWeight = FontWeight.Bold,
+                                            fontSize = 12.sp,
+                                            fontFamily = FontFamily.Monospace,
+                                            color = Color(0xFF0F172A)
+                                        )
+                                        if (rc.requestedAmountPaisa > 0L) {
+                                            Text(
+                                                text = "Deposit ${formatRupees(rc.requestedAmountPaisa)}",
+                                                fontSize = 11.sp,
+                                                fontWeight = FontWeight.SemiBold,
+                                                color = Color(0xFF166534)
+                                            )
+                                        }
+                                    }
+                                    if (!rc.preferredCollectionWindow.isNullOrBlank()) {
+                                        Text(
+                                            text = "Preferred time: ${rc.preferredCollectionWindow}",
                                             fontSize = 10.sp,
-                                            color = Color(0xFF64748B)
+                                            color = Color(0xFF475569)
                                         )
                                     }
-                                    Text(
-                                        text = "${formatRupees(holding.depositPaisa)} Deposit",
-                                        fontSize = 11.sp,
-                                        fontWeight = FontWeight.SemiBold,
-                                        color = Color(0xFF78350F)
-                                    )
+                                    Spacer(modifier = Modifier.height(6.dp))
+                                    if (progress.isRejected) {
+                                        Surface(
+                                            color = Color(0xFFFEF2F2),
+                                            shape = RoundedCornerShape(6.dp),
+                                            border = BorderStroke(1.dp, Color(0xFFFECACA)),
+                                            modifier = Modifier.fillMaxWidth()
+                                        ) {
+                                            Column(modifier = Modifier.padding(8.dp)) {
+                                                Text(
+                                                    text = "Request not accepted",
+                                                    fontSize = 12.sp,
+                                                    fontWeight = FontWeight.Bold,
+                                                    color = Color(0xFF991B1B)
+                                                )
+                                                val rejDetail = progress.statusDetail.removePrefix("Request not accepted").removePrefix(":").trim()
+                                                if (rejDetail.isNotBlank()) {
+                                                    Spacer(modifier = Modifier.height(2.dp))
+                                                    Text(
+                                                        text = rejDetail,
+                                                        fontSize = 11.sp,
+                                                        color = Color(0xFF7F1D1D)
+                                                    )
+                                                }
+                                            }
+                                        }
+                                    } else {
+                                        Text(
+                                            text = progress.statusDetail,
+                                            fontSize = 11.sp,
+                                            fontWeight = FontWeight.Medium,
+                                            color = if (rc.deductionPaisa > 0L && (rc.status == L6Status.REFUND_CONFIRMED || rc.status == L6Status.CASE_CLOSED)) {
+                                                Color(0xFFB45309)
+                                            } else {
+                                                BlueGasPrimary
+                                            }
+                                        )
+                                        if (rc.deductionPaisa > 0L && rc.status != L6Status.REFUND_CONFIRMED && rc.status != L6Status.CASE_CLOSED) {
+                                            Text(
+                                                text = "${formatRupees(rc.deductionPaisa)} was kept: ${rc.deductionReason ?: "Condition adjustment"}",
+                                                fontSize = 10.sp,
+                                                color = Color(0xFFB45309)
+                                            )
+                                        }
+
+                                        Spacer(modifier = Modifier.height(8.dp))
+                                        progress.stepTitles.forEachIndexed { idx, stepLabel ->
+                                            val isDone = idx < progress.currentStepIndex ||
+                                                (idx == progress.stepTitles.lastIndex && (rc.status == L6Status.REFUND_CONFIRMED || rc.status == L6Status.CASE_CLOSED))
+                                            val isCurrent = !isDone && idx == progress.currentStepIndex
+                                            Row(
+                                                verticalAlignment = Alignment.Top,
+                                                modifier = Modifier.fillMaxWidth()
+                                            ) {
+                                                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                                    Box(
+                                                        modifier = Modifier
+                                                            .size(18.dp)
+                                                            .clip(CircleShape)
+                                                            .background(
+                                                                when {
+                                                                    isDone -> Color(0xFF16A34A)
+                                                                    isCurrent -> BlueGasPrimary
+                                                                    else -> Color(0xFFE2E8F0)
+                                                                }
+                                                            ),
+                                                        contentAlignment = Alignment.Center
+                                                    ) {
+                                                        if (isDone) {
+                                                            Icon(Icons.Default.Check, contentDescription = null, tint = Color.White, modifier = Modifier.size(11.dp))
+                                                        } else {
+                                                            Text(
+                                                                text = (idx + 1).toString(),
+                                                                fontSize = 9.sp,
+                                                                fontWeight = FontWeight.Bold,
+                                                                color = if (isCurrent) Color.White else Color(0xFF64748B)
+                                                            )
+                                                        }
+                                                    }
+                                                    if (idx < progress.stepTitles.lastIndex) {
+                                                        Box(
+                                                            modifier = Modifier
+                                                                .width(2.dp)
+                                                                .height(12.dp)
+                                                                .background(if (isDone) Color(0xFF16A34A) else Color(0xFFE2E8F0))
+                                                        )
+                                                    }
+                                                }
+                                                Spacer(modifier = Modifier.width(8.dp))
+                                                Text(
+                                                    text = stepLabel,
+                                                    fontSize = 11.sp,
+                                                    fontWeight = if (isCurrent || isDone) FontWeight.SemiBold else FontWeight.Normal,
+                                                    color = if (isCurrent) BlueGasPrimary else if (isDone) Color(0xFF0F172A) else Color(0xFF94A3B8)
+                                                )
+                                            }
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -469,6 +760,24 @@ fun ProfileScreen(
                         Icon(Icons.Default.AddLocation, contentDescription = null, tint = BlueGasPrimary, modifier = Modifier.size(16.dp))
                         Spacer(modifier = Modifier.width(6.dp))
                         Text("Add New Address", fontSize = 12.sp, color = BlueGasPrimary, fontWeight = FontWeight.SemiBold)
+                    }
+
+                    Spacer(modifier = Modifier.height(6.dp))
+                    Surface(
+                        color = Color(0xFFF0F9FF),
+                        shape = RoundedCornerShape(6.dp),
+                        border = BorderStroke(1.dp, Color(0xFFBAE6FD)),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Column(modifier = Modifier.padding(8.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                            Text(
+                                text = "Moving home? Return any empty BLUE GAS cylinder before you move so your refundable security deposit can be released.",
+                                fontSize = 10.sp,
+                                color = Color(0xFF0369A1),
+                                lineHeight = 14.sp
+                            )
+                            DemoValuePill("Demo value · Q03")
+                        }
                     }
                 }
             }
@@ -662,12 +971,24 @@ fun ProfileScreen(
             }
 
             items(customerNotifications.take(10)) { notif ->
+                val notifIcon = when (notif.code) {
+                    "NTF-19" -> Icons.Default.Payments
+                    "NTF-20" -> Icons.Default.Inventory2
+                    "NTF-21" -> Icons.Default.VerifiedUser
+                    else -> Icons.Default.Notifications
+                }
+                val isCylinderNotif = notif.code in setOf("NTF-19", "NTF-20", "NTF-21")
                 Card(
                     modifier = Modifier
                         .fillMaxWidth()
                         .padding(vertical = 3.dp)
                         .clickable {
                             store.markNotificationRead(notif.id)
+                            if (isCylinderNotif) {
+                                coroutineScope.launch {
+                                    listState.animateScrollToItem(1)
+                                }
+                            }
                         },
                     colors = CardDefaults.cardColors(
                         containerColor = if (notif.isRead) Color.White else Color(0xFFEFF6FF)
@@ -686,8 +1007,14 @@ fun ProfileScreen(
                                 )
                                 Spacer(modifier = Modifier.width(6.dp))
                             }
-                            Text(notif.title, fontWeight = FontWeight.Bold, fontSize = 12.sp, color = BlueGasDark)
-                            Spacer(modifier = Modifier.weight(1f))
+                            Icon(
+                                imageVector = notifIcon,
+                                contentDescription = null,
+                                tint = BlueGasPrimary,
+                                modifier = Modifier.size(15.dp)
+                            )
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text(notif.title, fontWeight = FontWeight.Bold, fontSize = 12.sp, color = BlueGasDark, modifier = Modifier.weight(1f))
                             Text(formatTimestamp(notif.timestamp), fontSize = 9.sp, color = Color.Gray)
                         }
                         Text(notif.message, fontSize = 11.sp, color = Color(0xFF475569), modifier = Modifier.padding(top = 2.dp))
@@ -949,7 +1276,7 @@ fun ProfileScreen(
                         modifier = Modifier.fillMaxWidth()
                     ) {
                         Text(
-                            text = if (isServiceableZone) "✓ Serviceable delivery area" else "⚠️ Outside current delivery area (Depot pickup available)",
+                            text = if (isServiceableZone) "✓ Serviceable delivery area" else "⚠️ Outside current delivery area (Hub pickup available)",
                             fontSize = 10.sp,
                             color = if (isServiceableZone) Color(0xFF166534) else Color(0xFF991B1B),
                             modifier = Modifier.padding(6.dp),
@@ -972,7 +1299,7 @@ fun ProfileScreen(
             },
             confirmButton = {
                 // Address persistence: commits the new customer premises record to the shared store.
-                // Flags whether the selected zone qualifies for active doorstep courier delivery or requires depot self-pickup.
+                // Flags whether the selected zone qualifies for active doorstep courier delivery or requires hub self-pickup.
                 // If set as default, becomes the immediate destination for all future quotation sessions.
                 Button(
                     onClick = {
@@ -994,7 +1321,7 @@ fun ProfileScreen(
                             val msg = if (isServiceableZone) {
                                 "Address added. This area is in the delivery zone."
                             } else {
-                                "Address added. This address is outside the current delivery area — depot pickup is available."
+                                "Address added. This address is outside the current delivery area — hub pickup is available."
                             }
                             onActionMessage(msg, false)
                         } else {
@@ -1148,6 +1475,136 @@ fun ProfileScreen(
             },
             onDismiss = {
                 ratingOrderId = null
+            }
+        )
+    }
+
+    // Return my cylinder dialog with reason (200 char cap) and preferred collection time chips
+    val serialToReturn = returnDialogSerial
+    if (serialToReturn != null) {
+        val windowOptions = remember(snapshot.settings.deliveryWindowsHours, snapshot.settings.tomorrowWindowsEnabled) {
+            customerReturnWindowOptions(snapshot.settings)
+        }
+        val targetHolding = customerHoldings.find { it.cylinderSerial == serialToReturn }
+
+        AlertDialog(
+            onDismissRequest = { returnDialogSerial = null },
+            title = {
+                Text(
+                    text = "Return my cylinder",
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 15.sp
+                )
+            },
+            text = {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .verticalScroll(rememberScrollState())
+                        .imePadding(),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    Text(
+                        text = "Cylinder ID: $serialToReturn",
+                        fontFamily = FontFamily.Monospace,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 12.sp,
+                        color = Color(0xFF0F172A)
+                    )
+                    if (targetHolding != null && targetHolding.noDepositOnRecord) {
+                        Surface(
+                            color = Color(0xFFFEF3C7),
+                            shape = RoundedCornerShape(6.dp),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text(
+                                text = "This is a dealer cylinder with no deposit on record. You can return it, and our team will review its status.",
+                                fontSize = 11.sp,
+                                color = Color(0xFF92400E),
+                                modifier = Modifier.padding(8.dp)
+                            )
+                        }
+                    }
+
+                    OutlinedTextField(
+                        value = returnReasonInput,
+                        onValueChange = { if (it.length <= 200) returnReasonInput = it },
+                        label = { Text("Reason for returning *") },
+                        placeholder = { Text("e.g. Moving home, no longer needed") },
+                        supportingText = {
+                            Text("${returnReasonInput.length}/200", fontSize = 10.sp)
+                        },
+                        minLines = 2,
+                        maxLines = 4,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("return_reason_input")
+                    )
+
+                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Text(
+                            text = "Preferred collection time",
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            color = Color(0xFF0F172A)
+                        )
+                        Surface(color = Color(0xFFDBEAFE), shape = RoundedCornerShape(4.dp)) {
+                            Text(
+                                text = "Recommended — awaiting approval",
+                                fontSize = 9.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                color = Color(0xFF1D4ED8),
+                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                            )
+                        }
+                        FlowRow(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            verticalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            windowOptions.forEach { win ->
+                                val selected = returnPreferredWindow == win
+                                FilterChip(
+                                    selected = selected,
+                                    onClick = {
+                                        returnPreferredWindow = if (selected) null else win
+                                    },
+                                    label = { Text(win, fontSize = 10.sp) },
+                                    modifier = Modifier.heightIn(min = 36.dp)
+                                )
+                            }
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        val (ok, resMsg) = store.requestCylinderReturn(
+                            customerId = activeCustomer.id,
+                            cylinderSerial = serialToReturn,
+                            reason = returnReasonInput.trim(),
+                            actor = activeCustomer.name,
+                            preferredWindow = returnPreferredWindow
+                        )
+                        if (ok) {
+                            returnDialogSerial = null
+                            onActionMessage("Return request submitted ($resMsg).", false)
+                        } else {
+                            onActionMessage(resMsg, true)
+                        }
+                    },
+                    enabled = returnReasonInput.isNotBlank(),
+                    colors = ButtonDefaults.buttonColors(containerColor = BlueGasPrimary),
+                    modifier = Modifier.testTag("confirm_return_cylinder_button")
+                ) {
+                    Text("Submit Request")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { returnDialogSerial = null }) {
+                    Text("Cancel")
+                }
             }
         )
     }
