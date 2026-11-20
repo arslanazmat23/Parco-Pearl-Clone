@@ -547,7 +547,8 @@ data class Cylinder(
     val lastFillDate: String? = null,
     val lastFillWeightKg: Double? = null,
     val nextTestDueDate: String? = null,
-    var pendingHubScanIn: Boolean = false
+    var pendingHubScanIn: Boolean = false,
+    var plantStage: String? = null
 )
 
 data class CylinderCustodyEvent(
@@ -648,12 +649,17 @@ data class SupportCase(
     val id: String,
     val orderId: String? = null,
     val customerId: String,
-    val issueType: String, // "DELIVERY_DELAY", "OVERCHARGE", "CYLINDER_CONDITION", "RIDER_CONDUCT", "APP_PAYMENT", "OTHER"
+    val issueType: String, // "UNDERWEIGHT", "LEAKING_VALVE", "DELIVERY_DELAY", "OVERCHARGE", "RIDER_CONDUCT", "OTHER", etc.
     val description: String,
     var status: String = "OPEN", // "OPEN", "IN_PROGRESS", "RESOLVED"
     var resolutionNotes: String? = null,
     val raisedAt: Long = System.currentTimeMillis(),
-    var resolvedAt: Long? = null
+    var resolvedAt: Long? = null,
+    val reference: String? = null,
+    val photoAttached: Boolean = false,
+    var resolutionType: String? = null, // REFUND | REPLACE | EXPLAIN
+    var linkedReturnCaseId: String? = null,
+    var firstResponseAt: Long? = null
 )
 
 data class PartnerDocument(
@@ -805,7 +811,9 @@ data class Order(
     var returningSerial: String? = null,
     var notHomeRiderId: String? = null,
     var riderAtHubAt: Long? = null,
-    var complaintReference: String? = null
+    var complaintReference: String? = null,
+    var dispatchModeAtConfirm: DispatchMode? = null,
+    val declinedRiderIds: MutableList<String> = mutableListOf()
 )
 
 /**

@@ -33,9 +33,6 @@ fun BlueGasStore.approvePartner(
         if (targetPointId.isNullOrBlank()) {
             return Pair(false, "Home hub selection is required for rider onboarding.")
         }
-        if (!trainingDone) {
-            return Pair(false, "Record installation training first (Q27)")
-        }
 
         val hub = nodes.find { it.id == targetPointId && it.type == FulfilmentPointType.HUB }
             ?: return Pair(false, "Serving hub $targetPointId not found or is not a hub.")
@@ -57,27 +54,101 @@ fun BlueGasStore.approvePartner(
             vehicleNumber = app.vehicleOrShopDetails,
             status = "ACTIVE",
             onboardingStatus = "APPROVED",
-            installationTrained = true
+            installationTrained = trainingDone
         )
         riders.add(newRider)
 
         app.status = "APPROVED"
         app.decidedBy = actor
-        app.decidedAt = System.currentTimeMillis()
+        app.decidedAt = clock()
 
+        val ntfChannels = if (settings.smsEnabled) listOf(NotifyChannel.PUSH, NotifyChannel.SMS) else listOf(NotifyChannel.PUSH)
         addNotification(
             surface = AppSurface.STAFF,
             title = "Rider Partner Approved",
-            message = "Rider ${app.applicantName} approved for ${hub.name}.",
+            message = "Rider ${app.applicantName} approved for ${hub.name}." +
+                if (!trainingDone) " Installation checklist training pending." else "",
             canonicalStatus = "APPROVED",
             orderId = null,
             code = "NTF-14",
             staffRole = StaffSubRole.OPERATIONS
         )
-        logAudit("PartnerApplication", appId, "APPROVE_RIDER", actor, AccountableRole.OPERATIONS, "Approved rider $newRiderId for hub ${hub.id}")
+        addNotification(
+            surface = AppSurface.RIDER,
+            title = "Rider Application Approved",
+            message = if (trainingDone) {
+                "Your application ($appId) is approved at ${hub.name}. You are ready for jobs."
+            } else {
+                "Your application ($appId) is approved at ${hub.name}. Checklist training is pending before dispatch."
+            },
+            canonicalStatus = "APPROVED",
+            orderId = null,
+            code = "NTF-14",
+            channels = ntfChannels
+        )
+        logAudit(
+            entityType = "PartnerApplication",
+            entityId = appId,
+            action = "APPROVE_RIDER",
+            actor = actor,
+            role = AccountableRole.OPERATIONS,
+            details = "Approved rider $newRiderId for hub ${hub.id} (trainingDone=$trainingDone)"
+        )
         notifyChanged()
-        return Pair(true, "Rider ${app.applicantName} ($newRiderId) approved and active at ${hub.name}.")
+        return if (trainingDone) {
+            Pair(true, "Rider ${app.applicantName} ($newRiderId) approved and active at ${hub.name}.")
+        } else {
+            Pair(true, "Rider ${app.applicantName} ($newRiderId) approved at ${hub.name}. Checklist training pending before dispatch.")
+        }
     }
+}
+
+/**
+ * Certifies that an approved rider has completed safety & installation checklist training (Q27),
+ * allowing them to receive delivery offers and return collection assignments.
+ *
+ * @param riderId Target rider identifier.
+ * @param note Required completion / assessment note.
+ * @param actor Staff actor recording training completion.
+ * @return Pair of success flag and outcome message.
+ */
+fun BlueGasStore.markRiderTrainingDone(
+    riderId: String,
+    note: String,
+    actor: String = AccountableRole.OPERATIONS.displayName
+): Pair<Boolean, String> {
+    val idx = riders.indexOfFirst { it.id == riderId }
+    if (idx < 0) return Pair(false, "Rider $riderId not found.")
+    val cleanNote = note.trim()
+    if (cleanNote.isEmpty()) {
+        return Pair(false, "Please enter a training verification note.")
+    }
+    val rider = riders[idx]
+    if (rider.installationTrained) {
+        return Pair(false, "${rider.name} is already marked checklist trained.")
+    }
+
+    riders[idx] = rider.copy(installationTrained = true)
+    val ntfChannels = if (settings.smsEnabled) listOf(NotifyChannel.PUSH, NotifyChannel.SMS) else listOf(NotifyChannel.PUSH)
+    addNotification(
+        surface = AppSurface.RIDER,
+        title = "Checklist Training Complete",
+        message = "Safety and installation checklist training recorded for ${rider.name}. You are ready for jobs.",
+        canonicalStatus = "TRAINED",
+        orderId = null,
+        code = "NTF-14",
+        channels = ntfChannels
+    )
+    logAudit(
+        entityType = "Rider",
+        entityId = riderId,
+        action = "MARK_RIDER_TRAINING_DONE",
+        actor = actor,
+        role = AccountableRole.OPERATIONS,
+        details = cleanNote
+    )
+    notifyChanged()
+    return Pair(true, "Checklist training recorded for ${rider.name}.")
 }
 
 fun BlueGasStore.returnIncomplete(
@@ -94,8 +165,9 @@ fun BlueGasStore.returnIncomplete(
     app.status = "RETURNED_INCOMPLETE"
     app.decisionReason = "Missing: " + missingDocs.joinToString(", ")
     app.decidedBy = actor
-    app.decidedAt = System.currentTimeMillis()
+    app.decidedAt = clock()
 
+    val ntfChannels = if (settings.smsEnabled) listOf(NotifyChannel.PUSH, NotifyChannel.SMS) else listOf(NotifyChannel.PUSH)
     addNotification(
         surface = AppSurface.STAFF,
         title = "Partner Application Incomplete (EXC-24)",
@@ -104,6 +176,15 @@ fun BlueGasStore.returnIncomplete(
         orderId = null,
         code = "NTF-14",
         staffRole = StaffSubRole.OPERATIONS
+    )
+    addNotification(
+        surface = AppSurface.RIDER,
+        title = "Documents Needed ($appId)",
+        message = "Your rider application ($appId) was returned: ${app.decisionReason}",
+        canonicalStatus = "RETURNED_INCOMPLETE",
+        orderId = null,
+        code = "NTF-14",
+        channels = ntfChannels
     )
     logAudit("PartnerApplication", appId, "RETURN_INCOMPLETE", actor, AccountableRole.OPERATIONS, app.decisionReason ?: "")
     notifyChanged()
@@ -122,6 +203,7 @@ fun BlueGasStore.simulateApplicantResubmission(appId: String): Pair<Boolean, Str
         documents = completeDocs
     )
 
+    val ntfChannels = if (settings.smsEnabled) listOf(NotifyChannel.PUSH, NotifyChannel.SMS) else listOf(NotifyChannel.PUSH)
     addNotification(
         surface = AppSurface.STAFF,
         title = "Partner Re-submission Received",
@@ -130,6 +212,15 @@ fun BlueGasStore.simulateApplicantResubmission(appId: String): Pair<Boolean, Str
         orderId = null,
         code = "NTF-14",
         staffRole = StaffSubRole.OPERATIONS
+    )
+    addNotification(
+        surface = AppSurface.RIDER,
+        title = "Application Re-submitted ($appId)",
+        message = "Updated documents for $appId are now under review.",
+        canonicalStatus = "PENDING_APPROVAL",
+        orderId = null,
+        code = "NTF-14",
+        channels = ntfChannels
     )
     logAudit("PartnerApplication", appId, "RESUBMIT_DOCUMENTS", app.applicantName, AccountableRole.OPERATIONS, "Uploaded all requested documents")
     notifyChanged()
@@ -154,7 +245,18 @@ fun BlueGasStore.rejectPartner(
     app.status = "REJECTED"
     app.decisionReason = reason
     app.decidedBy = actor
-    app.decidedAt = System.currentTimeMillis()
+    app.decidedAt = clock()
+
+    val ntfChannels = if (settings.smsEnabled) listOf(NotifyChannel.PUSH, NotifyChannel.SMS) else listOf(NotifyChannel.PUSH)
+    addNotification(
+        surface = AppSurface.RIDER,
+        title = "Application Not Approved ($appId)",
+        message = "Your rider application ($appId) was not approved: $reason",
+        canonicalStatus = "REJECTED",
+        orderId = null,
+        code = "NTF-14",
+        channels = ntfChannels
+    )
     logAudit("PartnerApplication", appId, "REJECT_PARTNER", actor, AccountableRole.OPERATIONS, reason)
     notifyChanged()
     return Pair(true, "Application for ${app.applicantName} rejected.")

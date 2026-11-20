@@ -23,7 +23,8 @@ fun BlueGasStore.createOrder(
     deliveryWindowLabel: String? = null,
     windowStartAt: Long? = null,
     windowEndAt: Long? = null,
-    serviceLevel: ServiceLevel = ServiceLevel.STANDARD
+    serviceLevel: ServiceLevel = ServiceLevel.STANDARD,
+    discountPaisa: Long = 0L
 ): Pair<Order?, String?> {
     val customer = customers.find { it.id == customerId }
         ?: return Pair(null, "Customer profile not found.")
@@ -115,6 +116,7 @@ fun BlueGasStore.createOrder(
         priceList = currentPriceList,
         tax = taxConfig,
         settings = settings,
+        discountPaisa = discountPaisa.coerceAtLeast(0L),
         serviceLevel = effectiveServiceLevel
     )
 
@@ -269,6 +271,7 @@ internal fun BlueGasStore.applyDeliveryPromise(order: Order, now: Long = clock()
 fun BlueGasStore.onConfirmed(order: Order) {
     val now = clock()
     order.confirmedAt = now
+    order.dispatchModeAtConfirm = settings.dispatchMode
     applyDeliveryPromise(order, now)
 
     val promiseModeWord = if (order.fulfilmentMode == FulfilmentMode.PICKUP) "pickup" else "delivery"
@@ -368,6 +371,10 @@ fun BlueGasStore.onConfirmed(order: Order) {
                 code = "NTF-03",
                 staffRole = StaffSubRole.HUB
             )
+
+            if (order.isAutoDispatchDelivery()) {
+                autoOfferRider(order.id)
+            }
         }
     } else {
         // No active hub found -> Fulfilment Exception EXC-05
@@ -460,6 +467,27 @@ fun BlueGasStore.processTimers() {
  * @param order Target order whose offer has timed out.
  */
 fun BlueGasStore.expireRiderOffer(order: Order) {
+    if (order.isAutoDispatchDelivery()) {
+        val expiredRiderId = order.assignedRiderId
+        if (expiredRiderId != null && expiredRiderId !in order.declinedRiderIds) {
+            order.declinedRiderIds.add(expiredRiderId)
+        }
+        order.riderTaskStatus = null
+        order.assignedRiderId = null
+        order.riderOfferedAt = null
+        order.riderCylinderVerified = false
+        logAudit(
+            "Order",
+            order.id,
+            "RIDER_OFFER_EXPIRED",
+            "System Timer",
+            AccountableRole.OPERATIONS,
+            "Rider offer expired without acceptance within ${settings.riderAcceptanceWindowMins}m window; trying next rider"
+        )
+        autoOfferRider(order.id)
+        return
+    }
+
     order.riderTaskStatus = RiderTaskStatus.DECLINED
     order.assignedRiderId = null
     order.riderOfferedAt = null
@@ -786,6 +814,11 @@ fun BlueGasStore.recoverException(
         order.riderTaskStatus = null
         order.riderCylinderVerified = false
         order.riderOfferedAt = null
+        order.riderAtHubAt = null
+        if (order.isAutoDispatchDelivery()) {
+            order.declinedRiderIds.clear()
+            autoOfferRider(order.id)
+        }
     } else if (target == OrderStatus.ORD_PREP) {
         // Release previous cylinder to allow re-allocation
         releaseOrderCylinder(order, actor, "reset to prep on $orderId")

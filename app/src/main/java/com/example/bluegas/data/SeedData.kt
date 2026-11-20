@@ -47,10 +47,10 @@ internal fun BlueGasStore.seedAll() {
     productVariants.add(ProductVariant("PV-4", "SKU-REG-HOSE", "Regulator & Steel Hose", "ACCESSORY", null, false, "Regulator and steel hose", "BLUE GAS", true))
 
     // 8. Stock Balances (filled, empty, held, reserved, openingFilled, openingEmpty)
-    stockBalances.add(StockBalance("NODE-LHR-1", "SKU-LPG-11-8", 12, 4, 0, 0, 12, 4))
+    stockBalances.add(StockBalance("NODE-LHR-1", "SKU-LPG-11-8", 13, 4, 0, 1, 13, 4))
     stockBalances.add(StockBalance("NODE-LHR-1", "SKU-LPG-45-4", 4, 1, 0, 0, 4, 1))
 
-    stockBalances.add(StockBalance("NODE-ISB-1", "SKU-LPG-11-8", 6, 1, 0, 0, 6, 1))
+    stockBalances.add(StockBalance("NODE-ISB-1", "SKU-LPG-11-8", 6, 1, 0, 1, 6, 1))
     stockBalances.add(StockBalance("NODE-ISB-1", "SKU-LPG-45-4", 3, 0, 0, 0, 3, 0))
 
     stockBalances.add(StockBalance("PLANT-01", "SKU-LPG-11-8", 40, 10, 0, 0, 40, 10))
@@ -69,6 +69,7 @@ internal fun BlueGasStore.seedAll() {
     cylinders.add(Cylinder("BG-LHR-118-002", "SKU-LPG-11-8", 11.8, InventoryState.INV_AVAIL, CylinderCustody.HUB, "Lahore Hub", pointId = "NODE-LHR-1", lastFillDate = fillDateDaysAgo(6), lastFillWeightKg = 11.8, nextTestDueDate = "2029-09-30"))
     cylinders.add(Cylinder("BG-LHR-118-003", "SKU-LPG-11-8", 11.8, InventoryState.INV_SERIAL, CylinderCustody.HUB, "Lahore Hub", allocatedOrderId = "ORD-SEED-106", pointId = "NODE-LHR-1", lastFillDate = fillDateDaysAgo(1), lastFillWeightKg = 11.8, nextTestDueDate = "2031-02-14"))
     cylinders.add(Cylinder("BG-LHR-118-004", "SKU-LPG-11-8", 11.8, InventoryState.INV_AVAIL, CylinderCustody.HUB, "Lahore Hub", pointId = "NODE-LHR-1", lastFillDate = fillDateDaysAgo(14), lastFillWeightKg = 11.8, nextTestDueDate = "2025-06-15"))
+    cylinders.add(Cylinder("BG-LHR-118-005", "SKU-LPG-11-8", 11.8, InventoryState.INV_SERIAL, CylinderCustody.RIDER_VAN, "With Rider (RIDER-002)", allocatedOrderId = "ORD-SEED-115", pointId = "NODE-LHR-1", lastFillDate = fillDateDaysAgo(2), lastFillWeightKg = 11.8, nextTestDueDate = "2030-10-15"))
     cylinders.add(Cylinder("BG-LHR-004", "SKU-LPG-11-8", 11.8, InventoryState.INV_CONSUMED, CylinderCustody.CUSTOMER_PREMISES, "With Customer (CUST-002)", pointId = "NODE-LHR-1", lastFillDate = fillDateDaysAgo(12), lastFillWeightKg = 11.8, nextTestDueDate = "2028-07-22"))
     // 2 untagged cylinders at NODE-LHR-1 (EXC-22)
     cylinders.add(Cylinder("BG-LHR-U01", "SKU-LPG-11-8", 11.8, InventoryState.INV_AVAIL, CylinderCustody.HUB, "Lahore Hub", isTagged = false, pointId = "NODE-LHR-1", lastFillDate = fillDateDaysAgo(9), lastFillWeightKg = 11.8, nextTestDueDate = "2029-12-01"))
@@ -98,7 +99,32 @@ internal fun BlueGasStore.seedAll() {
                 pointId = "PLANT-01",
                 lastFillDate = fillDateDaysAgo((i % 19) + 1),
                 lastFillWeightKg = 11.8,
-                nextTestDueDate = "$year-$month-15"
+                nextTestDueDate = "$year-$month-15",
+                plantStage = "FILLED"
+            )
+        )
+    }
+
+    // F1.6: 3 EMPTY_AT_PLANT (1 test-due) for 11.8 kg and 1 SENT_TO_RETEST
+    cylinders.add(Cylinder("BG-PLT-118-E01", "SKU-LPG-11-8", 11.8, InventoryState.INV_RELEASED, CylinderCustody.PLANT, "Plant Site", pointId = "PLANT-01", lastFillDate = fillDateDaysAgo(25), lastFillWeightKg = 11.8, nextTestDueDate = "2029-11-01", plantStage = "EMPTY_AT_PLANT"))
+    cylinders.add(Cylinder("BG-PLT-118-E02", "SKU-LPG-11-8", 11.8, InventoryState.INV_RELEASED, CylinderCustody.PLANT, "Plant Site", pointId = "PLANT-01", lastFillDate = fillDateDaysAgo(30), lastFillWeightKg = 11.8, nextTestDueDate = "2030-06-01", plantStage = "EMPTY_AT_PLANT"))
+    cylinders.add(Cylinder("BG-PLT-118-E03", "SKU-LPG-11-8", 11.8, InventoryState.INV_RELEASED, CylinderCustody.PLANT, "Plant Site", pointId = "PLANT-01", lastFillDate = fillDateDaysAgo(40), lastFillWeightKg = 11.8, nextTestDueDate = "2025-05-01", plantStage = "EMPTY_AT_PLANT"))
+    cylinders.add(Cylinder("BG-PLT-118-R01", "SKU-LPG-11-8", 11.8, InventoryState.INV_RELEASED, CylinderCustody.PLANT, "Plant Site", pointId = "PLANT-01", lastFillDate = fillDateDaysAgo(60), lastFillWeightKg = 11.8, nextTestDueDate = "2025-04-01", plantStage = "SENT_TO_RETEST"))
+
+    // 4 tagged empties in transit on TRF-0004 (EMPTIES_TO_PLANT)
+    for (i in 1..4) {
+        cylinders.add(
+            Cylinder(
+                serialNumber = String.format("BG-LHR-118-E%02d", i),
+                sku = "SKU-LPG-11-8",
+                weightKg = 11.8,
+                status = InventoryState.INV_TRANSIT,
+                custody = CylinderCustody.RIDER_VAN,
+                currentLocationLabel = "Empties return GP-E-2210",
+                pointId = "NODE-LHR-1",
+                lastFillDate = fillDateDaysAgo(20 + i),
+                lastFillWeightKg = 11.8,
+                nextTestDueDate = "2030-08-15"
             )
         )
     }
@@ -148,10 +174,16 @@ internal fun BlueGasStore.seedAll() {
                 pointId = "PLANT-01",
                 lastFillDate = fillDateDaysAgo(i + 3),
                 lastFillWeightKg = 45.4,
-                nextTestDueDate = String.format("2031-%02d-15", i + 4)
+                nextTestDueDate = String.format("2031-%02d-15", i + 4),
+                plantStage = "FILLED"
             )
         )
     }
+
+    // F1.6: 3 EMPTY_AT_PLANT (1 test-due) for 45.4 kg
+    cylinders.add(Cylinder("BG-PLT-454-E01", "SKU-LPG-45-4", 45.4, InventoryState.INV_RELEASED, CylinderCustody.PLANT, "Plant Site", pointId = "PLANT-01", lastFillDate = fillDateDaysAgo(22), lastFillWeightKg = 45.4, nextTestDueDate = "2030-07-15", plantStage = "EMPTY_AT_PLANT"))
+    cylinders.add(Cylinder("BG-PLT-454-E02", "SKU-LPG-45-4", 45.4, InventoryState.INV_RELEASED, CylinderCustody.PLANT, "Plant Site", pointId = "PLANT-01", lastFillDate = fillDateDaysAgo(28), lastFillWeightKg = 45.4, nextTestDueDate = "2031-03-20", plantStage = "EMPTY_AT_PLANT"))
+    cylinders.add(Cylinder("BG-PLT-454-E03", "SKU-LPG-45-4", 45.4, InventoryState.INV_RELEASED, CylinderCustody.PLANT, "Plant Site", pointId = "PLANT-01", lastFillDate = fillDateDaysAgo(35), lastFillWeightKg = 45.4, nextTestDueDate = "2025-05-01", plantStage = "EMPTY_AT_PLANT"))
 
     // Customer holdings & deposits (Ahmed Bilal: 11.8 kg on deposit; Usman Tariq: 11.8 kg loaned dealer cylinder)
     customerHoldings.add(
@@ -257,8 +289,14 @@ internal fun BlueGasStore.seedAll() {
     val p1 = currentPriceList
     val tax = taxConfig
 
-    fun quote(sku: String, qty: Int, mode: FulfilmentMode, type: OrderType = OrderType.REFILL_EXCHANGE): QuoteResult {
-        return PricingEngine.buildQuote(type, sku, qty, emptyList(), mode, p1, tax, settings)
+    fun quote(
+        sku: String,
+        qty: Int,
+        mode: FulfilmentMode,
+        type: OrderType = OrderType.REFILL_EXCHANGE,
+        discountPaisa: Long = 0L
+    ): QuoteResult {
+        return PricingEngine.buildQuote(type, sku, qty, emptyList(), mode, p1, tax, settings, discountPaisa = discountPaisa)
     }
 
     // Helper to seed history
@@ -676,6 +714,56 @@ internal fun BlueGasStore.seedAll() {
     deliveries.add(Delivery("DEL-SEED-113", "ORD-SEED-113", "RIDER-003", completedAt = now - 86400000L, podReference = "POD-SEED-113"))
     seedOrderHistory("ORD-SEED-113", listOf(OrderStatus.ORD_DRAFT, OrderStatus.ORD_CONF, OrderStatus.ORD_ASGN, OrderStatus.ORD_ACPT, OrderStatus.ORD_PREP, OrderStatus.ORD_DISP, OrderStatus.ORD_ATHO, OrderStatus.ORD_HOC, OrderStatus.ORD_COMP), 1440)
 
+    // ORD-SEED-114 (Linked to Route A Switch & Save claim CLM-SEED-02, Preparing at Islamabad Hub)
+    val q114 = quote("SKU-LPG-11-8", 1, FulfilmentMode.DELIVERY, OrderType.NEW_CYLINDER, discountPaisa = 150000L)
+    val o114 = Order(
+        id = "ORD-SEED-114",
+        customerId = "CUST-003",
+        addressId = "ADDR-004",
+        orderType = OrderType.NEW_CYLINDER,
+        fulfilmentMode = FulfilmentMode.DELIVERY,
+        fulfilmentPointId = "NODE-ISB-1",
+        status = OrderStatus.ORD_PREP,
+        items = q114.lines,
+        subtotalPaisa = q114.subtotalPaisa,
+        depositTotalPaisa = q114.depositTotalPaisa,
+        platformFeePaisa = q114.platformFeePaisa,
+        deliveryFeePaisa = q114.deliveryFeePaisa,
+        taxPaisa = q114.taxPaisa,
+        totalAmountPaisa = q114.totalAmountPaisa,
+        discountPaisa = q114.discountPaisa,
+        paymentMethod = PaymentMethod.ONLINE_HOSTED
+    )
+    orders.add(o114)
+    payments.add(Payment("PAY-SEED-114", "ORD-SEED-114", PaymentMethod.ONLINE_HOSTED, PaymentState.CAPTURED, o114.totalAmountPaisa, o114.totalAmountPaisa, o114.totalAmountPaisa, 0L, "PKR", "IDEMP-PAY-114"))
+    seedOrderHistory("ORD-SEED-114", listOf(OrderStatus.ORD_DRAFT, OrderStatus.ORD_PAYPEND, OrderStatus.ORD_CONF, OrderStatus.ORD_ASGN, OrderStatus.ORD_ACPT, OrderStatus.ORD_PREP), 18)
+
+    // ORD-SEED-115 (Linked to Route B Switch & Save claim CLM-SEED-01, Handover Complete ready for exchange closure)
+    val q115 = quote("SKU-LPG-11-8", 1, FulfilmentMode.DELIVERY, OrderType.NEW_CYLINDER, discountPaisa = 150000L)
+    val o115 = Order(
+        id = "ORD-SEED-115",
+        customerId = "CUST-001",
+        addressId = "ADDR-001",
+        orderType = OrderType.NEW_CYLINDER,
+        fulfilmentMode = FulfilmentMode.DELIVERY,
+        fulfilmentPointId = "NODE-LHR-1",
+        status = OrderStatus.ORD_HOC,
+        items = q115.lines,
+        subtotalPaisa = q115.subtotalPaisa,
+        depositTotalPaisa = q115.depositTotalPaisa,
+        platformFeePaisa = q115.platformFeePaisa,
+        deliveryFeePaisa = q115.deliveryFeePaisa,
+        taxPaisa = q115.taxPaisa,
+        totalAmountPaisa = q115.totalAmountPaisa,
+        discountPaisa = q115.discountPaisa,
+        paymentMethod = PaymentMethod.ONLINE_HOSTED,
+        allocatedSerial = "BG-LHR-118-005",
+        assignedRiderId = "RIDER-002"
+    )
+    orders.add(o115)
+    payments.add(Payment("PAY-SEED-115", "ORD-SEED-115", PaymentMethod.ONLINE_HOSTED, PaymentState.CAPTURED, o115.totalAmountPaisa, o115.totalAmountPaisa, o115.totalAmountPaisa, 0L, "PKR", "IDEMP-PAY-115"))
+    seedOrderHistory("ORD-SEED-115", listOf(OrderStatus.ORD_DRAFT, OrderStatus.ORD_PAYPEND, OrderStatus.ORD_CONF, OrderStatus.ORD_ASGN, OrderStatus.ORD_ACPT, OrderStatus.ORD_PREP, OrderStatus.ORD_DISP, OrderStatus.ORD_ATHO, OrderStatus.ORD_HOC), 35)
+
     // Resolved complaint on 113
     supportCases.add(
         SupportCase(
@@ -793,6 +881,7 @@ internal fun BlueGasStore.seedAll() {
             vehicleNo = "LEA-9012",
             driverName = "Usman Tariq",
             lines = listOf(TransferLine("SKU-LPG-11-8", 4)),
+            cylinderIds = listOf("BG-LHR-118-E01", "BG-LHR-118-E02", "BG-LHR-118-E03", "BG-LHR-118-E04"),
             dispatchedAt = now - 1800000L
         )
     )
@@ -885,18 +974,42 @@ internal fun BlueGasStore.seedAll() {
         )
     }
 
-    // 15. Phase 2 Preview Seeds
+    // 15. Phase 2 Preview Seeds (Route B PARCO Pearl Gas ready for inspection + Route A Noor LPG linked to ORD-SEED-114)
     val claim1 = ReplacementClaim(
         id = "CLM-SEED-01",
         customerId = "CUST-001",
-        declaredBrand = "Pak LPG",
+        declaredBrand = "PARCO Pearl Gas",
         declaredSize = "11.8 kg",
-        declaredSerial = "PAK-99120",
+        declaredSerial = "PARCO-99120",
         declaredCondition = "USED_INTACT",
-        status = ClaimStatus.EVIDENCE_SUBMITTED
+        status = ClaimStatus.SCHEDULED_FOR_HANDOVER,
+        provisionalOfferPaisa = 150000L,
+        linkedOrderId = "ORD-SEED-115",
+        route = "B"
     )
     claim1.history.add(ClaimHistory(ClaimStatus.DRAFT, ClaimStatus.EVIDENCE_SUBMITTED, "Ahmed Bilal", AccountableRole.COMMERCIAL, "Photo evidence and serial submitted"))
+    claim1.history.add(ClaimHistory(ClaimStatus.EVIDENCE_SUBMITTED, ClaimStatus.PROVISIONALLY_ELIGIBLE, AccountableRole.OPERATIONS.displayName, AccountableRole.OPERATIONS, "Eligible under PARCO Pearl Gas written return agreement"))
+    claim1.history.add(ClaimHistory(ClaimStatus.PROVISIONALLY_ELIGIBLE, ClaimStatus.PROVISIONAL_OFFER_ISSUED, AccountableRole.COMMERCIAL.displayName, AccountableRole.COMMERCIAL, "Route B offer issued"))
+    claim1.history.add(ClaimHistory(ClaimStatus.PROVISIONAL_OFFER_ISSUED, ClaimStatus.SCHEDULED_FOR_HANDOVER, AccountableRole.OPERATIONS.displayName, AccountableRole.OPERATIONS, "Scheduled with replacement order ORD-SEED-115"))
     replacementClaims.add(claim1)
+
+    val claim2 = ReplacementClaim(
+        id = "CLM-SEED-02",
+        customerId = "CUST-003",
+        declaredBrand = "Noor LPG",
+        declaredSize = "11.8 kg",
+        declaredSerial = "NOOR-4410",
+        declaredCondition = "USED_INTACT",
+        status = ClaimStatus.SCHEDULED_FOR_HANDOVER,
+        provisionalOfferPaisa = 150000L,
+        linkedOrderId = "ORD-SEED-114",
+        route = "A",
+        oldDepositSlipUploaded = true
+    )
+    claim2.history.add(ClaimHistory(ClaimStatus.DRAFT, ClaimStatus.EVIDENCE_SUBMITTED, "Zainab Raza", AccountableRole.COMMERCIAL, "Submitted Noor LPG cylinder details"))
+    claim2.history.add(ClaimHistory(ClaimStatus.EVIDENCE_SUBMITTED, ClaimStatus.PROVISIONALLY_ELIGIBLE, AccountableRole.OPERATIONS.displayName, AccountableRole.OPERATIONS, "Eligible under Route A — no BLUE GAS collection"))
+    claim2.history.add(ClaimHistory(ClaimStatus.PROVISIONAL_OFFER_ISSUED, ClaimStatus.SCHEDULED_FOR_HANDOVER, AccountableRole.OPERATIONS.displayName, AccountableRole.OPERATIONS, "Scheduled with replacement order ORD-SEED-114"))
+    replacementClaims.add(claim2)
 
     troubleshootingRequests.add(
         TroubleshootingRequest(

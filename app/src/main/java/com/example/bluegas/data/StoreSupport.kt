@@ -19,6 +19,7 @@ fun BlueGasStore.startComplaint(
         return Pair(false, "Complaint is already ${sc.status}.")
     }
 
+    if (sc.firstResponseAt == null) sc.firstResponseAt = clock()
     sc.status = "IN_PROGRESS"
     logAudit("SupportCase", caseId, "START_COMPLAINT", actor, AccountableRole.SUPPORT, "Investigation started")
 
@@ -33,6 +34,117 @@ fun BlueGasStore.startComplaint(
 
     notifyChanged()
     return Pair(true, "Complaint $caseId marked in progress.")
+}
+
+/**
+ * Resolves a customer complaint case with a structured outcome: REFUND (opens a linked L6
+ * REFUND_ONLY case while keeping the order Completed), REPLACE (records outcome and alerts
+ * Operations to arrange a replacement without auto-creating an order), or EXPLAIN (records note).
+ * Sets [SupportCase.firstResponseAt] if not yet recorded.
+ *
+ * @param caseId Support case identifier.
+ * @param type Resolution outcome code: "REFUND", "REPLACE", or "EXPLAIN".
+ * @param note Required staff explanation or resolution note.
+ * @param refundAmountPaisa Required refund amount in paisa when [type] is "REFUND".
+ * @param actor Staff actor resolving the complaint.
+ * @return Pair of success flag and outcome summary message.
+ */
+fun BlueGasStore.resolveComplaint(
+    caseId: String,
+    type: String,
+    note: String,
+    refundAmountPaisa: Long? = null,
+    actor: String = AccountableRole.SUPPORT.displayName
+): Pair<Boolean, String> {
+    val sc = supportCases.find { it.id == caseId }
+        ?: return Pair(false, "Support case $caseId not found.")
+
+    if (sc.status == "RESOLVED") {
+        return Pair(false, "Complaint $caseId is already resolved.")
+    }
+    val cleanNote = note.trim()
+    if (cleanNote.isEmpty()) {
+        return Pair(false, "A resolution note is required.")
+    }
+
+    val normalizedType = type.uppercase()
+    val now = clock()
+    val refDisplay = sc.reference ?: sc.id
+
+    when (normalizedType) {
+        "REFUND" -> {
+            val ordId = sc.orderId
+                ?: return Pair(false, "Refund requires a linked order on the complaint.")
+            val order = orders.find { it.id == ordId }
+                ?: return Pair(false, "Linked order $ordId not found.")
+            if (order.status != OrderStatus.ORD_COMP) {
+                return Pair(false, "Refund cases can only be opened for completed orders.")
+            }
+            val amt = refundAmountPaisa ?: 0L
+            if (amt <= 0L || amt > order.totalAmountPaisa) {
+                return Pair(false, "Refund amount must be between Re 1 and order total ${formatRupees(order.totalAmountPaisa)}.")
+            }
+            val (caseOk, caseMsg) = openReturnCase(
+                orderId = ordId,
+                type = "REFUND_ONLY",
+                reason = "Complaint $refDisplay: $cleanNote",
+                requestedAmountPaisa = amt,
+                actor = actor
+            )
+            if (!caseOk) return Pair(false, caseMsg)
+            val createdCase = returnCases.firstOrNull { it.orderId == ordId && it.type == "REFUND_ONLY" }
+            sc.linkedReturnCaseId = createdCase?.id
+            sc.resolutionType = "REFUND"
+            sc.resolutionNotes = "Refund case ${createdCase?.id ?: ""} opened (${formatRupees(amt)}): $cleanNote"
+        }
+
+        "REPLACE" -> {
+            val targetLabel = sc.orderId?.let { orderLabel(it) } ?: refDisplay
+            sc.resolutionType = "REPLACE"
+            sc.resolutionNotes = "Replacement requested: $cleanNote"
+            addNotification(
+                surface = AppSurface.STAFF,
+                title = "Replacement Requested",
+                message = "Arrange replacement for $targetLabel",
+                canonicalStatus = "RESOLVED",
+                orderId = sc.orderId,
+                code = "NTF-17",
+                staffRole = StaffSubRole.OPERATIONS
+            )
+        }
+
+        "EXPLAIN" -> {
+            sc.resolutionType = "EXPLAIN"
+            sc.resolutionNotes = cleanNote
+        }
+
+        else -> return Pair(false, "Unknown complaint resolution type: $type.")
+    }
+
+    if (sc.firstResponseAt == null) {
+        sc.firstResponseAt = now
+    }
+    sc.resolvedAt = now
+    sc.status = "RESOLVED"
+
+    logAudit(
+        entityType = "SupportCase",
+        entityId = caseId,
+        action = "RESOLVE_COMPLAINT_$normalizedType",
+        actor = actor,
+        role = AccountableRole.SUPPORT,
+        details = sc.resolutionNotes ?: cleanNote
+    )
+    addNotification(
+        surface = AppSurface.CUSTOMER,
+        title = "Complaint Resolved ($refDisplay)",
+        message = "Your complaint $refDisplay has been resolved: ${sc.resolutionNotes ?: cleanNote}",
+        canonicalStatus = "RESOLVED",
+        orderId = sc.orderId,
+        code = "NTF-17"
+    )
+    notifyChanged()
+    return Pair(true, "Complaint $refDisplay resolved ($normalizedType).")
 }
 
 fun BlueGasStore.openReturnCase(

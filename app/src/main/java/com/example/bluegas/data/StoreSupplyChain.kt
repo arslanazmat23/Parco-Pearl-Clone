@@ -12,7 +12,8 @@ import kotlin.math.abs
 fun BlueGasStore.requestStock(
     pointId: String,
     lines: Map<String, Int>,
-    actor: String = "Hub Staff"
+    actor: String = AccountableRole.HUB.displayName,
+    source: String = "HUB_REQUEST"
 ): Pair<Boolean, String> {
     val validLines = lines.filter { it.value > 0 }
     if (validLines.isEmpty()) {
@@ -37,7 +38,8 @@ fun BlueGasStore.requestStock(
         status = "REQUESTED",
         lines = transferLines,
         requestedBy = actor,
-        requestedAt = System.currentTimeMillis()
+        requestedAt = clock(),
+        source = source
     )
     stockTransfers.add(transfer)
 
@@ -264,7 +266,8 @@ fun BlueGasStore.requestEmptiesReturn(
     gatePassNo: String,
     vehicleNo: String,
     driverName: String,
-    actor: String = "Hub Staff"
+    actor: String = AccountableRole.HUB.displayName,
+    cylinderIds: List<String> = emptyList()
 ): Pair<Boolean, String> {
     val validLines = lines.filter { it.value > 0 }
     if (validLines.isEmpty()) {
@@ -299,7 +302,8 @@ fun BlueGasStore.requestEmptiesReturn(
         vehicleNo = vehicleNo,
         driverName = driverName,
         lines = transferLines,
-        dispatchedAt = System.currentTimeMillis()
+        cylinderIds = cylinderIds,
+        dispatchedAt = clock()
     )
     stockTransfers.add(transfer)
 
@@ -319,7 +323,8 @@ fun BlueGasStore.requestEmptiesReturn(
 
 fun BlueGasStore.confirmEmptiesReceivedAtPlant(
     transferId: String,
-    actor: String = "Plant Manager"
+    actor: String = AccountableRole.PLANT.displayName,
+    received: Map<String, Int>? = null
 ): Pair<Boolean, String> {
     val trf = stockTransfers.find { it.id == transferId }
         ?: return Pair(false, "Transfer $transferId not found.")
@@ -328,27 +333,105 @@ fun BlueGasStore.confirmEmptiesReceivedAtPlant(
         return Pair(false, "Transfer is not an active dispatched empties return.")
     }
 
+    var hasDifference = false
+    val diffDetails = mutableListOf<String>()
+    val updatedLines = mutableListOf<TransferLine>()
+
     for (line in trf.lines) {
+        val recQty = received?.get(line.skuId) ?: line.qtySent
+        if (recQty < 0 || recQty > line.qtySent) {
+            return Pair(false, "Received quantity for ${line.skuId} must be between 0 and sent ${line.qtySent}.")
+        }
+        if (recQty != line.qtySent) {
+            hasDifference = true
+            diffDetails.add("${line.skuId}: sent ${line.qtySent}, received $recQty")
+        }
+        updatedLines.add(line.copy(qtyReceived = recQty))
+    }
+
+    for (line in updatedLines) {
+        val recQty = line.qtyReceived ?: line.qtySent
         val pointStock = stockBalances.find { it.pointId == trf.fromPointId && it.skuId == line.skuId }
         pointStock?.let { it.emptyQty = (it.emptyQty - line.qtySent).coerceAtLeast(0) }
 
         val plantStock = stockBalances.find { it.pointId == "PLANT-01" && it.skuId == line.skuId }
         if (plantStock != null) {
-            plantStock.emptyQty += line.qtySent
+            plantStock.emptyQty += recQty
         } else {
-            stockBalances.add(StockBalance("PLANT-01", line.skuId, filledQty = 0, emptyQty = line.qtySent))
+            stockBalances.add(StockBalance("PLANT-01", line.skuId, filledQty = 0, emptyQty = recQty))
         }
     }
 
+    for (cid in trf.cylinderIds) {
+        val cyl = cylinders.find { it.serialNumber == cid }
+        if (cyl != null) {
+            val cIdx = cylinders.indexOf(cyl)
+            val prevCustody = cyl.custody
+            cylinders[cIdx] = cyl.copy(
+                status = InventoryState.INV_RELEASED,
+                custody = CylinderCustody.PLANT,
+                pointId = "PLANT-01",
+                currentLocationLabel = "Plant Site",
+                plantStage = "EMPTY_AT_PLANT"
+            )
+            cylinderCustodyEvents.add(
+                CylinderCustodyEvent(
+                    id = "EVT-" + UUID.randomUUID().toString().take(6),
+                    serialNumber = cid,
+                    fromCustody = prevCustody,
+                    toCustody = CylinderCustody.PLANT,
+                    orderId = null,
+                    actor = actor,
+                    timestamp = clock()
+                )
+            )
+        }
+    }
+
+    val newStatus = if (hasDifference) "RECEIVED_WITH_DIFFERENCE" else "RECEIVED"
     val trfIdx = stockTransfers.indexOf(trf)
     stockTransfers[trfIdx] = trf.copy(
-        status = "RECEIVED",
-        receivedAt = System.currentTimeMillis()
+        status = newStatus,
+        lines = updatedLines,
+        receivedAt = clock()
     )
 
-    logAudit("StockTransfer", transferId, "CONFIRM_EMPTIES_RECEIVED", actor, AccountableRole.PLANT, "Empty receive recorded (Add Empty Receive)")
+    if (hasDifference) {
+        val excId = "EXC18-" + UUID.randomUUID().toString().take(6)
+        reconExceptions.add(
+            ReconciliationException(
+                id = excId,
+                code = "EXC-18",
+                description = "Empties transfer $transferId short by: ${diffDetails.joinToString(", ")}",
+                ownerRole = AccountableRole.INVENTORY
+            )
+        )
+        addNotification(
+            surface = AppSurface.STAFF,
+            title = "Empties Receipt Shortfall (EXC-18)",
+            message = "Empties return $transferId received at plant with difference.",
+            canonicalStatus = "RECEIVED_WITH_DIFFERENCE",
+            orderId = null,
+            code = "NTF-15",
+            staffRole = StaffSubRole.PLANT_INVENTORY
+        )
+        addNotification(
+            surface = AppSurface.STAFF,
+            title = "Empties Receipt Shortfall",
+            message = "Empties return $transferId received with difference. Variance logged.",
+            canonicalStatus = "RECEIVED_WITH_DIFFERENCE",
+            orderId = null,
+            code = "NTF-15",
+            staffRole = StaffSubRole.FINANCE
+        )
+    }
+
+    logAudit("StockTransfer", transferId, "CONFIRM_EMPTIES_RECEIVED", actor, AccountableRole.PLANT, "Empty receive recorded ($newStatus)")
     notifyChanged()
-    return Pair(true, "Empty receive recorded (Add Empty Receive)")
+    return Pair(
+        true,
+        if (hasDifference) "Empties received with difference. Shortfall logged (EXC-18)." else "Empty receive recorded (Add Empty Receive)"
+    )
 }
 
 fun BlueGasStore.savePlantDailyReport(
@@ -378,7 +461,7 @@ fun BlueGasStore.savePlantDailyReport(
 }
 
 fun BlueGasStore.importPlantFileDemo(): Pair<Boolean, String> {
-    val dateStr = SimpleDateFormat("yyyy-MM-dd", Locale.US).format(Date())
+    val dateStr = todayKarachiDate()
     val todayGatePasses = stockTransfers.filter {
         it.direction == "PLANT_TO_POINT" && it.status != "REQUESTED" && !it.gatePassNo.isNullOrBlank()
     }.mapNotNull { it.gatePassNo }.toMutableList()
@@ -401,15 +484,15 @@ fun BlueGasStore.importPlantFileDemo(): Pair<Boolean, String> {
         source = "FILE_IMPORT"
     )
 
-    savePlantDailyReport(report, "Plant Manager")
+    savePlantDailyReport(report, AccountableRole.PLANT.displayName)
     return Pair(true, "Demo plant file imported (Q21 — real link not decided)")
 }
 
 fun BlueGasStore.runDailyReconciliation(
     counted: Map<String, Pair<Int, Int>>,
-    actor: String = "Inventory Controller"
+    actor: String = AccountableRole.INVENTORY.displayName
 ): Pair<Boolean, String> {
-    val dateStr = SimpleDateFormat("yyyy-MM-dd", Locale.US).format(Date())
+    val dateStr = todayKarachiDate()
     val lines = mutableListOf<ReconLine>()
     val excIds = mutableListOf<String>()
 

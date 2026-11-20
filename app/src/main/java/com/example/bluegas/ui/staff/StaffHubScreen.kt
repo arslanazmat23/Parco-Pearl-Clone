@@ -221,12 +221,64 @@ fun StaffHubScreen(
 
         when (selectedTab) {
             HubTab.ORDERS -> {
+                val riderWaitingOrders = hubOrders.filter {
+                    it.dispatchModeAtConfirm == DispatchMode.AUTO_RIDER_FIRST &&
+                        it.fulfilmentMode == FulfilmentMode.DELIVERY &&
+                        it.riderAtHubAt != null &&
+                        !it.status.isTerminal &&
+                        it.status in listOf(OrderStatus.ORD_ACPT, OrderStatus.ORD_PREP) &&
+                        it.allocatedSerial == null
+                }
+                val riderWaitingIds = riderWaitingOrders.map { it.id }.toSet()
+                val regularHubOrders = hubOrders.filterNot { it.id in riderWaitingIds }
+
                 if (hubOrders.isEmpty()) {
                     item {
                         HubEmptyCard("No orders at ${snapshot.pointName(hubId).ifBlank { "this hub" }} right now.")
                     }
                 } else {
-                    items(hubOrders, key = { it.id }) { ord ->
+                    if (riderWaitingOrders.isNotEmpty()) {
+                        item {
+                            Text(
+                                text = "Rider waiting (${riderWaitingOrders.size})",
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 13.sp,
+                                color = Color(0xFF1D4ED8),
+                                modifier = Modifier
+                                    .padding(top = 4.dp)
+                                    .testTag("hub_rider_waiting_header")
+                            )
+                        }
+                        items(riderWaitingOrders, key = { "waiting_${it.id}" }) { ord ->
+                            HubOrderCard(
+                                order = ord,
+                                hubId = hubId,
+                                store = store,
+                                snapshot = snapshot,
+                                onBanner = onBanner,
+                                onSelectOrder = onSelectOrder,
+                                onOpenDecline = {
+                                    declineOrderTarget = ord
+                                    declineReasonInput = ""
+                                },
+                                onOpenHandover = {
+                                    handoverOrderTarget = ord
+                                }
+                            )
+                        }
+                        if (regularHubOrders.isNotEmpty()) {
+                            item {
+                                Text(
+                                    text = "Other hub orders (${regularHubOrders.size})",
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 13.sp,
+                                    color = Color(0xFF0F172A),
+                                    modifier = Modifier.padding(top = 6.dp)
+                                )
+                            }
+                        }
+                    }
+                    items(regularHubOrders, key = { it.id }) { ord ->
                         HubOrderCard(
                             order = ord,
                             hubId = hubId,
@@ -452,32 +504,84 @@ private fun HubOrderCard(
                 Text(text = locationText, fontSize = 11.sp, color = Color(0xFF64748B))
             }
 
+            if (order.dispatchModeAtConfirm == DispatchMode.AUTO_RIDER_FIRST &&
+                order.fulfilmentMode == FulfilmentMode.DELIVERY &&
+                order.riderAtHubAt != null &&
+                order.allocatedSerial == null &&
+                !order.status.isTerminal
+            ) {
+                Spacer(modifier = Modifier.height(6.dp))
+                Surface(
+                    color = Color(0xFFDBEAFE),
+                    shape = RoundedCornerShape(6.dp),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text(
+                        text = "${snapshot.riderName(order.assignedRiderId)} is at the hub",
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = Color(0xFF1E40AF),
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 5.dp)
+                    )
+                }
+            }
+
             Spacer(modifier = Modifier.height(8.dp))
 
             when (order.status) {
                 OrderStatus.ORD_ASGN -> {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        Button(
-                            onClick = { onBanner.report(store.hubAccept(order.id, hubId)) },
-                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF16A34A)),
-                            modifier = Modifier
-                                .weight(1f)
-                                .heightIn(min = 48.dp)
-                                .testTag("hub_accept_btn_${order.id}")
+                    val isAutoDelivery = order.dispatchModeAtConfirm == DispatchMode.AUTO_RIDER_FIRST &&
+                        order.fulfilmentMode == FulfilmentMode.DELIVERY
+                    if (isAutoDelivery) {
+                        Column(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalArrangement = Arrangement.spacedBy(6.dp)
                         ) {
-                            Text("Accept", fontSize = 12.sp)
+                            val waitMsg = if (order.assignedRiderId != null && order.riderTaskStatus == RiderTaskStatus.OFFERED) {
+                                "Offered to ${snapshot.riderName(order.assignedRiderId)} — waiting for rider acceptance"
+                            } else {
+                                "Waiting for Operations to offer a rider"
+                            }
+                            Text(
+                                text = waitMsg,
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                color = Color(0xFF1E40AF)
+                            )
+                            OutlinedButton(
+                                onClick = onOpenDecline,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .heightIn(min = 48.dp)
+                                    .testTag("hub_decline_btn_${order.id}")
+                            ) {
+                                Text("Decline", fontSize = 12.sp, color = Color(0xFFDC2626))
+                            }
                         }
-                        OutlinedButton(
-                            onClick = onOpenDecline,
-                            modifier = Modifier
-                                .weight(1f)
-                                .heightIn(min = 48.dp)
-                                .testTag("hub_decline_btn_${order.id}")
+                    } else {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
-                            Text("Decline", fontSize = 12.sp, color = Color(0xFFDC2626))
+                            Button(
+                                onClick = { onBanner.report(store.hubAccept(order.id, hubId)) },
+                                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF16A34A)),
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .heightIn(min = 48.dp)
+                                    .testTag("hub_accept_btn_${order.id}")
+                            ) {
+                                Text("Accept", fontSize = 12.sp)
+                            }
+                            OutlinedButton(
+                                onClick = onOpenDecline,
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .heightIn(min = 48.dp)
+                                    .testTag("hub_decline_btn_${order.id}")
+                            ) {
+                                Text("Decline", fontSize = 12.sp, color = Color(0xFFDC2626))
+                            }
                         }
                     }
                 }
@@ -520,11 +624,13 @@ private fun HubOrderCard(
                                 )
                                 Spacer(modifier = Modifier.height(4.dp))
                                 if (order.fulfilmentMode == FulfilmentMode.DELIVERY) {
-                                    val riderLine = when (order.riderTaskStatus) {
-                                        null -> "Waiting for Operations to offer a rider"
-                                        RiderTaskStatus.OFFERED -> "Offered to ${snapshot.riderName(order.assignedRiderId)}"
-                                        RiderTaskStatus.ACCEPTED -> "Accepted by ${snapshot.riderName(order.assignedRiderId)}"
-                                        RiderTaskStatus.DECLINED -> {
+                                    val riderLine = when {
+                                        order.dispatchModeAtConfirm == DispatchMode.AUTO_RIDER_FIRST && order.riderCylinderVerified ->
+                                            "Scanned out to ${snapshot.riderName(order.assignedRiderId)} — ready for trip"
+                                        order.riderTaskStatus == null -> "Waiting for Operations to offer a rider"
+                                        order.riderTaskStatus == RiderTaskStatus.OFFERED -> "Offered to ${snapshot.riderName(order.assignedRiderId)}"
+                                        order.riderTaskStatus == RiderTaskStatus.ACCEPTED -> "Accepted by ${snapshot.riderName(order.assignedRiderId)}"
+                                        else -> {
                                             val who = snapshot.riderName(order.assignedRiderId).ifBlank { "rider" }
                                             "Declined by $who — Operations will re-offer"
                                         }
@@ -956,6 +1062,7 @@ private fun HubCounterHandoverDialog(
  * Displays the Stock tab for the selected hub: balances per size, incoming transfer receipts,
  * stock request trigger, and scan-in for returned cylinders awaiting hub intake.
  */
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun HubStockTabContent(
     hubId: String,
@@ -972,14 +1079,29 @@ private fun HubStockTabContent(
         }
     }
     var returnScanInput by remember(hubId) { mutableStateOf("") }
+    var showUrgentTopUpDialog by remember(hubId) { mutableStateOf(false) }
 
     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-        Row(
+        FlowRow(
             modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp)
         ) {
-            Text("Stock balances", fontWeight = FontWeight.Bold, fontSize = 13.sp, color = Color(0xFF0F172A))
+            Text(
+                text = "Stock balances",
+                fontWeight = FontWeight.Bold,
+                fontSize = 13.sp,
+                color = Color(0xFF0F172A),
+                modifier = Modifier.align(Alignment.CenterVertically)
+            )
+            OutlinedButton(
+                onClick = { showUrgentTopUpDialog = true },
+                modifier = Modifier
+                    .heightIn(min = 48.dp)
+                    .testTag("hub_urgent_topup_btn")
+            ) {
+                Text("Urgent top-up", fontSize = 11.sp, color = Color(0xFFB91C1C), fontWeight = FontWeight.SemiBold)
+            }
             Button(
                 onClick = onOpenRequestStock,
                 colors = ButtonDefaults.buttonColors(containerColor = BlueGasPrimary),
@@ -994,18 +1116,60 @@ private fun HubStockTabContent(
         }
 
         hubBalances.forEach { (sku, bal) ->
+            val minQty = snapshot.settings.hubMinimumFilled[hubId]?.get(sku) ?: 0
+            val inTransitQty = snapshot.stockTransfers
+                .filter {
+                    it.direction == "PLANT_TO_POINT" &&
+                        it.toPointId == hubId &&
+                        (it.status == "REQUESTED" || it.status == "DISPATCHED")
+                }
+                .sumOf { trf -> trf.lines.find { it.skuId == sku }?.qtySent ?: 0 }
+            val netFilled = (bal?.filledQty ?: 0) - (bal?.reservedQty ?: 0) + inTransitQty
+            val isBelowMin = netFilled < minQty
+
             Card(
                 colors = CardDefaults.cardColors(containerColor = Color.White),
-                border = BorderStroke(1.dp, Color(0xFFCBD5E1)),
+                border = BorderStroke(1.dp, if (isBelowMin) Color(0xFFFCA5A5) else Color(0xFFCBD5E1)),
                 modifier = Modifier.fillMaxWidth()
             ) {
                 Column(modifier = Modifier.padding(12.dp)) {
-                    Text(
-                        text = snapshot.skuLabel(sku),
-                        fontWeight = FontWeight.Bold,
-                        fontSize = 13.sp,
-                        color = Color(0xFF0F172A)
-                    )
+                    FlowRow(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        Text(
+                            text = snapshot.skuLabel(sku),
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 13.sp,
+                            color = Color(0xFF0F172A),
+                            modifier = Modifier.align(Alignment.CenterVertically)
+                        )
+                        Surface(color = Color(0xFFF1F5F9), shape = RoundedCornerShape(4.dp)) {
+                            Text(
+                                text = "Minimum $minQty",
+                                fontSize = 10.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                color = Color(0xFF334155),
+                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                            )
+                        }
+                        if (isBelowMin) {
+                            Surface(
+                                color = Color(0xFFFEE2E2),
+                                shape = RoundedCornerShape(4.dp),
+                                modifier = Modifier.testTag("hub_below_min_chip_$sku")
+                            ) {
+                                Text(
+                                    text = "Below minimum",
+                                    fontSize = 10.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = Color(0xFFB91C1C),
+                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                )
+                            }
+                        }
+                    }
                     Spacer(modifier = Modifier.height(6.dp))
                     Row(
                         modifier = Modifier.fillMaxWidth(),
@@ -1019,6 +1183,65 @@ private fun HubStockTabContent(
                     }
                 }
             }
+        }
+
+        if (showUrgentTopUpDialog) {
+            var q118Input by remember { mutableStateOf("") }
+            var q454Input by remember { mutableStateOf("") }
+            val q118 = q118Input.trim().toIntOrNull() ?: 0
+            val q454 = q454Input.trim().toIntOrNull() ?: 0
+            val canConfirm = q118 > 0 || q454 > 0
+            AlertDialog(
+                onDismissRequest = { showUrgentTopUpDialog = false },
+                title = { Text("Urgent top-up · ${snapshot.pointName(hubId)}", fontWeight = FontWeight.Bold, fontSize = 15.sp) },
+                text = {
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text(
+                            text = "Sends an urgent plant replenishment request and alerts the Plant Manager.",
+                            fontSize = 12.sp,
+                            color = Color(0xFF475569)
+                        )
+                        OutlinedTextField(
+                            value = q118Input,
+                            onValueChange = { q118Input = it.filter { ch -> ch.isDigit() } },
+                            label = { Text("11.8 kg quantity", fontSize = 11.sp) },
+                            placeholder = { Text("Enter quantity", color = Color.Gray) },
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth().testTag("urgent_topup_118_input")
+                        )
+                        OutlinedTextField(
+                            value = q454Input,
+                            onValueChange = { q454Input = it.filter { ch -> ch.isDigit() } },
+                            label = { Text("45.4 kg quantity", fontSize = 11.sp) },
+                            placeholder = { Text("Enter quantity", color = Color.Gray) },
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth().testTag("urgent_topup_454_input")
+                        )
+                    }
+                },
+                confirmButton = {
+                    Button(
+                        enabled = canConfirm,
+                        onClick = {
+                            val lines = buildMap {
+                                if (q118 > 0) put("SKU-LPG-11-8", q118)
+                                if (q454 > 0) put("SKU-LPG-45-4", q454)
+                            }
+                            onBanner.report(store.urgentTopUp(hubId, lines, AccountableRole.HUB.displayName))
+                            showUrgentTopUpDialog = false
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFDC2626)),
+                        modifier = Modifier.testTag("urgent_topup_confirm_btn")
+                    ) {
+                        Text("Send urgent request")
+                    }
+                },
+                dismissButton = {
+                    OutlinedButton(onClick = { showUrgentTopUpDialog = false }) { Text("Cancel") }
+                }
+            )
         }
 
         // Incoming transfers

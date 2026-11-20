@@ -20,6 +20,7 @@ package com.example.bluegas.ui.rider
 
 import android.content.Intent
 import android.net.Uri
+import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
@@ -29,6 +30,7 @@ import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
@@ -54,6 +56,7 @@ import com.example.bluegas.model.*
 import com.example.bluegas.ui.components.*
 import com.example.bluegas.ui.customer.DemoValuePill
 import com.example.bluegas.ui.customer.ReceiptDialog
+import com.example.bluegas.ui.customer.RecommendedPill
 import com.example.bluegas.ui.customer.customerVisibleItems
 import com.example.ui.theme.BlueGasDark
 import com.example.ui.theme.BlueGasPrimary
@@ -79,9 +82,14 @@ enum class RiderTab {
  * successfully completed by this rider.
  */
 private fun isPendingForRider(order: Order, riderId: String): Boolean {
-    return order.assignedRiderId == riderId &&
-            order.status == OrderStatus.ORD_PREP &&
-            order.riderTaskStatus == RiderTaskStatus.OFFERED
+    if (order.assignedRiderId != riderId || order.riderTaskStatus != RiderTaskStatus.OFFERED) return false
+    return if (order.dispatchModeAtConfirm == DispatchMode.AUTO_RIDER_FIRST &&
+        order.fulfilmentMode == FulfilmentMode.DELIVERY
+    ) {
+        order.status == OrderStatus.ORD_ASGN
+    } else {
+        order.status == OrderStatus.ORD_PREP
+    }
 }
 
 /**
@@ -200,6 +208,21 @@ fun RiderAppScreen(store: BlueGasStore) {
     var showCashHandoverDialog by remember { mutableStateOf(false) }
     var showReceiptOrderId by remember { mutableStateOf<String?>(null) }
     var showDemoControls by rememberSaveable { mutableStateOf(false) }
+    var showJoinScreen by rememberSaveable { mutableStateOf(false) }
+
+    if (showJoinScreen) {
+        BackHandler { showJoinScreen = false }
+        RiderJoinScreen(
+            store = store,
+            appState = appState,
+            onBack = { showJoinScreen = false },
+            onActionMessage = { msg, isErr ->
+                actionBanner = msg
+                isErrorBanner = isErr
+            }
+        )
+        return
+    }
 
     val activeRider = appState.riders.find { it.id == appState.activeRiderId } ?: appState.riders.firstOrNull()
     if (activeRider == null) {
@@ -221,17 +244,13 @@ fun RiderAppScreen(store: BlueGasStore) {
 
     val activeOrders = remember(appState.version, activeRider.id) {
         appState.orders.filter { isActiveForRider(it, activeRider.id) }
-            .sortedWith(compareByDescending { ord ->
-                when (ord.status) {
-                    OrderStatus.ORD_EXC -> 6
-                    OrderStatus.ORD_HOC -> 5
-                    OrderStatus.ORD_ATHO -> 4
-                    OrderStatus.ORD_DISP -> 3
-                    OrderStatus.ORD_PREP -> 2
-                    OrderStatus.ORD_ACPT -> 1
-                    else -> 0
-                }
-            })
+            .sortedWith(
+                compareBy<Order> { it.promisedByAt ?: Long.MAX_VALUE }
+                    .thenBy { ord ->
+                        appState.addresses.find { it.id == ord.addressId }?.area ?: ""
+                    }
+                    .thenBy { it.createdAt }
+            )
     }
 
     val completedOrders = remember(appState.version, activeRider.id) {
@@ -358,6 +377,22 @@ fun RiderAppScreen(store: BlueGasStore) {
                                                 }
                                             )
                                         }
+                                        HorizontalDivider()
+                                        DropdownMenuItem(
+                                            text = {
+                                                Text(
+                                                    text = "Join as a BLUE GAS rider",
+                                                    fontWeight = FontWeight.SemiBold,
+                                                    fontSize = 13.sp,
+                                                    color = BlueGasPrimary
+                                                )
+                                            },
+                                            onClick = {
+                                                profileDropdownExpanded = false
+                                                showJoinScreen = true
+                                            },
+                                            modifier = Modifier.testTag("rider_join_menu_item")
+                                        )
                                     }
                                 }
 
@@ -791,9 +826,10 @@ fun RiderAppScreen(store: BlueGasStore) {
                                         }
                                     )
                                 }
-                                items(activeOrders, key = { "active_ord_${it.id}" }) { ord ->
+                                itemsIndexed(activeOrders, key = { _, ord -> "active_ord_${ord.id}" }) { index, ord ->
                                     ActiveOrderCard(
                                         order = ord,
+                                        stopNumber = index + 1,
                                         store = store,
                                         activeRiderId = activeRider.id,
                                         riderHubName = riderHubName,
@@ -1496,6 +1532,7 @@ fun RiderAppScreen(store: BlueGasStore) {
 
                         appState.riderOutbox.forEach { evt ->
                             val humanAction = when (evt.action) {
+                                "ACCEPT_TASK" -> "Accept delivery"
                                 "START_TRIP" -> "Start trip"
                                 "ARRIVE_AT_DOORSTEP" -> "Arrived"
                                 "REPORT_ISSUE" -> "Report problem"
@@ -1613,6 +1650,12 @@ private fun PendingOrderCard(
     val isExpired = snapshot.settings.autoRaiseNoAcceptance && remainingMs <= 0L
     val isExpiringSoon = snapshot.settings.autoRaiseNoAcceptance && remainingMs in 1L..300000L
 
+    val hasPendingOutbox = remember(snapshot.riderOutbox, order.id) {
+        snapshot.riderOutbox.any { it.orderId == order.id && it.syncStatus == "PENDING" }
+    }
+    val isAutoDispatch = order.dispatchModeAtConfirm == DispatchMode.AUTO_RIDER_FIRST &&
+        order.fulfilmentMode == FulfilmentMode.DELIVERY
+
     Card(
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
         border = BorderStroke(1.dp, Color(0xFFCBD5E1)),
@@ -1628,13 +1671,32 @@ private fun PendingOrderCard(
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Text(
-                    text = order.id,
-                    fontWeight = FontWeight.Bold,
-                    fontSize = 14.sp,
-                    fontFamily = FontFamily.Monospace,
-                    color = BlueGasDark
-                )
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    Text(
+                        text = order.id,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 14.sp,
+                        fontFamily = FontFamily.Monospace,
+                        color = BlueGasDark
+                    )
+                    if (isAutoDispatch) {
+                        Surface(
+                            color = Color(0xFFDBEAFE),
+                            shape = RoundedCornerShape(4.dp)
+                        ) {
+                            Text(
+                                text = "Automatic",
+                                fontSize = 9.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = Color(0xFF1D4ED8),
+                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                            )
+                        }
+                    }
+                }
                 CanonicalStatusChip(order.status)
             }
 
@@ -1806,36 +1868,55 @@ private fun PendingOrderCard(
 
             // Buttons: Accept & Decline (S1.4)
             Spacer(modifier = Modifier.height(12.dp))
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                Button(
-                    onClick = onAccept,
-                    enabled = !isExpired,
-                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF16A34A)),
+            if (hasPendingOutbox) {
+                Surface(
+                    color = Color(0xFFFEF3C7),
+                    shape = RoundedCornerShape(8.dp),
                     modifier = Modifier
-                        .weight(1f)
+                        .fillMaxWidth()
                         .height(48.dp)
-                        .testTag("accept_order_button")
                 ) {
-                    Icon(Icons.Default.Check, contentDescription = null, modifier = Modifier.size(16.dp))
-                    Spacer(modifier = Modifier.width(4.dp))
-                    Text(if (isExpired) "Acceptance time is over" else "Accept Task", fontSize = 12.sp)
+                    Box(contentAlignment = Alignment.Center, modifier = Modifier.fillMaxSize()) {
+                        Text(
+                            text = "Saved — waiting to send",
+                            color = Color(0xFF92400E),
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 13.sp
+                        )
+                    }
                 }
-
-                OutlinedButton(
-                    onClick = onDecline,
-                    colors = ButtonDefaults.outlinedButtonColors(contentColor = Color(0xFFDC2626)),
-                    border = BorderStroke(1.dp, Color(0xFFDC2626)),
-                    modifier = Modifier
-                        .weight(0.9f)
-                        .height(48.dp)
-                        .testTag("decline_order_button")
+            } else {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    Icon(Icons.Default.Close, contentDescription = null, modifier = Modifier.size(16.dp))
-                    Spacer(modifier = Modifier.width(4.dp))
-                    Text("Decline", fontSize = 12.sp)
+                    Button(
+                        onClick = onAccept,
+                        enabled = !isExpired,
+                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF16A34A)),
+                        modifier = Modifier
+                            .weight(1f)
+                            .height(48.dp)
+                            .testTag("accept_order_button")
+                    ) {
+                        Icon(Icons.Default.Check, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text(if (isExpired) "Acceptance time is over" else "Accept Task", fontSize = 12.sp)
+                    }
+
+                    OutlinedButton(
+                        onClick = onDecline,
+                        colors = ButtonDefaults.outlinedButtonColors(contentColor = Color(0xFFDC2626)),
+                        border = BorderStroke(1.dp, Color(0xFFDC2626)),
+                        modifier = Modifier
+                            .weight(0.9f)
+                            .height(48.dp)
+                            .testTag("decline_order_button")
+                    ) {
+                        Icon(Icons.Default.Close, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text("Decline", fontSize = 12.sp)
+                    }
                 }
             }
         }
@@ -1849,6 +1930,7 @@ private fun PendingOrderCard(
 @Composable
 private fun ActiveOrderCard(
     order: Order,
+    stopNumber: Int,
     store: BlueGasStore,
     activeRiderId: String,
     riderHubName: String,
@@ -1919,6 +2001,26 @@ private fun ActiveOrderCard(
                     color = BlueGasDark
                 )
                 CanonicalStatusChip(order.status)
+            }
+
+            Spacer(modifier = Modifier.height(6.dp))
+            FlowRow(
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                verticalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+                Surface(
+                    color = Color(0xFFE0F2FE),
+                    shape = RoundedCornerShape(6.dp)
+                ) {
+                    Text(
+                        text = "Stop $stopNumber · Suggested order",
+                        fontSize = 10.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = Color(0xFF0369A1),
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
+                    )
+                }
+                RecommendedPill()
             }
 
             Spacer(modifier = Modifier.height(8.dp))
@@ -2197,9 +2299,86 @@ private fun ActiveOrderCard(
                         }
                     }
 
+                    OrderStatus.ORD_ACPT -> {
+                        val isAutoDelivery = order.dispatchModeAtConfirm == DispatchMode.AUTO_RIDER_FIRST &&
+                            order.fulfilmentMode == FulfilmentMode.DELIVERY
+                        if (isAutoDelivery) {
+                            if (order.riderAtHubAt == null) {
+                                Column(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                                ) {
+                                    Text(
+                                        text = "Go to $riderHubName to collect your cylinder.",
+                                        fontSize = 12.sp,
+                                        fontWeight = FontWeight.SemiBold,
+                                        color = BlueGasDark
+                                    )
+                                    Button(
+                                        onClick = {
+                                            val (ok, msg) = store.riderAtHub(order.id, activeRiderId)
+                                            onActionMessage(msg, !ok)
+                                        },
+                                        colors = ButtonDefaults.buttonColors(containerColor = BlueGasPrimary),
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .height(48.dp)
+                                            .testTag("rider_at_hub_button_${order.id}")
+                                    ) {
+                                        Icon(Icons.Default.Warehouse, contentDescription = null, modifier = Modifier.size(16.dp))
+                                        Spacer(modifier = Modifier.width(6.dp))
+                                        Text("I'm at the hub")
+                                    }
+                                }
+                            } else {
+                                Surface(
+                                    color = Color(0xFFEFF6FF),
+                                    shape = RoundedCornerShape(6.dp),
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    Row(
+                                        modifier = Modifier.padding(10.dp),
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Icon(Icons.Default.HourglassTop, contentDescription = null, tint = BlueGasPrimary)
+                                        Spacer(modifier = Modifier.width(8.dp))
+                                        Text(
+                                            text = "At $riderHubName — waiting for the hub to prepare and scan your cylinder",
+                                            fontSize = 12.sp,
+                                            fontWeight = FontWeight.Medium,
+                                            color = BlueGasDark
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+
                     OrderStatus.ORD_PREP -> {
+                        val isAutoDelivery = order.dispatchModeAtConfirm == DispatchMode.AUTO_RIDER_FIRST &&
+                            order.fulfilmentMode == FulfilmentMode.DELIVERY
                         Column(modifier = Modifier.fillMaxWidth()) {
-                            if (!order.riderCylinderVerified) {
+                            if (isAutoDelivery && (order.allocatedSerial == null || !order.riderCylinderVerified)) {
+                                Surface(
+                                    color = Color(0xFFEFF6FF),
+                                    shape = RoundedCornerShape(6.dp),
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    Row(
+                                        modifier = Modifier.padding(10.dp),
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Icon(Icons.Default.QrCodeScanner, contentDescription = null, tint = BlueGasPrimary)
+                                        Spacer(modifier = Modifier.width(8.dp))
+                                        Text(
+                                            text = "Waiting for the hub to scan your cylinder",
+                                            fontSize = 12.sp,
+                                            fontWeight = FontWeight.SemiBold,
+                                            color = BlueGasDark
+                                        )
+                                    }
+                                }
+                            } else if (!order.riderCylinderVerified) {
                                 Row(
                                     modifier = Modifier.fillMaxWidth(),
                                     horizontalArrangement = Arrangement.spacedBy(8.dp)

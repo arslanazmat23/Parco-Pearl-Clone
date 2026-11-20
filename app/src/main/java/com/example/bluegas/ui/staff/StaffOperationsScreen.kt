@@ -4,6 +4,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -17,15 +18,19 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.ui.text.input.KeyboardType
 import com.example.bluegas.data.*
 import com.example.bluegas.model.*
 import com.example.bluegas.ui.components.CanonicalStatusChip
+import com.example.bluegas.ui.customer.DemoValuePill
 import com.example.ui.theme.BlueGasPrimary
 
 private enum class OperationsTab(val label: String) {
     DISPATCH("Dispatch"),
     EXCEPTIONS("Exceptions"),
     PARTNERS("Partners"),
+    RIDERS("Riders"),
     ALL_ORDERS("All orders")
 }
 
@@ -46,9 +51,18 @@ fun StaffOperationsScreen(
     onBanner: StaffBanner,
     onSelectOrder: (Order) -> Unit
 ) {
+    val needsARiderOrders = remember(snapshot.version) {
+        snapshot.orders.filter {
+            it.fulfilmentMode == FulfilmentMode.DELIVERY &&
+                it.dispatchModeAtConfirm == DispatchMode.AUTO_RIDER_FIRST &&
+                it.status == OrderStatus.ORD_ASGN &&
+                it.assignedRiderId == null
+        }
+    }
     val dispatchOrders = remember(snapshot.version) {
         snapshot.orders.filter {
             it.fulfilmentMode == FulfilmentMode.DELIVERY &&
+                it.dispatchModeAtConfirm != DispatchMode.AUTO_RIDER_FIRST &&
                 it.status == OrderStatus.ORD_PREP &&
                 it.allocatedSerial != null &&
                 it.riderTaskStatus != RiderTaskStatus.ACCEPTED
@@ -80,9 +94,11 @@ fun StaffOperationsScreen(
     var selectedHomePointId by remember(snapshot.version) {
         mutableStateOf(snapshot.nodes.firstOrNull { it.type == FulfilmentPointType.HUB }?.id ?: "")
     }
-    var trainingCompleted by remember { mutableStateOf(true) }
     var rejectionReasonInput by remember { mutableStateOf("") }
     var missingDocsInput by remember { mutableStateOf("") }
+
+    var riderForTraining by remember { mutableStateOf<Rider?>(null) }
+    var trainingNoteInput by remember { mutableStateOf("") }
 
     var showResolveConflictDialog by remember { mutableStateOf(false) }
     var selectedConflict by remember { mutableStateOf<SerialConflictItem?>(null) }
@@ -106,15 +122,16 @@ fun StaffOperationsScreen(
             Spacer(modifier = Modifier.height(8.dp))
 
             // Section tabs
-            Row(
+            LazyRow(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(6.dp)
             ) {
-                OperationsTab.entries.forEach { tab ->
+                items(OperationsTab.entries) { tab ->
                     val count = when (tab) {
-                        OperationsTab.DISPATCH -> dispatchOrders.size + returnCollectionCases.size
+                        OperationsTab.DISPATCH -> needsARiderOrders.size + dispatchOrders.size + returnCollectionCases.size
                         OperationsTab.EXCEPTIONS -> exceptionOrders.size
                         OperationsTab.PARTNERS -> pendingPartners.size
+                        OperationsTab.RIDERS -> snapshot.riders.size
                         OperationsTab.ALL_ORDERS -> snapshot.orders.size
                     }
                     val selected = selectedOpsTab == tab
@@ -199,9 +216,53 @@ fun StaffOperationsScreen(
             item {
                 AccountableHeader(
                     roleName = "${AccountableRole.OPERATIONS.displayName} (RACI-06)",
-                    description = "Offer prepared delivery orders with bound cylinders to qualified on-shift riders."
+                    description = "Assign riders when automatic dispatch has no free rider, and offer prepared deliveries in hub-first mode."
                 )
                 Spacer(modifier = Modifier.height(8.dp))
+                Text(
+                    text = "Needs a rider (${needsARiderOrders.size})",
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 13.sp,
+                    color = Color(0xFF0F172A)
+                )
+                Spacer(modifier = Modifier.height(4.dp))
+            }
+            if (needsARiderOrders.isEmpty()) {
+                item {
+                    Card(
+                        colors = CardDefaults.cardColors(containerColor = Color.White),
+                        border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFFE2E8F0)),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text(
+                            text = "No automatic delivery orders waiting for a rider.",
+                            fontSize = 12.sp,
+                            color = Color.Gray,
+                            modifier = Modifier.padding(16.dp)
+                        )
+                    }
+                }
+            } else {
+                items(needsARiderOrders, key = { "auto_needs_rider_${it.id}" }) { ord ->
+                    OperationsDispatchCard(
+                        order = ord,
+                        store = store,
+                        snapshot = snapshot,
+                        onBanner = onBanner,
+                        onSelectOrder = onSelectOrder
+                    )
+                }
+            }
+
+            item {
+                Spacer(modifier = Modifier.height(10.dp))
+                Text(
+                    text = "Prepared deliveries (${dispatchOrders.size})",
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 13.sp,
+                    color = Color(0xFF0F172A)
+                )
+                Spacer(modifier = Modifier.height(4.dp))
             }
             if (dispatchOrders.isEmpty()) {
                 item {
@@ -264,6 +325,15 @@ fun StaffOperationsScreen(
                         onBanner = onBanner
                     )
                 }
+            }
+
+            item {
+                Spacer(modifier = Modifier.height(10.dp))
+                OperationsHubMinimumsCard(
+                    store = store,
+                    snapshot = snapshot,
+                    onBanner = onBanner
+                )
             }
         }
 
@@ -341,19 +411,25 @@ fun StaffOperationsScreen(
                                                 color = when (app.status) {
                                                     "APPROVED" -> Color(0xFFDCFCE7)
                                                     "REJECTED" -> Color(0xFFFEE2E2)
-                                                    "INCOMPLETE" -> Color(0xFFFEF3C7)
+                                                    "RETURNED_INCOMPLETE" -> Color(0xFFFEF3C7)
                                                     else -> Color(0xFFDBEAFE)
                                                 },
                                                 shape = RoundedCornerShape(4.dp)
                                             ) {
                                                 Text(
-                                                    text = app.status,
+                                                    text = when (app.status) {
+                                                        "PENDING_APPROVAL" -> "Under review"
+                                                        "RETURNED_INCOMPLETE" -> "Documents needed"
+                                                        "APPROVED" -> "Approved"
+                                                        "REJECTED" -> "Not approved"
+                                                        else -> app.status
+                                                    },
                                                     fontSize = 9.sp,
                                                     fontWeight = FontWeight.Bold,
                                                     color = when (app.status) {
                                                         "APPROVED" -> Color(0xFF166534)
                                                         "REJECTED" -> Color(0xFF991B1B)
-                                                        "INCOMPLETE" -> Color(0xFF92400E)
+                                                        "RETURNED_INCOMPLETE" -> Color(0xFF92400E)
                                                         else -> Color(0xFF1E40AF)
                                                     },
                                                     modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
@@ -419,6 +495,141 @@ fun StaffOperationsScreen(
                                             }
                                         }
                                     }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Riders Tab: training gate (F3.3) & read-only 30-day performance (F3.4)
+        if (selectedOpsTab == OperationsTab.RIDERS) {
+            item {
+                AccountableHeader(
+                    roleName = AccountableRole.OPERATIONS.displayName,
+                    description = "Rider readiness, installation checklist training gate, and 30-day operational summary (no ranking)."
+                )
+                Spacer(modifier = Modifier.height(8.dp))
+            }
+
+            if (snapshot.riders.isEmpty()) {
+                item {
+                    Card(
+                        colors = CardDefaults.cardColors(containerColor = Color.White),
+                        border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFFE2E8F0)),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text(
+                            text = "No riders on record yet.",
+                            fontSize = 12.sp,
+                            color = Color.Gray,
+                            modifier = Modifier.padding(16.dp)
+                        )
+                    }
+                }
+            } else {
+                items(snapshot.riders, key = { it.id }) { rider ->
+                    val perf = remember(snapshot.version, rider.id) {
+                        store.riderPerformance(rider.id, days = 30)
+                    }
+                    Card(
+                        colors = CardDefaults.cardColors(containerColor = Color.White),
+                        border = androidx.compose.foundation.BorderStroke(
+                            1.dp,
+                            if (rider.installationTrained) Color(0xFFCBD5E1) else Color(0xFFF59E0B)
+                        ),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 4.dp)
+                            .testTag("ops_rider_card_${rider.id}")
+                    ) {
+                        Column(
+                            modifier = Modifier.padding(12.dp),
+                            verticalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        text = "${rider.name} · ${rider.id}",
+                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 13.sp,
+                                        color = Color(0xFF0F172A)
+                                    )
+                                    Text(
+                                        text = "${snapshot.pointName(rider.pointId)} · ${rider.zoneName} · ${rider.vehicleNumber}",
+                                        fontSize = 11.sp,
+                                        color = Color(0xFF475569)
+                                    )
+                                }
+                                Surface(
+                                    color = if (rider.installationTrained) Color(0xFFDCFCE7) else Color(0xFFFEF3C7),
+                                    shape = RoundedCornerShape(6.dp)
+                                ) {
+                                    Text(
+                                        text = if (rider.installationTrained) "Checklist trained" else "Training pending",
+                                        fontSize = 10.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        color = if (rider.installationTrained) Color(0xFF166534) else Color(0xFF92400E),
+                                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                                    )
+                                }
+                            }
+
+                            if (!rider.installationTrained) {
+                                Button(
+                                    onClick = {
+                                        riderForTraining = rider
+                                        trainingNoteInput = ""
+                                    },
+                                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFD97706)),
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .heightIn(min = 48.dp)
+                                        .testTag("ops_mark_training_${rider.id}")
+                                ) {
+                                    Text("Mark checklist training done", fontSize = 12.sp)
+                                }
+                            }
+
+                            Surface(
+                                color = Color(0xFFF8FAFC),
+                                shape = RoundedCornerShape(6.dp),
+                                border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFFE2E8F0)),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Column(
+                                    modifier = Modifier.padding(10.dp),
+                                    verticalArrangement = Arrangement.spacedBy(3.dp)
+                                ) {
+                                    Text(
+                                        text = "Last 30 days (read-only)",
+                                        fontSize = 10.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        color = Color(0xFF334155)
+                                    )
+                                    val onTimeText = perf.onTimePercent?.let {
+                                        "$it% (${perf.onTimeHandovers}/${perf.completedDeliveries})"
+                                    } ?: "No completed deliveries yet"
+                                    val checklistText = perf.checklistPercent?.let {
+                                        "$it% (${perf.checklistCompletedCount}/${perf.completedDeliveries})"
+                                    } ?: "No completed deliveries yet"
+                                    Text("On-time handovers: $onTimeText", fontSize = 11.sp, color = Color(0xFF1E293B))
+                                    Text("Installation checklist completed: $checklistText", fontSize = 11.sp, color = Color(0xFF1E293B))
+                                    Text(
+                                        text = "Cash differences: ${perf.cashDifferenceCount} (${formatRupees(perf.cashDifferenceSumPaisa)})",
+                                        fontSize = 11.sp,
+                                        color = Color(0xFF1E293B)
+                                    )
+                                    Text(
+                                        text = "Complaints linked to rider orders: ${perf.complaintCount}",
+                                        fontSize = 11.sp,
+                                        color = Color(0xFF1E293B)
+                                    )
                                 }
                             }
                         }
@@ -739,13 +950,18 @@ fun StaffOperationsScreen(
                             }
                         }
                         Spacer(modifier = Modifier.height(6.dp))
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Checkbox(
-                                checked = trainingCompleted,
-                                onCheckedChange = { trainingCompleted = it }
+                        Surface(
+                            color = Color(0xFFFFFBEB),
+                            shape = RoundedCornerShape(6.dp),
+                            border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFFFCD34D)),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text(
+                                text = "New riders are approved with Training pending and must have checklist training recorded on the Riders tab before dispatch.",
+                                fontSize = 11.sp,
+                                color = Color(0xFF92400E),
+                                modifier = Modifier.padding(8.dp)
                             )
-                            Spacer(modifier = Modifier.width(4.dp))
-                            Text("Safety & Installation Training Certified", fontSize = 11.sp)
                         }
                     }
                 }
@@ -756,7 +972,7 @@ fun StaffOperationsScreen(
                         val res = store.approvePartner(
                             appId = app.id,
                             homePointId = selectedHomePointId,
-                            trainingDone = trainingCompleted,
+                            trainingDone = false,
                             actor = AccountableRole.OPERATIONS.displayName
                         )
                         onBanner.report(res)
@@ -765,7 +981,7 @@ fun StaffOperationsScreen(
                     },
                     colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF16A34A))
                 ) {
-                    Text("Approve & Activate")
+                    Text("Approve partner")
                 }
             },
             dismissButton = {
@@ -773,6 +989,58 @@ fun StaffOperationsScreen(
                     showApprovePartnerDialog = false
                     selectedPartnerApp = null
                 }) {
+                    Text("Cancel")
+                }
+            }
+        )
+    }
+
+    // Mark Rider Checklist Training Done Dialog
+    val targetTrainingRider = riderForTraining
+    if (targetTrainingRider != null) {
+        AlertDialog(
+            onDismissRequest = { riderForTraining = null },
+            title = { Text("Mark checklist training done · ${targetTrainingRider.name}", fontWeight = FontWeight.Bold, fontSize = 15.sp) },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(
+                        text = "Accountable: ${AccountableRole.OPERATIONS.displayName}. Confirm the rider completed installation and safety checklist training.",
+                        fontSize = 11.sp,
+                        color = Color(0xFF475569)
+                    )
+                    OutlinedTextField(
+                        value = trainingNoteInput,
+                        onValueChange = { trainingNoteInput = it },
+                        label = { Text("Training verification note (required)") },
+                        placeholder = { Text("e.g. Passed leak check & regulator walkthrough", color = Color.Gray) },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("ops_training_note_input")
+                    )
+                }
+            },
+            confirmButton = {
+                Button(
+                    enabled = trainingNoteInput.isNotBlank(),
+                    onClick = {
+                        val res = store.markRiderTrainingDone(
+                            riderId = targetTrainingRider.id,
+                            note = trainingNoteInput.trim(),
+                            actor = AccountableRole.OPERATIONS.displayName
+                        )
+                        onBanner.report(res)
+                        if (res.first) {
+                            riderForTraining = null
+                        }
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF16A34A)),
+                    modifier = Modifier.testTag("ops_training_confirm_btn")
+                ) {
+                    Text("Confirm training done")
+                }
+            },
+            dismissButton = {
+                OutlinedButton(onClick = { riderForTraining = null }) {
                     Text("Cancel")
                 }
             }
@@ -1028,11 +1296,29 @@ private fun OperationsDispatchCard(
                 }
             }
 
-            Text(
-                text = "Hub: ${snapshot.pointName(order.fulfilmentPointId)} · Area: ${snapshot.addressArea(order.addressId)}",
-                fontSize = 11.sp,
-                color = Color(0xFF475569)
-            )
+            val isAuto = order.dispatchModeAtConfirm == DispatchMode.AUTO_RIDER_FIRST
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Surface(
+                    color = if (isAuto) Color(0xFFDBEAFE) else Color(0xFFF1F5F9),
+                    shape = RoundedCornerShape(4.dp)
+                ) {
+                    Text(
+                        text = if (isAuto) "Automatic" else "Manual",
+                        fontSize = 9.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = if (isAuto) Color(0xFF1D4ED8) else Color(0xFF475569),
+                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                    )
+                }
+                Text(
+                    text = "Hub: ${snapshot.pointName(order.fulfilmentPointId)} · Area: ${snapshot.addressArea(order.addressId)}",
+                    fontSize = 11.sp,
+                    color = Color(0xFF475569)
+                )
+            }
             if (order.fulfilmentMode == FulfilmentMode.DELIVERY) {
                 val windowText = order.promiseLabel?.takeIf { it.isNotBlank() }
                     ?: order.deliveryWindowLabel?.takeIf { it.isNotBlank() }
@@ -1064,7 +1350,11 @@ private fun OperationsDispatchCard(
                 }
             }
             Text(
-                text = "Bound cylinder: ${order.allocatedSerial ?: "None"}",
+                text = if (isAuto && order.allocatedSerial == null) {
+                    "Cylinder will be bound by hub when rider arrives"
+                } else {
+                    "Bound cylinder: ${order.allocatedSerial ?: "None"}"
+                },
                 fontSize = 11.sp,
                 fontWeight = FontWeight.SemiBold,
                 color = Color(0xFF0F172A)
@@ -1316,6 +1606,136 @@ private fun OperationsReturnCollectionCard(
                         Text("Offer collection to rider", fontSize = 12.sp)
                     }
                 }
+            }
+        }
+    }
+}
+
+/**
+ * Editable Hub Minimums card (F1.4) allowing Operations Manager to update minimum filled
+ * targets per hub and household cylinder size with audit trail logging.
+ */
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun OperationsHubMinimumsCard(
+    store: BlueGasStore,
+    snapshot: SharedAppState,
+    onBanner: StaffBanner
+) {
+    val hubs = remember(snapshot.version) {
+        snapshot.nodes.filter { it.type == FulfilmentPointType.HUB }
+    }
+    val skus = remember(snapshot.version) {
+        snapshot.productVariants.filter { it.isCylinder && it.isHouseholdApproved }.map { it.sku }
+    }
+    val draftValues = remember(snapshot.version, snapshot.settings.hubMinimumFilled) {
+        mutableStateMapOf<String, String>().apply {
+            hubs.forEach { hub ->
+                skus.forEach { sku ->
+                    val current = snapshot.settings.hubMinimumFilled[hub.id]?.get(sku) ?: 0
+                    put("${hub.id}|$sku", current.toString())
+                }
+            }
+        }
+    }
+    val allValid = hubs.all { hub ->
+        skus.all { sku ->
+            val v = draftValues["${hub.id}|$sku"]?.trim()?.toIntOrNull()
+            v != null && v >= 0
+        }
+    }
+
+    Card(
+        colors = CardDefaults.cardColors(containerColor = Color.White),
+        border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFFCBD5E1)),
+        modifier = Modifier
+            .fillMaxWidth()
+            .testTag("ops_hub_minimums_card")
+    ) {
+        Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            FlowRow(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+                Text(
+                    text = "Hub minimums",
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 13.sp,
+                    color = Color(0xFF0F172A),
+                    modifier = Modifier.align(Alignment.CenterVertically)
+                )
+                DemoValuePill("Demo value — levels to decide after the pilot")
+            }
+            Text(
+                text = "Accountable: ${AccountableRole.OPERATIONS.displayName}",
+                fontSize = 11.sp,
+                color = Color(0xFF475569)
+            )
+
+            hubs.forEach { hub ->
+                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Text(hub.name, fontWeight = FontWeight.SemiBold, fontSize = 12.sp, color = Color(0xFF1E293B))
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        skus.forEach { sku ->
+                            val key = "${hub.id}|$sku"
+                            val raw = draftValues[key] ?: ""
+                            OutlinedTextField(
+                                value = raw,
+                                onValueChange = { draftValues[key] = it.filter { ch -> ch.isDigit() } },
+                                label = { Text(snapshot.skuLabel(sku), fontSize = 10.sp) },
+                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                                singleLine = true,
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .testTag("ops_min_input_${hub.id}_$sku")
+                            )
+                        }
+                    }
+                }
+            }
+
+            Button(
+                enabled = allValid,
+                onClick = {
+                    val updatedMap = mutableMapOf<String, Map<String, Int>>()
+                    for (hub in hubs) {
+                        val perSku = mutableMapOf<String, Int>()
+                        for (sku in skus) {
+                            val v = draftValues["${hub.id}|$sku"]?.trim()?.toIntOrNull()
+                            if (v == null || v < 0) {
+                                onBanner("Enter a whole number ≥ 0 for all hub minimums.", true)
+                                return@Button
+                            }
+                            perSku[sku] = v
+                        }
+                        updatedMap[hub.id] = perSku
+                    }
+                    val res = store.updateSettings(
+                        snapshot.settings.copy(hubMinimumFilled = updatedMap),
+                        actor = AccountableRole.OPERATIONS.displayName
+                    )
+                    if (res.first) {
+                        store.logAudit(
+                            entityType = "PlatformSettings",
+                            entityId = "HUB_MINIMUMS",
+                            action = "UPDATE_HUB_MINIMUMS",
+                            actor = AccountableRole.OPERATIONS.displayName,
+                            role = AccountableRole.OPERATIONS,
+                            details = updatedMap.entries.joinToString("; ") { (h, m) -> "$h: $m" }
+                        )
+                    }
+                    onBanner.report(res)
+                },
+                colors = ButtonDefaults.buttonColors(containerColor = BlueGasPrimary),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(min = 48.dp)
+                    .testTag("ops_save_minimums_btn")
+            ) {
+                Text("Save hub minimums", fontSize = 12.sp)
             }
         }
     }

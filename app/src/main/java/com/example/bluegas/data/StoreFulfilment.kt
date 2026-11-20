@@ -42,7 +42,11 @@ import java.util.UUID
  * @param pointId Optional hub point identifier.
  * @return Success flag and human-readable feedback.
  */
-fun BlueGasStore.hubAccept(orderId: String, pointId: String? = null): Pair<Boolean, String> {
+fun BlueGasStore.hubAccept(
+    orderId: String,
+    pointId: String? = null,
+    actor: String = "Hub Staff"
+): Pair<Boolean, String> {
     val order = orders.find { it.id == orderId } ?: return Pair(false, "Order not found.")
     if (order.status != OrderStatus.ORD_ASGN) {
         return Pair(false, "Order is not in Assigned status (Status: ${order.status.displayName}).")
@@ -52,7 +56,7 @@ fun BlueGasStore.hubAccept(orderId: String, pointId: String? = null): Pair<Boole
     val tAcpt = OrderStateMachine.transition(
         order = order,
         targetStatus = OrderStatus.ORD_ACPT,
-        actor = "Hub Staff",
+        actor = actor,
         role = AccountableRole.HUB,
         trigger = "Hub accepted SLA"
     )
@@ -65,7 +69,7 @@ fun BlueGasStore.hubAccept(orderId: String, pointId: String? = null): Pair<Boole
 }
 
 fun BlueGasStore.hubAcceptOrder(orderId: String, actor: String = "Hub Staff"): Pair<Boolean, String> =
-    hubAccept(orderId)
+    hubAccept(orderId, actor = actor)
 
 /**
  * Declines an assigned order on behalf of the hub and raises an exception.
@@ -78,6 +82,13 @@ fun BlueGasStore.hubDecline(orderId: String, reason: String): Pair<Boolean, Stri
     val order = orders.find { it.id == orderId } ?: return Pair(false, "Order not found.")
     if (order.status != OrderStatus.ORD_ASGN) {
         return Pair(false, "Order is not in Assigned status.")
+    }
+    if (order.isAutoDispatchDelivery()) {
+        order.assignedRiderId = null
+        order.riderTaskStatus = null
+        order.riderOfferedAt = null
+        order.riderCylinderVerified = false
+        order.riderAtHubAt = null
     }
     return raiseException(orderId, ExceptionReason.NO_ACCEPTANCE, "Hub declined order: $reason")
 }
@@ -169,6 +180,17 @@ fun BlueGasStore.allocateCylinder(orderId: String, cylinderId: String): Pair<Boo
         allocatedOrderId = orderId
     )
     order.allocatedSerial = cylinderId
+    if (order.isAutoDispatchDelivery()) {
+        order.riderCylinderVerified = true
+        addNotification(
+            surface = AppSurface.RIDER,
+            title = "Cylinder scanned out",
+            message = "Cylinder $cylinderId scanned out to you by the hub",
+            canonicalStatus = order.status.canonicalLabel,
+            orderId = order.id,
+            code = "NTF-03"
+        )
+    }
 
     logAudit("Cylinder", cylinderId, "ALLOCATE_SERIAL", AccountableRole.INVENTORY.displayName, AccountableRole.INVENTORY, "Bound physical cylinder $cylinderId to order $orderId")
     notifyChanged()
@@ -216,11 +238,18 @@ fun BlueGasStore.reportNoSuitableCylinder(orderId: String, untaggedOnly: Boolean
  */
 fun BlueGasStore.assignRider(orderId: String, riderId: String): Pair<Boolean, String> {
     val order = orders.find { it.id == orderId } ?: return Pair(false, "Order not found.")
-    if (order.status != OrderStatus.ORD_PREP) {
-        return Pair(false, "Order must be in Preparing to assign rider.")
-    }
-    if (order.allocatedSerial == null) {
-        return Pair(false, "Cylinder must be allocated before assigning a rider.")
+    val isAutoOrder = order.isAutoDispatchDelivery()
+    if (isAutoOrder) {
+        if (order.status != OrderStatus.ORD_ASGN && order.status != OrderStatus.ORD_PREP) {
+            return Pair(false, "Order must be in Assigned or Preparing to assign a rider.")
+        }
+    } else {
+        if (order.status != OrderStatus.ORD_PREP) {
+            return Pair(false, "Order must be in Preparing to assign rider.")
+        }
+        if (order.allocatedSerial == null) {
+            return Pair(false, "Cylinder must be allocated before assigning a rider.")
+        }
     }
 
     val rider = riders.find { it.id == riderId } ?: return Pair(false, "Rider not found.")
@@ -237,15 +266,17 @@ fun BlueGasStore.assignRider(orderId: String, riderId: String): Pair<Boolean, St
         return Pair(false, "This rider has not completed installation training.")
     }
 
+    order.declinedRiderIds.remove(riderId)
     order.assignedRiderId = riderId
-    order.riderOfferedAt = System.currentTimeMillis()
+    order.riderOfferedAt = clock()
     order.riderCylinderVerified = false
     order.riderTaskStatus = RiderTaskStatus.OFFERED
 
+    val cylinderSuffix = order.allocatedSerial?.let { " Cylinder: $it." } ?: ""
     addNotification(
         surface = AppSurface.RIDER,
         title = "New Delivery Task",
-        message = "New delivery task for Order ${order.id} offered. Cylinder: ${order.allocatedSerial}.",
+        message = "New delivery task for Order ${order.id} offered.$cylinderSuffix",
         canonicalStatus = order.status.canonicalLabel,
         orderId = order.id,
         code = "NTF-03"
@@ -537,14 +568,36 @@ fun BlueGasStore.depotSubmitCashHandover(pointId: String, declaredPaisa: Long): 
  * @param orderId Target order identifier.
  * @return Success status and confirmation message.
  */
-fun BlueGasStore.riderAcceptTask(orderId: String, riderId: String? = null): Pair<Boolean, String> {
+/**
+ * Accepts an offered delivery task by the currently active rider (RACI-06).
+ *
+ * In HUB_FIRST mode, keeps order in ORD_PREP; in AUTO_RIDER_FIRST mode, accepts at ORD_ASGN
+ * and automatically moves the order to ORD_ACPT on behalf of Hub Staff. Supports offline queuing.
+ *
+ * @param orderId Target order identifier.
+ * @param riderId Optional rider identifier.
+ * @param isReplay True when replaying from offline outbox.
+ * @return Success status and confirmation message.
+ */
+fun BlueGasStore.riderAcceptTask(
+    orderId: String,
+    riderId: String? = null,
+    isReplay: Boolean = false
+): Pair<Boolean, String> {
     val order = orders.find { it.id == orderId } ?: return Pair(false, "Order not found.")
     val effectiveRiderId = riderId ?: getActiveRider()?.id
-    if (order.assignedRiderId != effectiveRiderId) {
+    if (!isReplay && order.assignedRiderId != effectiveRiderId) {
         return Pair(false, "Order is not assigned to this rider.")
     }
-    if (order.status != OrderStatus.ORD_PREP) {
-        return Pair(false, "Order must be in Preparing status.")
+    val isAuto = order.isAutoDispatchDelivery()
+    if (isAuto) {
+        if (order.status != OrderStatus.ORD_ASGN) {
+            return Pair(false, "Order must be in Assigned status.")
+        }
+    } else {
+        if (order.status != OrderStatus.ORD_PREP) {
+            return Pair(false, "Order must be in Preparing status.")
+        }
     }
     if (order.riderTaskStatus != RiderTaskStatus.OFFERED) {
         return Pair(false, "Delivery task is not currently offered.")
@@ -553,29 +606,135 @@ fun BlueGasStore.riderAcceptTask(orderId: String, riderId: String? = null): Pair
     if (settings.autoRaiseNoAcceptance) {
         val offeredAt = order.riderOfferedAt ?: 0L
         val windowMs = settings.riderAcceptanceWindowMins * 60 * 1000L
-        if (System.currentTimeMillis() - offeredAt > windowMs) {
+        if (clock() - offeredAt > windowMs) {
             expireRiderOffer(order)
             notifyChanged()
             return Pair(false, "This offer has expired and was returned to the hub.")
         }
     }
 
+    if (isRiderOffline && !isReplay) {
+        if (riderOutbox.any { it.orderId == orderId && it.action == "ACCEPT_TASK" && it.syncStatus == "PENDING" }) {
+            return Pair(true, "Already saved — it will be sent when you are back online.")
+        }
+        riderOutbox.add(
+            OfflineOutboxEvent(
+                sequenceNumber = outboxSequenceCounter++,
+                idempotencyKey = "IDEMP-OFF-" + UUID.randomUUID().toString().take(8),
+                orderId = orderId,
+                action = "ACCEPT_TASK",
+                fromStatus = order.status,
+                toStatus = if (isAuto) OrderStatus.ORD_ACPT else order.status,
+                handoverPayload = effectiveRiderId?.let { mapOf("riderId" to it) }
+            )
+        )
+        notifyChanged()
+        return Pair(true, "Task acceptance queued in Offline Outbox.")
+    }
+
+    val riderActor = riders.find { it.id == order.assignedRiderId }?.name ?: getActiveRider()?.name ?: "Rider"
     order.riderTaskStatus = RiderTaskStatus.ACCEPTED
-    logAudit("Order", orderId, "RIDER_ACCEPT_TASK", getActiveRider()?.name ?: "Rider", AccountableRole.OPERATIONS, "Rider accepted delivery task")
+    logAudit("Order", orderId, "RIDER_ACCEPT_TASK", riderActor, AccountableRole.OPERATIONS, "Rider accepted delivery task")
+
+    if (isAuto) {
+        val (hubOk, hubMsg) = hubAccept(
+            orderId = order.id,
+            actor = "Hub Staff (auto on rider acceptance)"
+        )
+        if (!hubOk) {
+            order.riderTaskStatus = RiderTaskStatus.OFFERED
+            return Pair(false, hubMsg)
+        }
+        addNotification(
+            surface = AppSurface.STAFF,
+            title = "Rider accepted order ${order.id}",
+            message = "$riderActor accepted ${orderLabel(order.id)}. Ready to prepare at hub.",
+            canonicalStatus = order.status.canonicalLabel,
+            orderId = order.id,
+            code = "NTF-03",
+            staffRole = StaffSubRole.HUB
+        )
+    }
+
     notifyChanged()
     return Pair(true, "Delivery task accepted.")
 }
 
 /**
- * Declines an offered delivery task and returns it to the hub for reassignment.
+ * Records a rider's arrival at the fulfilment hub to pick up a cylinder in AUTO_RIDER_FIRST mode.
+ * Requires an active network connection.
+ *
+ * @param orderId Target order identifier in [OrderStatus.ORD_ACPT].
+ * @param riderId Optional rider identifier.
+ * @return Success flag and confirmation or error message.
+ */
+fun BlueGasStore.riderAtHub(orderId: String, riderId: String? = null): Pair<Boolean, String> {
+    val order = orders.find { it.id == orderId } ?: return Pair(false, "Order not found.")
+    val effectiveRiderId = riderId ?: getActiveRider()?.id
+    if (order.assignedRiderId != effectiveRiderId) {
+        return Pair(false, "Order is not assigned to this rider.")
+    }
+    if (order.status != OrderStatus.ORD_ACPT) {
+        return Pair(false, "Order must be in Accepted status.")
+    }
+    if (order.riderTaskStatus != RiderTaskStatus.ACCEPTED) {
+        return Pair(false, "Accept the delivery first.")
+    }
+    if (isRiderOffline) {
+        return Pair(false, "Arriving at the hub needs a connection.")
+    }
+
+    val riderName = riders.find { it.id == effectiveRiderId }?.name ?: getActiveRider()?.name ?: "Rider"
+    order.riderAtHubAt = clock()
+    logAudit(
+        entityType = "Order",
+        entityId = order.id,
+        action = "RIDER_AT_HUB",
+        actor = riderName,
+        role = AccountableRole.OPERATIONS,
+        details = "Rider $riderName arrived at hub for ${order.id}"
+    )
+    addNotification(
+        surface = AppSurface.STAFF,
+        title = "Rider waiting at hub",
+        message = "$riderName is at the hub for ${orderLabel(order.id)}.",
+        canonicalStatus = order.status.canonicalLabel,
+        orderId = order.id,
+        code = "NTF-03",
+        staffRole = StaffSubRole.HUB
+    )
+    notifyChanged()
+    return Pair(true, "Hub notified that you have arrived.")
+}
+
+/**
+ * Declines an offered delivery task and returns it to the hub (or tries next rider in AUTO mode).
  *
  * @param orderId Target order identifier.
  * @param reason Plain-language explanation for declining.
  * @return Success status and notification confirmation.
  */
-fun BlueGasStore.riderDeclineTask(orderId: String, reason: String): Pair<Boolean, String> {
+fun BlueGasStore.riderDeclineTask(orderId: String, reason: String): Pair<Boolean, String> =
+    riderDeclineTaskInternal(orderId, null, reason)
+
+/**
+ * Overload for declining an offered task with an explicit rider identifier.
+ *
+ * @param orderId Target order identifier.
+ * @param riderId Identifier of the rider declining the task.
+ * @param reason Plain-language explanation for declining.
+ * @return Success status and notification confirmation.
+ */
+fun BlueGasStore.riderDeclineTask(orderId: String, riderId: String, reason: String): Pair<Boolean, String> =
+    riderDeclineTaskInternal(orderId, riderId, reason)
+
+private fun BlueGasStore.riderDeclineTaskInternal(
+    orderId: String,
+    explicitRiderId: String?,
+    reason: String
+): Pair<Boolean, String> {
     val order = orders.find { it.id == orderId } ?: return Pair(false, "Order not found.")
-    val effectiveRiderId = getActiveRider()?.id
+    val effectiveRiderId = explicitRiderId ?: getActiveRider()?.id
     if (order.assignedRiderId != effectiveRiderId) {
         return Pair(false, "Order is not assigned to this rider.")
     }
@@ -583,12 +742,32 @@ fun BlueGasStore.riderDeclineTask(orderId: String, reason: String): Pair<Boolean
         return Pair(false, "Task is not offered.")
     }
 
+    val riderActor = riders.find { it.id == effectiveRiderId }?.name ?: getActiveRider()?.name ?: "Rider"
+    if (order.isAutoDispatchDelivery()) {
+        if (effectiveRiderId != null && effectiveRiderId !in order.declinedRiderIds) {
+            order.declinedRiderIds.add(effectiveRiderId)
+        }
+        order.riderTaskStatus = null
+        order.assignedRiderId = null
+        order.riderOfferedAt = null
+        order.riderCylinderVerified = false
+
+        logAudit("Order", orderId, "RIDER_DECLINE_TASK", riderActor, AccountableRole.OPERATIONS, "Rider declined task: $reason")
+        val (reOffered, reMsg) = autoOfferRider(order.id)
+        notifyChanged()
+        return if (reOffered) {
+            Pair(true, "Task declined. $reMsg")
+        } else {
+            Pair(true, "Task declined. No free rider left — Operations alerted.")
+        }
+    }
+
     order.riderTaskStatus = RiderTaskStatus.DECLINED
     order.assignedRiderId = null
     order.riderOfferedAt = null
     order.riderCylinderVerified = false
 
-    logAudit("Order", orderId, "RIDER_DECLINE_TASK", getActiveRider()?.name ?: "Rider", AccountableRole.HUB, "Rider declined task: $reason")
+    logAudit("Order", orderId, "RIDER_DECLINE_TASK", riderActor, AccountableRole.HUB, "Rider declined task: $reason")
 
     addNotification(
         surface = AppSurface.STAFF,
@@ -603,19 +782,6 @@ fun BlueGasStore.riderDeclineTask(orderId: String, reason: String): Pair<Boolean
     notifyChanged()
     return Pair(true, "Task declined. Hub notified to reassign.")
 }
-
-/**
- * Overload for declining an offered task with an explicit rider identifier.
- * Delegates to the primary [riderDeclineTask] function.
- * Exists for compatibility with external callers and unit tests passing rider credentials.
- *
- * @param orderId Target order identifier.
- * @param riderId Identifier of the rider declining the task.
- * @param reason Plain-language explanation for declining.
- * @return Success status and notification confirmation.
- */
-fun BlueGasStore.riderDeclineTask(orderId: String, riderId: String, reason: String): Pair<Boolean, String> =
-    riderDeclineTask(orderId, reason)
 
 /**
  * Verifies that the physical cylinder scanned/entered by the rider matches the allocated serial.
@@ -1357,6 +1523,32 @@ fun BlueGasStore.completeHandover(
         code = "NTF-06"
     )
 
+    // F4.5: Close linked Route A Switch & Save claim automatically when replacement order completes
+    replacementClaims
+        .filter { it.linkedOrderId == orderId && it.route == "A" && it.status == ClaimStatus.SCHEDULED_FOR_HANDOVER }
+        .forEach { claim ->
+            val reasonText = "Old cylinder stays with the customer for return to ${claim.declaredBrand}"
+            val (closedOk, _) = com.example.bluegas.lifecycle.ClaimStateMachine.transition(
+                claim = claim,
+                target = ClaimStatus.CLOSED,
+                actor = actualActor,
+                role = AccountableRole.OPERATIONS,
+                reason = reasonText
+            )
+            if (closedOk) {
+                claim.outcomeCode = "Switched-Customer-Keeps-Old"
+                claim.closureReason = reasonText
+                logAudit(
+                    "ReplacementClaim",
+                    claim.id,
+                    "ROUTE_A_ORDER_COMPLETED_CLOSE",
+                    actualActor,
+                    AccountableRole.OPERATIONS,
+                    "Auto-closed Route A claim ${claim.id} when replacement order $orderId completed"
+                )
+            }
+        }
+
     notifyChanged()
     return Pair(true, "Handover completed successfully.")
 }
@@ -1586,6 +1778,12 @@ fun BlueGasStore.replayRiderOutbox(): Pair<Boolean, String> {
         }
 
         when (event.action) {
+            "ACCEPT_TASK" -> {
+                val rId = event.handoverPayload?.get("riderId")?.takeIf { it.isNotBlank() }
+                val (ok, _) = riderAcceptTask(event.orderId, riderId = rId, isReplay = true)
+                event.syncStatus = if (ok) "APPLIED" else "REJECTED"
+                if (ok) applied++ else rejected++
+            }
             "START_TRIP" -> {
                 val (ok, _) = riderStartTrip(event.orderId, isReplay = true)
                 event.syncStatus = if (ok) "APPLIED" else "REJECTED"

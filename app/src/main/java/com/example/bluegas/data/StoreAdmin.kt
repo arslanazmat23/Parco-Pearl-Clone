@@ -73,6 +73,9 @@ fun BlueGasStore.updateSettings(
     if (new.refillReminderLeadDays !in 0..14) {
         return Pair(false, "Refill reminder lead days must be between 0 and 14.")
     }
+    if (new.riderBatchMax !in 1..5) {
+        return Pair(false, "Maximum orders per rider trip must be between 1 and 5.")
+    }
 
     val old = settings
     val changedFields = mutableListOf<String>()
@@ -98,6 +101,8 @@ fun BlueGasStore.updateSettings(
     if (old.expressHours != new.expressHours) changedFields.add("expressHours: ${old.expressHours} -> ${new.expressHours}h")
     if (old.refillReminderEnabled != new.refillReminderEnabled) changedFields.add("refillReminderEnabled: ${old.refillReminderEnabled} -> ${new.refillReminderEnabled}")
     if (old.refillReminderLeadDays != new.refillReminderLeadDays) changedFields.add("refillReminderLeadDays: ${old.refillReminderLeadDays} -> ${new.refillReminderLeadDays}d")
+    if (old.dispatchMode != new.dispatchMode) changedFields.add("dispatchMode: ${old.dispatchMode} -> ${new.dispatchMode}")
+    if (old.riderBatchMax != new.riderBatchMax) changedFields.add("riderBatchMax: ${old.riderBatchMax} -> ${new.riderBatchMax}")
 
     settings = new.copy(deliveryWindowsHours = sortedWindows)
 

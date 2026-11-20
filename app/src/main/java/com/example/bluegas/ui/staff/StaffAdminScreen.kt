@@ -56,6 +56,12 @@ fun StaffAdminScreen(
     var expressHours by remember(currentSettings.expressHours) { mutableStateOf(currentSettings.expressHours.toString()) }
     var refillReminderEnabled by remember(currentSettings.refillReminderEnabled) { mutableStateOf(currentSettings.refillReminderEnabled) }
     var refillReminderLeadDays by remember(currentSettings.refillReminderLeadDays) { mutableStateOf(currentSettings.refillReminderLeadDays.toString()) }
+    var dispatchMode by remember(currentSettings.dispatchMode) { mutableStateOf(currentSettings.dispatchMode) }
+    var riderBatchMax by remember(currentSettings.riderBatchMax) { mutableStateOf(currentSettings.riderBatchMax.toString()) }
+    var switchSaveRouteAEnabled by remember(currentSettings.switchSaveRouteAEnabled) { mutableStateOf(currentSettings.switchSaveRouteAEnabled) }
+    var rivalReturnAgreementsText by remember(currentSettings.rivalReturnAgreements) {
+        mutableStateOf(currentSettings.rivalReturnAgreements.joinToString(", "))
+    }
 
     LazyColumn(
         modifier = Modifier
@@ -487,6 +493,96 @@ fun StaffAdminScreen(
                                 modifier = Modifier.fillMaxWidth().testTag("admin_refill_lead_days_input")
                             )
 
+                            Spacer(modifier = Modifier.height(10.dp))
+                            HorizontalDivider(color = Color(0xFFE2E8F0))
+                            Spacer(modifier = Modifier.height(8.dp))
+
+                            Text(
+                                text = "Dispatch mode & batching",
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 12.sp,
+                                color = Color(0xFF0F172A)
+                            )
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                FilterChip(
+                                    selected = dispatchMode == DispatchMode.HUB_FIRST,
+                                    onClick = { dispatchMode = DispatchMode.HUB_FIRST },
+                                    label = { Text("Hub first (current)", fontSize = 10.sp) },
+                                    modifier = Modifier.testTag("admin_dispatch_hub_first")
+                                )
+                                FilterChip(
+                                    selected = dispatchMode == DispatchMode.AUTO_RIDER_FIRST,
+                                    onClick = { dispatchMode = DispatchMode.AUTO_RIDER_FIRST },
+                                    label = { Text("Automatic rider first", fontSize = 10.sp) },
+                                    modifier = Modifier.testTag("admin_dispatch_auto_first")
+                                )
+                            }
+                            Surface(color = Color(0xFFDBEAFE), shape = RoundedCornerShape(4.dp)) {
+                                Text(
+                                    text = "Recommended — awaiting approval",
+                                    fontSize = 9.sp,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = Color(0xFF1D4ED8),
+                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                )
+                            }
+                            Spacer(modifier = Modifier.height(6.dp))
+
+                            OutlinedTextField(
+                                value = riderBatchMax,
+                                onValueChange = { riderBatchMax = it.filter { ch -> ch.isDigit() } },
+                                label = { Text("Max orders per rider trip [1-5]") },
+                                supportingText = { Text("Recommended — awaiting approval", fontSize = 10.sp) },
+                                singleLine = true,
+                                modifier = Modifier.fillMaxWidth().testTag("admin_rider_batch_max_input")
+                            )
+
+                            Spacer(modifier = Modifier.height(10.dp))
+                            HorizontalDivider(color = Color(0xFFE2E8F0))
+                            Spacer(modifier = Modifier.height(8.dp))
+
+                            Text(
+                                text = "Switch & Save (Phase 2 preview)",
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 12.sp,
+                                color = Color(0xFF0F172A)
+                            )
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Column(modifier = Modifier.weight(1f).padding(end = 8.dp)) {
+                                    Text("Switch & Save Route A (customer keeps old cylinder)", fontWeight = FontWeight.SemiBold, fontSize = 11.sp, color = Color(0xFF1E293B))
+                                    Spacer(modifier = Modifier.height(2.dp))
+                                    Surface(color = Color(0xFFDBEAFE), shape = RoundedCornerShape(4.dp)) {
+                                        Text(
+                                            text = "Recommended — awaiting approval",
+                                            fontSize = 9.sp,
+                                            fontWeight = FontWeight.SemiBold,
+                                            color = Color(0xFF1D4ED8),
+                                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                        )
+                                    }
+                                }
+                                Switch(
+                                    checked = switchSaveRouteAEnabled,
+                                    onCheckedChange = { switchSaveRouteAEnabled = it },
+                                    modifier = Modifier.testTag("admin_switch_save_route_a_switch")
+                                )
+                            }
+                            Spacer(modifier = Modifier.height(6.dp))
+                            OutlinedTextField(
+                                value = rivalReturnAgreementsText,
+                                onValueChange = { rivalReturnAgreementsText = it },
+                                label = { Text("Rival return agreements (Route B brands)") },
+                                placeholder = { Text("e.g. PARCO Pearl Gas, Noor LPG") },
+                                supportingText = { Text("Comma-separated brands · Demo value · Q08", fontSize = 10.sp) },
+                                modifier = Modifier.fillMaxWidth().testTag("admin_rival_agreements_input")
+                            )
+
                             Spacer(modifier = Modifier.height(12.dp))
                             Button(
                                 onClick = {
@@ -535,6 +631,11 @@ fun StaffAdminScreen(
                                         onBanner("Enter valid refill reminder lead days (0–14).")
                                         return@Button
                                     }
+                                    val parsedBatchMax = riderBatchMax.trim().toIntOrNull()
+                                    if (parsedBatchMax == null || parsedBatchMax !in 1..5) {
+                                        onBanner("Max orders per rider trip must be between 1 and 5.")
+                                        return@Button
+                                    }
                                     val newSettings = currentSettings.copy(
                                         holdTtlMinutes = holdTtl.toIntOrNull() ?: currentSettings.holdTtlMinutes,
                                         hubAcceptanceWindowMins = acceptanceWindow.toIntOrNull() ?: currentSettings.hubAcceptanceWindowMins,
@@ -559,7 +660,15 @@ fun StaffAdminScreen(
                                         expressFeePaisa = parsedExpressFeeRs * 100L,
                                         expressHours = parsedExpressHours,
                                         refillReminderEnabled = refillReminderEnabled,
-                                        refillReminderLeadDays = parsedLeadDays
+                                        refillReminderLeadDays = parsedLeadDays,
+                                        dispatchMode = dispatchMode,
+                                        riderBatchMax = parsedBatchMax,
+                                        switchSaveRouteAEnabled = switchSaveRouteAEnabled,
+                                        rivalReturnAgreements = rivalReturnAgreementsText
+                                            .split(",")
+                                            .map { it.trim() }
+                                            .filter { it.isNotEmpty() }
+                                            .distinct()
                                     )
                                     val (ok, msg) = store.updateSettings(newSettings, "System Administrator")
                                     onBanner(msg)
@@ -728,11 +837,6 @@ private fun ToBeOptionsReadOnlyCard(
         }
     }
 
-    val dispatchText = when (settings.dispatchMode) {
-        DispatchMode.HUB_FIRST -> "Hub first"
-        DispatchMode.AUTO_RIDER_FIRST -> "Auto rider first"
-    }
-
     Card(
         colors = CardDefaults.cardColors(containerColor = Color.White),
         border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFFCBD5E1)),
@@ -750,16 +854,6 @@ private fun ToBeOptionsReadOnlyCard(
             Spacer(modifier = Modifier.height(8.dp))
 
             ToBeSettingRow(
-                label = "Dispatch mode",
-                value = dispatchText,
-                isRecommended = true
-            )
-            ToBeSettingRow(
-                label = "Maximum orders per rider trip",
-                value = "${settings.riderBatchMax} orders",
-                isRecommended = true
-            )
-            ToBeSettingRow(
                 label = "Customer SMS alerts",
                 value = if (settings.smsEnabled) "Enabled (shows \"SMS sent\" tag)" else "Disabled"
             )
@@ -771,17 +865,7 @@ private fun ToBeOptionsReadOnlyCard(
             ToBeSettingRow(
                 label = "Daily plant fill plan time",
                 value = "${settings.fillPlanHour}:00",
-                isRecommended = true
-            )
-            ToBeSettingRow(
-                label = "Switch & Save (Route A)",
-                value = if (settings.switchSaveRouteAEnabled) "Enabled" else "Disabled",
-                isRecommended = true
-            )
-            ToBeSettingRow(
-                label = "Rival cylinder return agreements (Route B)",
-                value = if (settings.rivalReturnAgreements.isEmpty()) "None configured" else settings.rivalReturnAgreements.joinToString(", "),
-                isDemoValue = true,
+                isRecommended = true,
                 showDivider = false
             )
         }

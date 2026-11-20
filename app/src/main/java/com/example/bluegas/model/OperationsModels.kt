@@ -44,7 +44,29 @@ data class StockTransfer(
     val requestedAt: Long = System.currentTimeMillis(),
     var dispatchedAt: Long? = null,
     var receivedAt: Long? = null,
-    val tonnesEquivalent: Double = 0.0
+    val tonnesEquivalent: Double = 0.0,
+    val source: String = "HUB_REQUEST" // "HUB_REQUEST" | "FILL_PLAN" | "URGENT"
+)
+
+data class FillPlanLine(
+    val pointId: String,
+    val sku: String,
+    val filled: Int,
+    val reserved: Int,
+    val inTransit: Int,
+    val minimum: Int,
+    val proposedQty: Int,
+    var approvedQty: Int
+)
+
+data class FillPlan(
+    val id: String,
+    val forDate: String,
+    val lines: List<FillPlanLine>,
+    var status: String = "PROPOSED", // "PROPOSED" | "APPROVED"
+    val proposedAt: Long,
+    var approvedBy: String? = null,
+    var approvedAt: Long? = null
 )
 
 data class PlantDailyReport(
@@ -316,7 +338,7 @@ data class PlatformSettings(
     val phase2DiscountType: String = "NONE", // "PERCENT", "FIXED", "NONE"
     val phase2DiscountValue: Long = 0L,
     val phase2DiscountAppliesTo: String = "NOT_DECIDED", // Q02
-    val phase2EligibleBrands: List<String> = listOf("Pak LPG", "Burshane", "Fon Gas", "Shell Gas", "Other"),
+    val phase2EligibleBrands: List<String> = listOf("PARCO Pearl Gas", "Noor LPG", "SSGC LPG", "PSO Pak Gas", "Other"),
     val phase2MaxClaimsPerCustomer: Int = 2,
     val phase2RiderMayInspect: Boolean = false, // Q12
     // To-Be options (Chunk 1)
@@ -344,7 +366,7 @@ data class PlatformSettings(
     ),
     val fillPlanHour: Int = 19,                                               // To-Be P1 step 1 [Recommended]
     val switchSaveRouteAEnabled: Boolean = true,                              // To-Be P9 [Recommended, new]
-    val rivalReturnAgreements: List<String> = emptyList()                     // To-Be P9 Route B [To decide]
+    val rivalReturnAgreements: List<String> = listOf("PARCO Pearl Gas")        // To-Be P9 Route B [To decide · Q08]
 )
 
 // --- Phase 2: Lifecycle 2 Replacement Claim & Assets ---
@@ -377,6 +399,9 @@ data class ReplacementClaim(
     var physicalResult: String? = null, // "ACCEPTED", "REJECTED", "EXPIRED_TEST_DATE"
     var hseResult: String? = null,      // "CLEARED", "UNSAFE"
     var testDatePolicyDecision: String? = null, // "ACCEPTED_UNDER_POLICY", "REJECTED_UNDER_POLICY"
+    var route: String = "B", // "A" | "B"
+    var ownershipProofProvided: Boolean = false,
+    var oldDepositSlipUploaded: Boolean = false,
     val history: MutableList<ClaimHistory> = mutableListOf(),
     val createdAt: Long = System.currentTimeMillis()
 )

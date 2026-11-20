@@ -12,11 +12,11 @@ object ClaimStateMachine {
         ClaimStatus.PROVISIONALLY_ELIGIBLE to setOf(ClaimStatus.PROVISIONAL_OFFER_ISSUED, ClaimStatus.CANCELLED),
         ClaimStatus.PROVISIONAL_OFFER_ISSUED to setOf(ClaimStatus.CUSTOMER_CONFIRMED, ClaimStatus.CANCELLED),
         ClaimStatus.CUSTOMER_CONFIRMED to setOf(ClaimStatus.SCHEDULED_FOR_HANDOVER, ClaimStatus.CANCELLED),
-        ClaimStatus.SCHEDULED_FOR_HANDOVER to setOf(ClaimStatus.AT_HANDOVER_INSPECTION, ClaimStatus.CANCELLED),
+        ClaimStatus.SCHEDULED_FOR_HANDOVER to setOf(ClaimStatus.AT_HANDOVER_INSPECTION, ClaimStatus.CLOSED, ClaimStatus.CANCELLED),
         ClaimStatus.AT_HANDOVER_INSPECTION to setOf(ClaimStatus.PHYSICALLY_ACCEPTED, ClaimStatus.PHYSICALLY_REJECTED, ClaimStatus.CANCELLED),
-        ClaimStatus.PHYSICALLY_ACCEPTED to setOf(ClaimStatus.HSE_ASSESSMENT),
+        ClaimStatus.PHYSICALLY_ACCEPTED to setOf(ClaimStatus.HSE_ASSESSMENT, ClaimStatus.CANCELLED),
         ClaimStatus.HSE_ASSESSMENT to setOf(ClaimStatus.HSE_CLEARED, ClaimStatus.HSE_HOLD_UNSAFE),
-        ClaimStatus.HSE_CLEARED to setOf(ClaimStatus.FINAL_OFFER_CONFIRMED),
+        ClaimStatus.HSE_CLEARED to setOf(ClaimStatus.FINAL_OFFER_CONFIRMED, ClaimStatus.CANCELLED),
         ClaimStatus.HSE_HOLD_UNSAFE to setOf(ClaimStatus.CLOSED),
         ClaimStatus.FINAL_OFFER_CONFIRMED to setOf(ClaimStatus.EXCHANGE_COMPLETED, ClaimStatus.CANCELLED),
         ClaimStatus.EXCHANGE_COMPLETED to setOf(ClaimStatus.CLOSED, ClaimStatus.REVERSED),
@@ -37,6 +37,12 @@ object ClaimStateMachine {
         val current = claim.status
         if (current == ClaimStatus.CLOSED || current == ClaimStatus.CANCELLED || current == ClaimStatus.REVERSED) {
             return Pair(false, "Claim ${claim.id} is in terminal status $current.")
+        }
+        if (current == ClaimStatus.SCHEDULED_FOR_HANDOVER && target == ClaimStatus.AT_HANDOVER_INSPECTION && claim.route == "A") {
+            return Pair(false, "Route A has no BLUE GAS inspection or custody.")
+        }
+        if (current == ClaimStatus.SCHEDULED_FOR_HANDOVER && target == ClaimStatus.CLOSED && claim.route != "A") {
+            return Pair(false, "Only Route A claims can close directly when the replacement order completes.")
         }
         val allowed = allowedClaimTransitions[current] ?: emptySet()
         if (!allowed.contains(target)) {

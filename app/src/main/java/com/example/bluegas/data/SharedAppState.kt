@@ -54,6 +54,7 @@ data class SharedAppState(
     // Operations, Supply Chain & Finance (v0.5)
     val stockBalances: List<StockBalance> = emptyList(),
     val stockTransfers: List<StockTransfer> = emptyList(),
+    val fillPlans: List<FillPlan> = emptyList(),
     val plantReports: List<PlantDailyReport> = emptyList(),
     val reconciliations: List<DailyReconciliation> = emptyList(),
     val reconExceptions: List<ReconciliationException> = emptyList(),

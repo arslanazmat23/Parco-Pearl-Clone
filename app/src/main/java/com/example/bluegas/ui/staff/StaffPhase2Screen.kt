@@ -44,33 +44,51 @@ fun StaffPhase2Screen(
     ) {
         item {
             AccountableHeader(
-                roleName = "Phase 2 Preview (Brand Swap & Assistance)",
-                description = "Competitor Cylinder Exchange, Provisional Settlement Offers & Self-Help Diagnostics"
+                roleName = "Phase 2 Preview (Switch & Save & Assistance)",
+                description = "Switch & Save Route A/B Exchanges, Provisional Discount Offers & Self-Help Diagnostics"
             )
             Spacer(modifier = Modifier.height(8.dp))
 
             Surface(
-                color = if (isEnabled) Color(0xFFEFF6FF) else Color(0xFFFEF2F2),
+                color = Color(0xFFEFF6FF),
                 shape = RoundedCornerShape(6.dp),
-                border = androidx.compose.foundation.BorderStroke(1.dp, if (isEnabled) Color(0xFF93C5FD) else Color(0xFFFCA5A5)),
-                modifier = Modifier.fillMaxWidth()
+                border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFF93C5FD)),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .testTag("phase2_route_a_banner")
             ) {
                 Row(
                     modifier = Modifier.padding(10.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Icon(
-                        imageVector = if (isEnabled) Icons.Default.CheckCircle else Icons.Default.Info,
+                        imageVector = Icons.Default.Info,
                         contentDescription = null,
-                        tint = if (isEnabled) Color(0xFF1E40AF) else Color(0xFFDC2626),
+                        tint = Color(0xFF1E40AF),
                         modifier = Modifier.size(16.dp)
                     )
                     Spacer(modifier = Modifier.width(6.dp))
                     Text(
-                        text = if (isEnabled) "Phase 2 preview is active. Client settlement decisions & inspection gates available."
-                        else "Phase 2 preview flag is disabled in Admin Settings. Controls are running in read-only sandbox mode.",
+                        text = "Phase 2 preview — Route A is a recommendation awaiting stakeholder approval and a BRD change.",
                         fontSize = 10.sp,
-                        color = if (isEnabled) Color(0xFF1E40AF) else Color(0xFF991B1B)
+                        fontWeight = FontWeight.SemiBold,
+                        color = Color(0xFF1E40AF)
+                    )
+                }
+            }
+            if (!isEnabled) {
+                Spacer(modifier = Modifier.height(6.dp))
+                Surface(
+                    color = Color(0xFFFEF2F2),
+                    shape = RoundedCornerShape(6.dp),
+                    border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFFFCA5A5)),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text(
+                        text = "Phase 2 preview flag is disabled in Admin Settings.",
+                        fontSize = 10.sp,
+                        color = Color(0xFF991B1B),
+                        modifier = Modifier.padding(8.dp)
                     )
                 }
             }
@@ -100,7 +118,7 @@ fun StaffPhase2Screen(
         when (selectedPhase2Tab) {
             "CLAIMS" -> {
                 item {
-                    Text("L8 Replacement / Brand Swap Claims (${snapshot.replacementClaims.size}):", fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                    Text("Switch & Save Claims (${snapshot.replacementClaims.size}):", fontWeight = FontWeight.Bold, fontSize = 13.sp)
                     Spacer(modifier = Modifier.height(6.dp))
                 }
 
@@ -108,12 +126,31 @@ fun StaffPhase2Screen(
                     item { Text("No replacement claims logged.", fontSize = 11.sp, color = Color.Gray) }
                 } else {
                     items(snapshot.replacementClaims) { claim ->
+                        val statusLabel = when (claim.status) {
+                            ClaimStatus.EVIDENCE_SUBMITTED -> "Evidence submitted"
+                            ClaimStatus.ELIGIBILITY_ASSESSED -> "Under eligibility check"
+                            ClaimStatus.PROVISIONALLY_ELIGIBLE -> "Provisionally eligible"
+                            ClaimStatus.PROVISIONAL_OFFER_ISSUED -> "Provisional offer sent"
+                            ClaimStatus.CUSTOMER_CONFIRMED -> "Customer confirmed"
+                            ClaimStatus.SCHEDULED_FOR_HANDOVER -> "Scheduled for handover"
+                            ClaimStatus.AT_HANDOVER_INSPECTION -> "Physical inspection"
+                            ClaimStatus.PHYSICALLY_ACCEPTED -> "Inspection passed"
+                            ClaimStatus.HSE_ASSESSMENT -> "HSE check in progress"
+                            ClaimStatus.HSE_CLEARED -> "HSE cleared"
+                            ClaimStatus.FINAL_OFFER_CONFIRMED -> "Ready to complete exchange"
+                            ClaimStatus.EXCHANGE_COMPLETED -> "Exchange completed"
+                            ClaimStatus.CLOSED -> "Closed"
+                            ClaimStatus.INELIGIBLE -> "Not eligible"
+                            ClaimStatus.CANCELLED -> "Cancelled"
+                            else -> "In progress"
+                        }
                         Card(
                             colors = CardDefaults.cardColors(containerColor = Color.White),
                             border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFFCBD5E1)),
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .padding(vertical = 4.dp)
+                                .testTag("claim_card_${claim.id}")
                         ) {
                             Column(modifier = Modifier.padding(10.dp)) {
                                 Row(
@@ -121,7 +158,7 @@ fun StaffPhase2Screen(
                                     horizontalArrangement = Arrangement.SpaceBetween,
                                     verticalAlignment = Alignment.CenterVertically
                                 ) {
-                                    Text("Claim ${claim.id} • ${claim.declaredBrand}", fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                                    Text("${claim.id} • ${claim.declaredBrand}", fontWeight = FontWeight.Bold, fontSize = 12.sp)
                                     Surface(
                                         color = when (claim.status) {
                                             ClaimStatus.CLOSED, ClaimStatus.EXCHANGE_COMPLETED -> Color(0xFFDCFCE7)
@@ -131,7 +168,7 @@ fun StaffPhase2Screen(
                                         shape = RoundedCornerShape(4.dp)
                                     ) {
                                         Text(
-                                            text = claim.status.name,
+                                            text = statusLabel,
                                             fontSize = 9.sp,
                                             fontWeight = FontWeight.Bold,
                                             color = when (claim.status) {
@@ -143,11 +180,31 @@ fun StaffPhase2Screen(
                                         )
                                     }
                                 }
+                                Spacer(modifier = Modifier.height(4.dp))
+                                // Route chip
+                                Surface(
+                                    color = if (claim.route == "A") Color(0xFFFEF3C7) else Color(0xFFE0F2FE),
+                                    shape = RoundedCornerShape(4.dp)
+                                ) {
+                                    Text(
+                                        text = if (claim.route == "A") "Route A — Customer keeps old cylinder" else "Route B — BLUE GAS collects & checks",
+                                        fontSize = 9.sp,
+                                        fontWeight = FontWeight.SemiBold,
+                                        color = if (claim.route == "A") Color(0xFF92400E) else Color(0xFF0369A1),
+                                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                    )
+                                }
+                                Spacer(modifier = Modifier.height(4.dp))
                                 Text("Customer: ${claim.customerId} • Serial: ${claim.declaredSerial ?: "N/A"}", fontSize = 11.sp)
                                 Text("Condition: ${claim.declaredCondition} • Declared Size: ${claim.declaredSize}", fontSize = 10.sp, color = Color(0xFF475569))
-
+                                if (claim.linkedOrderId != null) {
+                                    Text("Replacement order: ${claim.linkedOrderId}", fontSize = 10.sp, color = BlueGasPrimary, fontWeight = FontWeight.SemiBold)
+                                }
                                 if (claim.provisionalOfferPaisa > 0) {
                                     Text("Provisional Offer: ${formatPaisaToPkr(claim.provisionalOfferPaisa)}", fontSize = 11.sp, color = Color(0xFF166534), fontWeight = FontWeight.SemiBold)
+                                }
+                                if (!claim.closureReason.isNullOrBlank()) {
+                                    Text("Outcome: ${claim.closureReason}", fontSize = 10.sp, color = Color(0xFF475569))
                                 }
 
                                 // Gate action buttons
@@ -160,20 +217,20 @@ fun StaffPhase2Screen(
                                         ) {
                                             Button(
                                                 onClick = {
-                                                    val (ok, msg) = store.assessEligibility(claim.id, true, "Competitor brand and tare weight proof verified")
+                                                    val (_, msg) = store.assessEligibility(claim.id, true, "Competitor brand and tare weight proof verified")
                                                     onBanner(msg)
                                                 },
                                                 colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF16A34A)),
-                                                modifier = Modifier.weight(1f).height(30.dp)
+                                                modifier = Modifier.weight(1f).height(34.dp)
                                             ) {
                                                 Text("Assess Eligible", fontSize = 10.sp)
                                             }
                                             OutlinedButton(
                                                 onClick = {
-                                                    val (ok, msg) = store.assessEligibility(claim.id, false, "Competitor cylinder severely damaged / uncertified")
+                                                    val (_, msg) = store.assessEligibility(claim.id, false, "Competitor cylinder severely damaged / uncertified")
                                                     onBanner(msg)
                                                 },
-                                                modifier = Modifier.weight(1f).height(30.dp)
+                                                modifier = Modifier.weight(1f).height(34.dp)
                                             ) {
                                                 Text("Ineligible", fontSize = 10.sp, color = Color(0xFFDC2626))
                                             }
@@ -182,76 +239,170 @@ fun StaffPhase2Screen(
                                     ClaimStatus.PROVISIONALLY_ELIGIBLE -> {
                                         Button(
                                             onClick = {
-                                                val (ok, msg) = store.issueProvisionalOffer(claim.id)
+                                                val (_, msg) = store.issueProvisionalOffer(claim.id)
                                                 onBanner(msg)
                                             },
                                             colors = ButtonDefaults.buttonColors(containerColor = BlueGasPrimary),
-                                            modifier = Modifier.fillMaxWidth().height(30.dp)
+                                            modifier = Modifier.fillMaxWidth().height(34.dp)
                                         ) {
                                             Text("Issue Provisional Discount Offer", fontSize = 10.sp)
                                         }
                                     }
                                     ClaimStatus.PROVISIONAL_OFFER_ISSUED -> {
-                                        Button(
-                                            onClick = {
-                                                val (ok, msg) = store.startInspection(claim.id, "Inspector Aslam")
-                                                onBanner(msg)
-                                            },
-                                            modifier = Modifier.fillMaxWidth().height(30.dp)
-                                        ) {
-                                            Text("Start Physical Inspection", fontSize = 10.sp)
+                                        val defaultAddr = snapshot.addresses.firstOrNull { it.customerId == claim.customerId && it.isServiceable }
+                                        if (defaultAddr != null) {
+                                            Button(
+                                                onClick = {
+                                                    val (_, msg) = store.scheduleClaimHandover(claim.id, defaultAddr.id, PaymentMethod.ONLINE_HOSTED)
+                                                    onBanner(msg)
+                                                },
+                                                colors = ButtonDefaults.buttonColors(containerColor = BlueGasPrimary),
+                                                modifier = Modifier.fillMaxWidth().height(34.dp)
+                                            ) {
+                                                Text("Confirm & Schedule Replacement Order", fontSize = 10.sp)
+                                            }
+                                        }
+                                    }
+                                    ClaimStatus.SCHEDULED_FOR_HANDOVER -> {
+                                        if (claim.route == "A") {
+                                            Surface(
+                                                color = Color(0xFFFEF3C7),
+                                                shape = RoundedCornerShape(6.dp),
+                                                modifier = Modifier.fillMaxWidth()
+                                            ) {
+                                                Text(
+                                                    text = "Closes when the replacement order is completed",
+                                                    fontSize = 11.sp,
+                                                    fontWeight = FontWeight.SemiBold,
+                                                    color = Color(0xFF92400E),
+                                                    modifier = Modifier.padding(8.dp)
+                                                )
+                                            }
+                                        } else {
+                                            Button(
+                                                onClick = {
+                                                    val (_, msg) = store.startInspection(claim.id, "Inspector Aslam")
+                                                    onBanner(msg)
+                                                },
+                                                modifier = Modifier.fillMaxWidth().height(34.dp)
+                                            ) {
+                                                Text("Start Physical Inspection", fontSize = 10.sp)
+                                            }
                                         }
                                     }
                                     ClaimStatus.AT_HANDOVER_INSPECTION -> {
-                                        Row(
-                                            modifier = Modifier.fillMaxWidth(),
-                                            horizontalArrangement = Arrangement.spacedBy(8.dp)
-                                        ) {
+                                        if (claim.route != "A") {
+                                            Row(
+                                                modifier = Modifier.fillMaxWidth(),
+                                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                            ) {
+                                                Button(
+                                                    onClick = {
+                                                        val (_, msg) = store.completeInspection(
+                                                            claimId = claim.id,
+                                                            passed = true,
+                                                            notes = "Tare weight verified, zero leakage detected",
+                                                            measuredWeightKg = 15.2,
+                                                            valveIntact = true,
+                                                            tareWeightReadable = true
+                                                        )
+                                                        onBanner(msg)
+                                                    },
+                                                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF16A34A)),
+                                                    modifier = Modifier.weight(1f).height(34.dp)
+                                                ) {
+                                                    Text("Pass Inspection", fontSize = 10.sp)
+                                                }
+                                                OutlinedButton(
+                                                    onClick = {
+                                                        val (_, msg) = store.completeInspection(
+                                                            claimId = claim.id,
+                                                            passed = false,
+                                                            notes = "Foot ring rusted through, failed safety inspection",
+                                                            measuredWeightKg = 13.0,
+                                                            valveIntact = false,
+                                                            tareWeightReadable = false
+                                                        )
+                                                        onBanner(msg)
+                                                    },
+                                                    modifier = Modifier.weight(1f).height(34.dp)
+                                                ) {
+                                                    Text("Fail Inspection", fontSize = 10.sp, color = Color(0xFFDC2626))
+                                                }
+                                            }
+                                        }
+                                    }
+                                    ClaimStatus.PHYSICALLY_ACCEPTED -> {
+                                        if (claim.route != "A") {
                                             Button(
                                                 onClick = {
-                                                    val (ok, msg) = store.completeInspection(
-                                                        claimId = claim.id,
-                                                        passed = true,
-                                                        notes = "Tare weight verified, zero leakage detected",
-                                                        measuredWeightKg = 15.2,
-                                                        valveIntact = true,
-                                                        tareWeightReadable = true
-                                                    )
+                                                    val (_, msg) = store.startHseAssessment(claim.id)
                                                     onBanner(msg)
                                                 },
-                                                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF16A34A)),
-                                                modifier = Modifier.weight(1f).height(30.dp)
+                                                colors = ButtonDefaults.buttonColors(containerColor = BlueGasPrimary),
+                                                modifier = Modifier.fillMaxWidth().height(34.dp)
                                             ) {
-                                                Text("Pass Inspection", fontSize = 10.sp)
+                                                Text("Start HSE Check", fontSize = 10.sp)
                                             }
-                                            OutlinedButton(
+                                        }
+                                    }
+                                    ClaimStatus.HSE_ASSESSMENT -> {
+                                        if (claim.route != "A") {
+                                            Row(
+                                                modifier = Modifier.fillMaxWidth(),
+                                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                            ) {
+                                                Button(
+                                                    onClick = {
+                                                        val (_, msg) = store.recordHseResult(claim.id, true, "Shell and valve cleared by HSE")
+                                                        onBanner(msg)
+                                                    },
+                                                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF16A34A)),
+                                                    modifier = Modifier.weight(1f).height(34.dp)
+                                                ) {
+                                                    Text("Clear HSE", fontSize = 10.sp)
+                                                }
+                                                OutlinedButton(
+                                                    onClick = {
+                                                        val (_, msg) = store.recordHseResult(claim.id, false, "Unsafe cylinder held for HSE incident")
+                                                        onBanner(msg)
+                                                    },
+                                                    modifier = Modifier.weight(1f).height(34.dp)
+                                                ) {
+                                                    Text("Hold Unsafe", fontSize = 10.sp, color = Color(0xFFDC2626))
+                                                }
+                                            }
+                                        }
+                                    }
+                                    ClaimStatus.HSE_CLEARED -> {
+                                        if (claim.route != "A") {
+                                            Button(
                                                 onClick = {
-                                                    val (ok, msg) = store.completeInspection(
-                                                        claimId = claim.id,
-                                                        passed = false,
-                                                        notes = "Foot ring rusted through, failed safety inspection",
-                                                        measuredWeightKg = 13.0,
-                                                        valveIntact = false,
-                                                        tareWeightReadable = false
-                                                    )
+                                                    val (_, msg) = store.confirmFinalOffer(claim.id, claim.provisionalOfferPaisa)
                                                     onBanner(msg)
                                                 },
-                                                modifier = Modifier.weight(1f).height(30.dp)
+                                                colors = ButtonDefaults.buttonColors(containerColor = BlueGasPrimary),
+                                                modifier = Modifier.fillMaxWidth().height(34.dp)
                                             ) {
-                                                Text("Fail Inspection", fontSize = 10.sp, color = Color(0xFFDC2626))
+                                                Text("Confirm Final Offer", fontSize = 10.sp)
                                             }
                                         }
                                     }
                                     ClaimStatus.FINAL_OFFER_CONFIRMED -> {
-                                        Button(
-                                            onClick = {
-                                                val (ok, msg) = store.issueSettlementPayout(claim.id)
-                                                onBanner(msg)
-                                            },
-                                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF16A34A)),
-                                            modifier = Modifier.fillMaxWidth().height(30.dp)
-                                        ) {
-                                            Text("Issue Settlement Payout", fontSize = 10.sp)
+                                        if (claim.route != "A") {
+                                            Button(
+                                                onClick = {
+                                                    val (_, msg) = store.completeExchange(claim.id)
+                                                    onBanner(msg)
+                                                },
+                                                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF16A34A)),
+                                                modifier = Modifier
+                                                    .fillMaxWidth()
+                                                    .height(34.dp)
+                                                    .testTag("complete_exchange_btn_${claim.id}")
+                                            ) {
+                                                Text("Complete exchange", fontSize = 10.sp)
+                                            }
                                         }
                                     }
                                     else -> {}
@@ -272,6 +423,9 @@ fun StaffPhase2Screen(
                     item { Text("No surrendered cylinders in quarantine.", fontSize = 11.sp, color = Color.Gray) }
                 } else {
                     items(snapshot.surrenderedCylinders) { sur ->
+                        val linkedClaim = snapshot.replacementClaims.find { it.id == sur.claimId }
+                        val hasAgreement = sur.brand in snapshot.settings.rivalReturnAgreements
+                        val hasProof = linkedClaim?.ownershipProofProvided == true
                         Card(
                             colors = CardDefaults.cardColors(containerColor = Color.White),
                             border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFFCBD5E1)),
@@ -284,23 +438,55 @@ fun StaffPhase2Screen(
                                     modifier = Modifier.fillMaxWidth(),
                                     horizontalArrangement = Arrangement.SpaceBetween
                                 ) {
-                                    Text("Asset ${sur.id} (${sur.brand})", fontWeight = FontWeight.Bold, fontSize = 12.sp)
-                                    Text(sur.status.name, fontSize = 9.sp, fontWeight = FontWeight.Bold, color = BlueGasPrimary)
+                                    Text("Surrendered — ${sur.brand} · ${sur.serialText}", fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                                    Text(
+                                        text = if (sur.status == SurrenderStatus.DISPOSITION_AUTHORIZED) "Disposition authorised" else "At hub quarantine",
+                                        fontSize = 9.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        color = BlueGasPrimary
+                                    )
                                 }
-                                Text("Serial: ${sur.serialText} • Location: Hub quarantine", fontSize = 10.sp)
+                                Text("Record ID: ${sur.id} • Claim: ${sur.claimId}", fontSize = 10.sp, color = Color(0xFF475569))
+                                if (!sur.dispositionType.isNullOrBlank()) {
+                                    Text("Authorised choice: ${sur.dispositionType}", fontSize = 10.sp, color = Color(0xFF166534), fontWeight = FontWeight.SemiBold)
+                                }
 
                                 if (sur.status == SurrenderStatus.COLLECTED || sur.status == SurrenderStatus.RECEIVED_AT_DEPOT) {
                                     Spacer(modifier = Modifier.height(6.dp))
-                                    Button(
-                                        onClick = {
-                                            val (ok, msg) = store.authorizeSurrenderDisposition(sur.id, "RECYCLING_DESTRUCTION", "Legal Compliance Officer")
-                                            onBanner(msg)
-                                        },
-                                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF0284C7)),
-                                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
-                                        modifier = Modifier.height(28.dp)
-                                    ) {
-                                        Text("Authorize Recycling Disposition", fontSize = 9.sp)
+                                    if (hasAgreement) {
+                                        val choice = "Return to ${sur.brand} under the written agreement"
+                                        Button(
+                                            onClick = {
+                                                val (_, msg) = store.authorizeDisposition(sur.id, choice, AccountableRole.LEGAL.displayName)
+                                                onBanner(msg)
+                                            },
+                                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF0284C7)),
+                                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
+                                            modifier = Modifier.fillMaxWidth().height(32.dp)
+                                        ) {
+                                            Text(choice, fontSize = 10.sp)
+                                        }
+                                    }
+                                    if (hasProof) {
+                                        if (hasAgreement) Spacer(modifier = Modifier.height(4.dp))
+                                        val recycleChoice = "Recycle through an authorised route"
+                                        OutlinedButton(
+                                            onClick = {
+                                                val (_, msg) = store.authorizeDisposition(sur.id, recycleChoice, AccountableRole.LEGAL.displayName)
+                                                onBanner(msg)
+                                            },
+                                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
+                                            modifier = Modifier.fillMaxWidth().height(32.dp)
+                                        ) {
+                                            Text(recycleChoice, fontSize = 10.sp)
+                                        }
+                                    }
+                                    if (!hasAgreement && !hasProof) {
+                                        Text(
+                                            text = "Cannot authorise disposition: no written agreement with ${sur.brand} and no ownership proof on record.",
+                                            fontSize = 10.sp,
+                                            color = Color(0xFFDC2626)
+                                        )
                                     }
                                 }
                             }

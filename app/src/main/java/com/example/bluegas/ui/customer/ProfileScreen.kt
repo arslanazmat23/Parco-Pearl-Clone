@@ -48,6 +48,7 @@ import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.bluegas.data.BlueGasStore
 import com.example.bluegas.data.addAddress
+import com.example.bluegas.data.claimRouteDescription
 import com.example.bluegas.data.markNotificationRead
 import com.example.bluegas.data.raiseSafetyConcern
 import com.example.bluegas.data.requestCylinderReturn
@@ -99,6 +100,7 @@ fun ProfileScreen(
     val customerCases = snapshot.supportCases.filter { it.customerId == activeCustomer.id }
     val customerOrders = snapshot.orders.filter { it.customerId == activeCustomer.id }.sortedByDescending { it.createdAt }
     val customerOrdersCount = customerOrders.size
+    val customerClaims = snapshot.replacementClaims.filter { it.customerId == activeCustomer.id }
 
     var showCustomerSwitchMenu by remember { mutableStateOf(false) }
     var showSafetyConcernDialog by remember { mutableStateOf(false) }
@@ -650,6 +652,128 @@ fun ProfileScreen(
                                                     color = if (isCurrent) BlueGasPrimary else if (isDone) Color(0xFF0F172A) else Color(0xFF94A3B8)
                                                 )
                                             }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Switch & Save (preview) card for customer's Route A / Route B claims
+        if (customerClaims.isNotEmpty()) {
+            item {
+                Card(
+                    colors = CardDefaults.cardColors(containerColor = Color.White),
+                    shape = RoundedCornerShape(12.dp),
+                    border = BorderStroke(1.dp, Color(0xFFE2E8F0)),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("customer_switch_save_preview_card")
+                ) {
+                    Column(
+                        modifier = Modifier.padding(12.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(Icons.Default.SwapHoriz, contentDescription = null, tint = BlueGasPrimary, modifier = Modifier.size(18.dp))
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text(
+                                text = "Switch & Save (preview)",
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 13.sp,
+                                color = BlueGasDark
+                            )
+                        }
+                        Surface(
+                            color = Color(0xFFEFF6FF),
+                            shape = RoundedCornerShape(6.dp),
+                            border = BorderStroke(1.dp, Color(0xFF93C5FD)),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text(
+                                text = "Phase 2 preview — Route A is a recommendation awaiting stakeholder approval and a BRD change.",
+                                fontSize = 10.sp,
+                                color = Color(0xFF1E40AF),
+                                modifier = Modifier.padding(8.dp)
+                            )
+                        }
+                        customerClaims.forEach { cl ->
+                            val plainStatus = when (cl.status) {
+                                ClaimStatus.EVIDENCE_SUBMITTED, ClaimStatus.ELIGIBILITY_ASSESSED -> "Under review"
+                                ClaimStatus.PROVISIONALLY_ELIGIBLE -> "Eligible — offer preparing"
+                                ClaimStatus.PROVISIONAL_OFFER_ISSUED -> "Provisional offer ready"
+                                ClaimStatus.CUSTOMER_CONFIRMED -> "Confirmed"
+                                ClaimStatus.SCHEDULED_FOR_HANDOVER -> "Replacement order scheduled"
+                                ClaimStatus.AT_HANDOVER_INSPECTION, ClaimStatus.PHYSICALLY_ACCEPTED, ClaimStatus.HSE_ASSESSMENT, ClaimStatus.HSE_CLEARED -> "Doorstep inspection & checks"
+                                ClaimStatus.FINAL_OFFER_CONFIRMED -> "Completing exchange"
+                                ClaimStatus.EXCHANGE_COMPLETED, ClaimStatus.CLOSED -> if (cl.outcomeCode == "INELIGIBLE") "Not eligible" else "Completed"
+                                ClaimStatus.INELIGIBLE -> "Not eligible"
+                                ClaimStatus.CANCELLED -> "Cancelled"
+                                else -> "In progress"
+                            }
+                            Surface(
+                                color = Color(0xFFF8FAFC),
+                                shape = RoundedCornerShape(8.dp),
+                                border = BorderStroke(1.dp, Color(0xFFE2E8F0)),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Column(
+                                    modifier = Modifier.padding(10.dp),
+                                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                                ) {
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Text(
+                                            text = "${cl.declaredBrand} · ${cl.declaredSize}",
+                                            fontWeight = FontWeight.Bold,
+                                            fontSize = 12.sp,
+                                            color = Color(0xFF0F172A)
+                                        )
+                                        Surface(
+                                            color = Color(0xFFDBEAFE),
+                                            shape = RoundedCornerShape(4.dp)
+                                        ) {
+                                            Text(
+                                                text = "Route ${cl.route} · $plainStatus",
+                                                fontSize = 9.sp,
+                                                fontWeight = FontWeight.SemiBold,
+                                                color = Color(0xFF1E40AF),
+                                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                            )
+                                        }
+                                    }
+                                    Text(
+                                        text = claimRouteDescription(cl),
+                                        fontSize = 11.sp,
+                                        color = Color(0xFF334155)
+                                    )
+                                    if (cl.linkedOrderId != null) {
+                                        Text(
+                                            text = "Replacement order: ${cl.linkedOrderId}",
+                                            fontSize = 10.sp,
+                                            color = BlueGasPrimary,
+                                            fontWeight = FontWeight.Medium
+                                        )
+                                    }
+                                    if (cl.route == "A" && cl.status == ClaimStatus.CLOSED && cl.outcomeCode != "INELIGIBLE") {
+                                        Surface(
+                                            color = Color(0xFFDCFCE7),
+                                            shape = RoundedCornerShape(6.dp),
+                                            modifier = Modifier.fillMaxWidth()
+                                        ) {
+                                            Text(
+                                                text = "Take your old ${cl.declaredBrand} cylinder and its deposit slip to ${cl.declaredBrand} to claim your old deposit.",
+                                                fontSize = 11.sp,
+                                                fontWeight = FontWeight.SemiBold,
+                                                color = Color(0xFF166534),
+                                                modifier = Modifier.padding(8.dp)
+                                            )
                                         }
                                     }
                                 }

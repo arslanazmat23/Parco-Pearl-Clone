@@ -21,7 +21,51 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.bluegas.data.*
 import com.example.bluegas.model.*
+import com.example.bluegas.ui.customer.DemoValuePill
 import com.example.ui.theme.BlueGasPrimary
+
+private fun complaintIssueHumanLabel(issueType: String): String = when (issueType) {
+    "UNDERWEIGHT" -> "Underweight cylinder"
+    "LEAKING_VALVE" -> "Leaking valve"
+    "DELIVERY_DELAY", "DELAYED_DELIVERY" -> "Late delivery"
+    "OVERCHARGE", "OVERCHARGING", "PAYMENT_DISPUTE" -> "Overcharged"
+    "RIDER_CONDUCT" -> "Rider conduct"
+    "CYLINDER_CONDITION", "CYLINDER_DENT" -> "Cylinder condition"
+    "WRONG_CYLINDER_SIZE" -> "Wrong cylinder size"
+    "LEAKAGE_SAFETY", "SAFETY_CONCERN" -> "Safety / leak concern"
+    "OTHER" -> "Other"
+    else -> issueType
+}
+
+private fun formatResponseElapsed(raisedAt: Long, respondedAt: Long?): String {
+    if (respondedAt == null) return "Pending first response"
+    val diffMins = ((respondedAt - raisedAt).coerceAtLeast(0L) / 60_000L)
+    return when {
+        diffMins < 1L -> "< 1 min"
+        diffMins < 60L -> "$diffMins min"
+        else -> {
+            val h = diffMins / 60L
+            val m = diffMins % 60L
+            "${h}h ${m}m"
+        }
+    }
+}
+
+private fun paymentMethodHumanLabel(method: PaymentMethod): String = when (method) {
+    PaymentMethod.ONLINE_HOSTED -> "Online payment"
+    PaymentMethod.CASH_ON_DELIVERY -> "Cash on delivery"
+}
+
+private fun paymentStateHumanLabel(state: PaymentState): String = when (state) {
+    PaymentState.SETTLED -> "Settled"
+    PaymentState.COD_PENDING -> "Cash pending"
+    PaymentState.CASH_COLLECTED -> "Cash collected"
+    PaymentState.PAYMENT_PENDING -> "Payment pending"
+    PaymentState.PARTIAL_REFUND_PENDING, PaymentState.FULL_REFUND_PENDING -> "Refund pending"
+    PaymentState.PARTIAL_REFUND_COMPLETED -> "Partially refunded"
+    PaymentState.FULLY_REFUNDED -> "Fully refunded"
+    else -> state.displayName
+}
 
 /**
  * Customer Support workspace covering customer complaints and L6 Return & Refund cases
@@ -45,12 +89,14 @@ fun StaffSupportScreen(
     // Resolve Complaint Dialog state (blank inputs)
     var showResolveDialog by remember { mutableStateOf(false) }
     var caseToResolve by remember { mutableStateOf<SupportCase?>(null) }
+    var resolveActionType by remember { mutableStateOf("EXPLAIN") } // REFUND | REPLACE | EXPLAIN
     var resolutionNotesInput by remember { mutableStateOf("") }
+    var complaintRefundAmountInput by remember { mutableStateOf("") }
 
     // New Complaint Dialog state (blank description)
     var showNewCaseDialog by remember { mutableStateOf(false) }
     var newCaseOrderId by remember(snapshot.version) { mutableStateOf(snapshot.orders.firstOrNull()?.id ?: "") }
-    var newCaseIssueType by remember { mutableStateOf("LEAKAGE_SAFETY") }
+    var newCaseIssueType by remember { mutableStateOf("UNDERWEIGHT") }
     var newCaseDescription by remember { mutableStateOf("") }
 
     // Open Return/Refund Case Dialog state (blank inputs)
@@ -164,18 +210,35 @@ fun StaffSupportScreen(
                 }
 
                 items(filteredComplaints, key = { it.id }) { c ->
+                    val linkedOrder = c.orderId?.let { oid -> snapshot.orders.find { it.id == oid } }
+                    val linkedDelivery = linkedOrder?.let { ord -> snapshot.deliveries.find { it.orderId == ord.id } }
+                    val linkedCylinder = linkedOrder?.allocatedSerial?.let { ser ->
+                        snapshot.cylinders.find { it.serialNumber == ser }
+                    }
+                    val linkedPayment = linkedOrder?.let { ord ->
+                        snapshot.payments
+                            .filter { it.orderId == ord.id && it.state != PaymentState.PAYMENT_FAILED_CLOSED }
+                            .maxByOrNull { it.attemptNo }
+                    }
                     Card(
                         colors = CardDefaults.cardColors(containerColor = Color.White),
                         border = BorderStroke(1.dp, Color(0xFFCBD5E1)),
-                        modifier = Modifier.fillMaxWidth()
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("support_complaint_card_${c.id}")
                     ) {
-                        Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
                             Row(
                                 modifier = Modifier.fillMaxWidth(),
                                 horizontalArrangement = Arrangement.SpaceBetween,
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
-                                Text("Case ${c.id} · ${c.issueType}", fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                                Text(
+                                    text = "${c.reference ?: c.id} · ${complaintIssueHumanLabel(c.issueType)}",
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 12.sp,
+                                    modifier = Modifier.weight(1f)
+                                )
                                 Surface(
                                     color = when (c.status) {
                                         "OPEN" -> Color(0xFFFEE2E2)
@@ -185,7 +248,11 @@ fun StaffSupportScreen(
                                     shape = RoundedCornerShape(4.dp)
                                 ) {
                                     Text(
-                                        text = c.status,
+                                        text = when (c.status) {
+                                            "OPEN" -> "Open"
+                                            "IN_PROGRESS" -> "In review"
+                                            else -> "Resolved"
+                                        },
                                         fontSize = 9.sp,
                                         fontWeight = FontWeight.Bold,
                                         color = when (c.status) {
@@ -193,32 +260,109 @@ fun StaffSupportScreen(
                                             "IN_PROGRESS" -> Color(0xFF92400E)
                                             else -> Color(0xFF166534)
                                         },
-                                        modifier = Modifier.padding(4.dp, 2.dp)
+                                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
                                     )
                                 }
                             }
                             Text(
-                                text = "Order: ${c.orderId?.let { snapshot.orderLabel(it) } ?: "General"} (${snapshot.customerName(c.customerId)})",
-                                fontSize = 10.sp,
+                                text = "Customer: ${snapshot.customerName(c.customerId)}" +
+                                    (c.orderId?.let { " · ${snapshot.orderLabel(it)}" } ?: " · General"),
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.SemiBold,
                                 color = Color(0xFF1E40AF)
                             )
-                            Text(c.description, fontSize = 11.sp)
-
-                            if (c.status == "RESOLVED" && c.resolutionNotes != null) {
-                                Text(
-                                    text = "Resolution: ${c.resolutionNotes}",
-                                    fontSize = 10.sp,
-                                    color = Color(0xFF166534),
-                                    fontWeight = FontWeight.SemiBold
-                                )
+                            Text(c.description, fontSize = 11.sp, color = Color(0xFF0F172A))
+                            if (c.photoAttached) {
+                                Surface(color = Color(0xFFE0F2FE), shape = RoundedCornerShape(4.dp)) {
+                                    Text(
+                                        text = "Customer photo attached (demo)",
+                                        fontSize = 9.sp,
+                                        fontWeight = FontWeight.SemiBold,
+                                        color = Color(0xFF0369A1),
+                                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                    )
+                                }
                             }
 
-                            if (c.status == "OPEN") {
-                                Spacer(modifier = Modifier.height(4.dp))
-                                Row(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            if (linkedOrder != null) {
+                                Surface(
+                                    color = Color(0xFFF8FAFC),
+                                    shape = RoundedCornerShape(6.dp),
+                                    border = BorderStroke(1.dp, Color(0xFFE2E8F0)),
+                                    modifier = Modifier.fillMaxWidth()
                                 ) {
+                                    Column(
+                                        modifier = Modifier.padding(8.dp),
+                                        verticalArrangement = Arrangement.spacedBy(2.dp)
+                                    ) {
+                                        Text(
+                                            text = "Order facts",
+                                            fontSize = 10.sp,
+                                            fontWeight = FontWeight.Bold,
+                                            color = Color(0xFF334155)
+                                        )
+                                        val photoFlag = if (linkedDelivery?.photoEvidenceCaptured == true) "Yes" else "No"
+                                        val sigFlag = if (linkedDelivery?.customerSignatureCaptured == true) "Yes" else "No"
+                                        val evTime = (linkedDelivery?.photoEvidenceTimestamp ?: linkedDelivery?.completedAt)
+                                            ?.let { formatTimestamp(it) } ?: "—"
+                                        Text(
+                                            text = "Delivery photo: $photoFlag · Signature: $sigFlag · Time: $evTime",
+                                            fontSize = 10.sp,
+                                            color = Color(0xFF475569)
+                                        )
+                                        val fillDateText = linkedCylinder?.lastFillDate ?: "—"
+                                        val fillWeightText = linkedCylinder?.lastFillWeightKg?.let { "$it kg" } ?: "—"
+                                        Text(
+                                            text = "Cylinder: ${linkedOrder.allocatedSerial ?: "Not allocated"} · Filled: $fillDateText · Weight: $fillWeightText",
+                                            fontSize = 10.sp,
+                                            color = Color(0xFF475569)
+                                        )
+                                        val payMethodText = paymentMethodHumanLabel(linkedOrder.paymentMethod)
+                                        val payStateText = linkedPayment?.let { paymentStateHumanLabel(it.state) } ?: "—"
+                                        Text(
+                                            text = "Payment: $payMethodText ($payStateText) · Total: ${formatRupees(linkedOrder.totalAmountPaisa)}",
+                                            fontSize = 10.sp,
+                                            color = Color(0xFF475569)
+                                        )
+                                        Text(
+                                            text = "Rider: ${linkedOrder.assignedRiderId?.let { snapshot.riderName(it) } ?: "Not assigned"}",
+                                            fontSize = 10.sp,
+                                            color = Color(0xFF475569)
+                                        )
+                                    }
+                                }
+                            }
+
+                            Text(
+                                text = "Response time: ${formatResponseElapsed(c.raisedAt, c.firstResponseAt ?: c.resolvedAt)}",
+                                fontSize = 10.sp,
+                                color = Color(0xFF475569)
+                            )
+
+                            if (c.status == "RESOLVED") {
+                                Surface(
+                                    color = Color(0xFFF0FDF4),
+                                    shape = RoundedCornerShape(6.dp),
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    Column(modifier = Modifier.padding(8.dp)) {
+                                        Text(
+                                            text = "Outcome: ${c.resolutionType ?: "Resolved"}${c.linkedReturnCaseId?.let { " · Case $it" } ?: ""}",
+                                            fontSize = 10.sp,
+                                            fontWeight = FontWeight.Bold,
+                                            color = Color(0xFF166534)
+                                        )
+                                        if (!c.resolutionNotes.isNullOrBlank()) {
+                                            Text(
+                                                text = c.resolutionNotes!!,
+                                                fontSize = 10.sp,
+                                                color = Color(0xFF166534)
+                                            )
+                                        }
+                                    }
+                                }
+                            } else {
+                                if (c.status == "OPEN") {
                                     Button(
                                         onClick = {
                                             onBanner.report(
@@ -226,38 +370,74 @@ fun StaffSupportScreen(
                                             )
                                         },
                                         modifier = Modifier
-                                            .weight(1f)
+                                            .fillMaxWidth()
                                             .heightIn(min = 48.dp)
+                                            .testTag("support_start_complaint_${c.id}")
                                     ) {
                                         Text("Start review", fontSize = 11.sp)
+                                    }
+                                }
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                ) {
+                                    Button(
+                                        onClick = {
+                                            caseToResolve = c
+                                            resolveActionType = "REFUND"
+                                            resolutionNotesInput = ""
+                                            complaintRefundAmountInput = ""
+                                            showResolveDialog = true
+                                        },
+                                        enabled = linkedOrder?.status == OrderStatus.ORD_COMP,
+                                        colors = ButtonDefaults.buttonColors(containerColor = BlueGasPrimary),
+                                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp),
+                                        modifier = Modifier
+                                            .weight(1f)
+                                            .heightIn(min = 48.dp)
+                                            .testTag("support_complaint_refund_${c.id}")
+                                    ) {
+                                        Text("Refund", fontSize = 11.sp)
                                     }
                                     OutlinedButton(
                                         onClick = {
                                             caseToResolve = c
+                                            resolveActionType = "EXPLAIN"
                                             resolutionNotesInput = ""
+                                            complaintRefundAmountInput = ""
                                             showResolveDialog = true
                                         },
+                                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp),
                                         modifier = Modifier
                                             .weight(1f)
                                             .heightIn(min = 48.dp)
+                                            .testTag("support_complaint_explain_${c.id}")
                                     ) {
-                                        Text("Resolve", fontSize = 11.sp)
+                                        Text("Explain", fontSize = 11.sp)
                                     }
                                 }
-                            } else if (c.status == "IN_PROGRESS") {
-                                Spacer(modifier = Modifier.height(4.dp))
-                                Button(
-                                    onClick = {
-                                        caseToResolve = c
-                                        resolutionNotesInput = ""
-                                        showResolveDialog = true
-                                    },
-                                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF16A34A)),
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .heightIn(min = 48.dp)
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                    verticalAlignment = Alignment.CenterVertically
                                 ) {
-                                    Text("Mark resolved", fontSize = 11.sp)
+                                    OutlinedButton(
+                                        onClick = {
+                                            caseToResolve = c
+                                            resolveActionType = "REPLACE"
+                                            resolutionNotesInput = ""
+                                            complaintRefundAmountInput = ""
+                                            showResolveDialog = true
+                                        },
+                                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
+                                        modifier = Modifier
+                                            .weight(1f)
+                                            .heightIn(min = 48.dp)
+                                            .testTag("support_complaint_replace_${c.id}")
+                                    ) {
+                                        Text("Replace cylinder", fontSize = 11.sp)
+                                    }
+                                    DemoValuePill("To decide")
                                 }
                             }
                         }
@@ -311,45 +491,94 @@ fun StaffSupportScreen(
         }
     }
 
-    // Resolve Case Dialog
+    // Resolve Complaint Dialog (Refund / Replace / Explain)
     if (showResolveDialog && caseToResolve != null) {
+        val activeCase = caseToResolve!!
+        val linkedOrder = activeCase.orderId?.let { oid -> snapshot.orders.find { it.id == oid } }
+        val maxRupees = (linkedOrder?.totalAmountPaisa ?: 0L) / 100L
+        val parsedRefundPkr = complaintRefundAmountInput.trim().toLongOrNull()
+        val refundAmountValid = resolveActionType != "REFUND" ||
+            (parsedRefundPkr != null && parsedRefundPkr > 0L && linkedOrder != null && (parsedRefundPkr * 100L) <= linkedOrder.totalAmountPaisa)
+
         AlertDialog(
             onDismissRequest = {
                 showResolveDialog = false
                 caseToResolve = null
             },
-            title = { Text("Resolve Support Case", fontWeight = FontWeight.Bold) },
+            title = {
+                val heading = when (resolveActionType) {
+                    "REFUND" -> "Open refund case"
+                    "REPLACE" -> "Replace cylinder"
+                    else -> "Explain outcome"
+                }
+                Text("$heading · ${activeCase.reference ?: activeCase.id}", fontWeight = FontWeight.Bold, fontSize = 15.sp)
+            },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text("Enter resolution notes for Case ${caseToResolve?.id}:", fontSize = 12.sp)
+                    if (resolveActionType == "REPLACE") {
+                        Row(
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text("Charging rule for replacement:", fontSize = 11.sp, color = Color(0xFF475569))
+                            DemoValuePill("To decide")
+                        }
+                        Text(
+                            text = "This records the decision and alerts Operations to arrange a replacement without creating an order automatically.",
+                            fontSize = 11.sp,
+                            color = Color(0xFF64748B)
+                        )
+                    }
+                    if (resolveActionType == "REFUND") {
+                        Text(
+                            text = "Opens a Refund-only L6 case (max ${formatRupees(linkedOrder?.totalAmountPaisa ?: 0L)}). Money moves only through Finance.",
+                            fontSize = 11.sp,
+                            color = Color(0xFF64748B)
+                        )
+                        OutlinedTextField(
+                            value = complaintRefundAmountInput,
+                            onValueChange = { complaintRefundAmountInput = it.filter { ch -> ch.isDigit() } },
+                            label = { Text("Refund amount (Rs, required)") },
+                            placeholder = { Text("Enter amount up to Rs $maxRupees", color = Color.Gray) },
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                            singleLine = true,
+                            isError = complaintRefundAmountInput.isNotBlank() && !refundAmountValid,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .testTag("complaint_refund_amount_input")
+                        )
+                    }
                     OutlinedTextField(
                         value = resolutionNotesInput,
                         onValueChange = { resolutionNotesInput = it },
-                        label = { Text("Resolution notes") },
-                        placeholder = { Text("Explain how the issue was resolved", color = Color.Gray) },
-                        modifier = Modifier.fillMaxWidth()
+                        label = { Text("Note (required)") },
+                        placeholder = { Text("Explain the decision for the customer and audit log", color = Color.Gray) },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("complaint_resolve_note_input")
                     )
                 }
             },
             confirmButton = {
                 Button(
+                    enabled = resolutionNotesInput.isNotBlank() && refundAmountValid,
                     onClick = {
-                        if (resolutionNotesInput.isBlank()) {
-                            onBanner("Please enter resolution notes before resolving.", true)
-                            return@Button
-                        }
-                        onBanner.report(
-                            store.resolveSupportCase(
-                                caseToResolve!!.id,
-                                resolutionNotesInput.trim(),
-                                AccountableRole.SUPPORT.displayName
-                            )
+                        val res = store.resolveComplaint(
+                            caseId = activeCase.id,
+                            type = resolveActionType,
+                            note = resolutionNotesInput.trim(),
+                            refundAmountPaisa = if (resolveActionType == "REFUND") (parsedRefundPkr ?: 0L) * 100L else null,
+                            actor = AccountableRole.SUPPORT.displayName
                         )
-                        showResolveDialog = false
-                        caseToResolve = null
-                    }
+                        onBanner.report(res)
+                        if (res.first) {
+                            showResolveDialog = false
+                            caseToResolve = null
+                        }
+                    },
+                    modifier = Modifier.testTag("complaint_resolve_confirm_btn")
                 ) {
-                    Text("Confirm resolution")
+                    Text("Confirm")
                 }
             },
             dismissButton = {
@@ -384,16 +613,16 @@ fun StaffSupportScreen(
                         }
                     }
 
-                    Text("Issue type:", fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                    Text("Reason:", fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
                     LazyRow(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.spacedBy(4.dp)
                     ) {
-                        items(listOf("LEAKAGE_SAFETY", "DELAYED_DELIVERY", "OVERCHARGING", "CYLINDER_DENT")) { type ->
+                        items(listOf("UNDERWEIGHT", "LEAKING_VALVE", "DELIVERY_DELAY", "OVERCHARGE", "RIDER_CONDUCT", "OTHER")) { type ->
                             FilterChip(
                                 selected = newCaseIssueType == type,
                                 onClick = { newCaseIssueType = type },
-                                label = { Text(type, fontSize = 9.sp) }
+                                label = { Text(complaintIssueHumanLabel(type), fontSize = 9.sp) }
                             )
                         }
                     }

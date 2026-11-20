@@ -615,17 +615,20 @@ class Chunk3StoreTests {
     fun `R9 Switch and Save claim reaches Exchange Completed and Closed`() {
         val store = BlueGasViewModel().store
         val claim = store.replacementClaims.first { it.id == "CLM-SEED-01" }
+        assertEquals("B", claim.route)
+        assertEquals(ClaimStatus.SCHEDULED_FOR_HANDOVER, claim.status)
+        assertNotNull(claim.linkedOrderId)
 
-        assertTrue(store.assessEligibility(claim.id, eligible = true, reason = "Valid cylinder size").first)
-        assertTrue(store.issueProvisionalOffer(claim.id).first)
         assertTrue(store.startInspection(claim.id, "Inspector Tariq").first)
         assertTrue(store.recordPhysicalResult(claim.id, accepted = true, reason = "Shell & valve intact").first)
         assertTrue(store.startHseAssessment(claim.id).first)
         assertTrue(store.recordHseResult(claim.id, cleared = true, notes = "HSE cleared").first)
-        assertTrue(store.confirmFinalOffer(claim.id, 100000L).first)
-        assertTrue(store.issueSettlementPayout(claim.id).first)
+        assertTrue(store.confirmFinalOffer(claim.id, claim.provisionalOfferPaisa).first)
+        val (exOk, exMsg) = store.completeExchange(claim.id)
+        assertTrue(exMsg, exOk)
 
         assertEquals(ClaimStatus.CLOSED, claim.status)
+        assertEquals("Eligible-Exchanged", claim.outcomeCode)
         assertTrue(claim.history.any { it.toStatus == ClaimStatus.EXCHANGE_COMPLETED })
         assertTrue(claim.history.any { it.toStatus == ClaimStatus.CLOSED })
     }

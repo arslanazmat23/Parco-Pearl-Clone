@@ -17,7 +17,8 @@ data class QuoteResult(
     val totalAmountPaisa: Long,
     val reference118PricePaisa: Long?,
     val priceListVersion: Int,
-    val expressFeePaisa: Long = 0L
+    val expressFeePaisa: Long = 0L,
+    val discountLabel: String = "Switch & Save benefit · Demo value Q01/Q02"
 )
 
 object PricingEngine {

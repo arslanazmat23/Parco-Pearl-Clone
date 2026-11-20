@@ -61,6 +61,7 @@ class BlueGasStore {
     // Operations & Supply Chain v0.5 Collections
     val stockBalances = mutableListOf<StockBalance>()
     val stockTransfers = mutableListOf<StockTransfer>()
+    val fillPlans = mutableListOf<FillPlan>()
     val plantReports = mutableListOf<PlantDailyReport>()
     val reconciliations = mutableListOf<DailyReconciliation>()
     val reconExceptions = mutableListOf<ReconciliationException>()
@@ -96,6 +97,7 @@ class BlueGasStore {
     var activeRiderId = ""
     var isRiderOffline = false
     var selectedOrderIdForDrawer: String? = null
+    var lastRiderApplicationId: String? = null
     var outboxSequenceCounter = 1
 
     var customerTab: String = "HOME"
@@ -158,6 +160,7 @@ class BlueGasStore {
             evidenceAccessLogs = evidenceAccessLogs.toList(),
             stockBalances = stockBalances.toList(),
             stockTransfers = stockTransfers.toList(),
+            fillPlans = fillPlans.toList(),
             plantReports = plantReports.toList(),
             reconciliations = reconciliations.toList(),
             reconExceptions = reconExceptions.toList(),
@@ -273,7 +276,7 @@ class BlueGasStore {
         staffRole: StaffSubRole? = null,
         channels: List<NotifyChannel>? = null
     ) {
-        val smsCodes = setOf("NTF-01", "NTF-04", "NTF-06", "NTF-13", "NTF-19", "NTF-20", "NTF-21")
+        val smsCodes = setOf("NTF-01", "NTF-04", "NTF-06", "NTF-13", "NTF-17", "NTF-19", "NTF-20", "NTF-21")
         val baseChannels = channels ?: if (surface == AppSurface.STAFF) {
             listOf(NotifyChannel.INTERNAL)
         } else {
@@ -406,18 +409,52 @@ class BlueGasStore {
 
     fun resolveSupportCase(caseId: String, notes: String, actor: String = "Support Lead"): Pair<Boolean, String> {
         val c = supportCases.find { it.id == caseId } ?: return Pair(false, "Case $caseId not found.")
+        val now = clock()
+        if (c.firstResponseAt == null) c.firstResponseAt = now
         c.status = "RESOLVED"
         c.resolutionNotes = notes
-        c.resolvedAt = System.currentTimeMillis()
+        c.resolvedAt = now
         logAudit("SupportCase", caseId, "RESOLVE_CASE", actor, AccountableRole.SUPPORT, notes)
         addNotification(AppSurface.STAFF, "Case Resolved", "Case $caseId resolved: $notes", "RESOLVED", c.orderId, staffRole = StaffSubRole.SUPPORT)
         notifyChanged()
         return Pair(true, "Case $caseId resolved successfully.")
     }
 
-    fun raiseComplaint(orderId: String, issueType: String, description: String, actor: String = "Customer"): Pair<Boolean, String> {
+    fun raiseComplaint(orderId: String, issueType: String, description: String, actor: String = "Customer"): Pair<Boolean, String> =
+        raiseComplaint(
+            orderId = orderId,
+            issueType = issueType,
+            description = description,
+            photoAttached = false,
+            actor = actor
+        )
+
+    /**
+     * Registers a formal customer complaint against an order with optional demo photo flag,
+     * generating a customer-facing CMP-#### reference and sending NTF-17 (with SMS when enabled).
+     *
+     * @param orderId Target order identifier.
+     * @param issueType Complaint category code (e.g. UNDERWEIGHT, LEAKING_VALVE, DELIVERY_DELAY).
+     * @param description Customer description of the complaint.
+     * @param photoAttached Whether a demo photo was attached by the customer.
+     * @param actor Actor initiating the complaint record.
+     * @return Pair of success flag and ticket/reference confirmation message.
+     */
+    fun raiseComplaint(
+        orderId: String,
+        issueType: String,
+        description: String,
+        photoAttached: Boolean,
+        actor: String = "Customer"
+    ): Pair<Boolean, String> {
         val ord = orders.find { it.id == orderId } ?: return Pair(false, "Order not found.")
         val custId = ord.customerId
+        val existingRefs = supportCases.mapNotNull { it.reference }.toSet()
+        var ref: String
+        do {
+            ref = "CMP-" + (1000..9999).random()
+        } while (ref in existingRefs)
+
         val newCase = SupportCase(
             id = "CASE-" + UUID.randomUUID().toString().take(6),
             orderId = orderId,
@@ -425,13 +462,39 @@ class BlueGasStore {
             issueType = issueType,
             description = description,
             status = "OPEN",
-            raisedAt = System.currentTimeMillis()
+            raisedAt = clock(),
+            reference = ref,
+            photoAttached = photoAttached
         )
-        supportCases.add(newCase)
-        logAudit("SupportCase", newCase.id, "RAISE_COMPLAINT", actor, AccountableRole.SUPPORT, "Complaint on order $orderId: $description")
-        addNotification(AppSurface.STAFF, "New Support Dispute", "Complaint registered for order $orderId: $issueType", "COMPLAINT", orderId, staffRole = StaffSubRole.SUPPORT)
+        ord.complaintReference = ref
+        supportCases.add(0, newCase)
+        logAudit(
+            entityType = "SupportCase",
+            entityId = newCase.id,
+            action = "RAISE_COMPLAINT",
+            actor = actor,
+            role = AccountableRole.SUPPORT,
+            details = "Complaint $ref on order $orderId ($issueType, photo=$photoAttached): $description"
+        )
+        addNotification(
+            surface = AppSurface.STAFF,
+            title = "New Customer Complaint ($ref)",
+            message = "Complaint $ref registered for ${orderLabel(orderId)}: $issueType",
+            canonicalStatus = "OPEN",
+            orderId = orderId,
+            code = "NTF-17",
+            staffRole = StaffSubRole.SUPPORT
+        )
+        addNotification(
+            surface = AppSurface.CUSTOMER,
+            title = "Complaint Received ($ref)",
+            message = "Your complaint $ref for ${orderLabel(orderId)} has been received. Support will review it shortly.",
+            canonicalStatus = "OPEN",
+            orderId = orderId,
+            code = "NTF-17"
+        )
         notifyChanged()
-        return Pair(true, "Complaint registered. Ticket: ${newCase.id}")
+        return Pair(true, "Complaint registered ($ref). Ticket: ${newCase.id}")
     }
 
     fun executeRefund(orderId: String, amountPaisa: Long, reason: String, actor: String = "Finance Lead"): Pair<Boolean, String> {
@@ -484,6 +547,7 @@ class BlueGasStore {
         evidenceAccessLogs.clear()
         stockBalances.clear()
         stockTransfers.clear()
+        fillPlans.clear()
         plantReports.clear()
         reconciliations.clear()
         reconExceptions.clear()
@@ -513,6 +577,7 @@ class BlueGasStore {
         activeStaffSubRole = StaffSubRole.OPERATIONS
         staffSectionByRole.clear()
         staffDetailOrderId = null
+        lastRiderApplicationId = null
 
         seedAll()
         selectedHubId = nodes.firstOrNull { it.type == FulfilmentPointType.HUB }?.id

@@ -1021,6 +1021,27 @@ fun TrackingScreen(
                                         fontFamily = if (currentOrder.allocatedSerial != null) FontFamily.Monospace else FontFamily.Default,
                                         color = Color(0xFF0F172A)
                                     )
+                                    val boundCylinder = remember(snapshot.version, currentOrder.allocatedSerial) {
+                                        currentOrder.allocatedSerial?.let { s ->
+                                            snapshot.cylinders.find { it.serialNumber == s }
+                                        }
+                                    }
+                                    if (boundCylinder?.lastFillDate != null && boundCylinder.lastFillWeightKg != null) {
+                                        val weightFmt = if (boundCylinder.lastFillWeightKg % 1.0 == 0.0) {
+                                            boundCylinder.lastFillWeightKg.toInt().toString()
+                                        } else {
+                                            String.format(java.util.Locale.US, "%.1f", boundCylinder.lastFillWeightKg)
+                                        }
+                                        Text(
+                                            text = "Your cylinder: filled ${boundCylinder.lastFillDate} · $weightFmt kg",
+                                            fontSize = 11.sp,
+                                            color = Color(0xFF047857),
+                                            fontWeight = FontWeight.Medium,
+                                            modifier = Modifier
+                                                .padding(top = 3.dp)
+                                                .testTag("tracking_cylinder_fill_info")
+                                        )
+                                    }
                                 }
 
                                 if (currentOrder.fulfilmentMode == FulfilmentMode.DELIVERY) {

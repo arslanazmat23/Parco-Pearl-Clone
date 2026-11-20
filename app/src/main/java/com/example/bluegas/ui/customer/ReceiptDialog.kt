@@ -129,7 +129,7 @@ fun buildReceiptRows(order: Order, snapshot: SharedAppState): List<ReceiptRow> {
 
     // Discount if any
     if (order.discountPaisa > 0) {
-        rows.add(ReceiptRow("Discount", "-${formatRupees(order.discountPaisa)}"))
+        rows.add(ReceiptRow("Discount (Switch & Save benefit · Demo value Q01/Q02)", "-${formatRupees(order.discountPaisa)}"))
     }
 
     // GST / Tax if non-zero

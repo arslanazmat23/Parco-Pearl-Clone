@@ -44,6 +44,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import com.example.bluegas.data.BlueGasStore
 import com.example.bluegas.data.SharedAppState
 import com.example.bluegas.data.cancelOrder
+import com.example.bluegas.data.raiseSafetyConcern
 import com.example.bluegas.model.*
 import com.example.bluegas.ui.components.CanonicalStatusChip
 import com.example.ui.theme.BlueGasDark
@@ -96,8 +97,13 @@ fun OrdersScreen(
     var showReceiptOrderId by remember { mutableStateOf<String?>(null) }
     var showRateOrderId by remember { mutableStateOf<String?>(null) }
     var showComplaintOrderId by remember { mutableStateOf<String?>(null) }
-    var complaintType by remember { mutableStateOf("LEAKAGE_SAFETY") }
+    var complaintType by remember { mutableStateOf("UNDERWEIGHT") }
     var complaintDetails by remember { mutableStateOf("") }
+    var complaintPhotoAttached by remember { mutableStateOf(false) }
+    var showSafetyConcernDialog by remember { mutableStateOf(false) }
+    var safetyConcernOrderId by remember { mutableStateOf<String?>(null) }
+    var safetyConcernDescription by remember { mutableStateOf("") }
+    var safetyConcernError by remember { mutableStateOf<String?>(null) }
     var showCancelOrderId by remember { mutableStateOf<String?>(null) }
     var cancelReason by remember { mutableStateOf("Changed my mind") }
 
@@ -270,7 +276,8 @@ fun OrdersScreen(
                         onRateOrder = { showRateOrderId = order.id },
                         onReportComplaint = {
                             complaintDetails = ""
-                            complaintType = "LEAKAGE_SAFETY"
+                            complaintType = "UNDERWEIGHT"
+                            complaintPhotoAttached = false
                             showComplaintOrderId = order.id
                         },
                         onCancelOrder = {
@@ -326,15 +333,15 @@ fun OrdersScreen(
         )
     }
 
-    // Support Complaint Dialog
+    // Support Complaint Dialog (F3.1)
     if (showComplaintOrderId != null) {
         val complaintTypes = listOf(
-            "LEAKAGE_SAFETY" to "Cylinder Leakage / Safety Concern",
-            "CYLINDER_CONDITION" to "Cylinder condition problem",
-            "DELAYED_DELIVERY" to "Unacceptable Delivery Delay",
-            "WRONG_CYLINDER_SIZE" to "Incorrect Cylinder Size Delivered",
-            "PAYMENT_DISPUTE" to "Payment Discrepancy",
-            "OTHER" to "General Support Inquiry"
+            "UNDERWEIGHT" to "Underweight cylinder",
+            "LEAKING_VALVE" to "Leaking valve",
+            "DELIVERY_DELAY" to "Late delivery",
+            "OVERCHARGE" to "Overcharged",
+            "RIDER_CONDUCT" to "Rider conduct",
+            "OTHER" to "Other"
         )
 
         AlertDialog(
@@ -357,38 +364,7 @@ fun OrdersScreen(
                     )
                     Spacer(modifier = Modifier.height(8.dp))
 
-                    if (complaintType == "LEAKAGE_SAFETY") {
-                        Surface(
-                            color = Color(0xFFFEF2F2),
-                            shape = RoundedCornerShape(8.dp),
-                            border = BorderStroke(1.dp, Color(0xFFFECACA)),
-                            modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp)
-                        ) {
-                            Column(modifier = Modifier.padding(10.dp)) {
-                                Text(
-                                    text = "Follow the approved BLUE GAS safety procedure (to be supplied by the client, Q07). For emergencies call Rescue 1122.",
-                                    fontSize = 11.sp,
-                                    color = Color(0xFF991B1B),
-                                    lineHeight = 15.sp
-                                )
-                                Spacer(modifier = Modifier.height(6.dp))
-                                Button(
-                                    onClick = {
-                                        val dialIntent = Intent(Intent.ACTION_DIAL, Uri.parse("tel:1122"))
-                                        context.startActivity(dialIntent)
-                                    },
-                                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFDC2626)),
-                                    modifier = Modifier.fillMaxWidth().height(36.dp).testTag("call_1122_button")
-                                ) {
-                                    Icon(Icons.Default.Phone, contentDescription = null, modifier = Modifier.size(14.dp))
-                                    Spacer(modifier = Modifier.width(4.dp))
-                                    Text("Call 1122", fontSize = 12.sp)
-                                }
-                            }
-                        }
-                    }
-
-                    Text("Issue Type:", fontWeight = FontWeight.SemiBold, fontSize = 11.sp)
+                    Text("Reason:", fontWeight = FontWeight.SemiBold, fontSize = 11.sp)
                     Spacer(modifier = Modifier.height(4.dp))
                     complaintTypes.forEach { (typeKey, typeLabel) ->
                         Row(
@@ -396,10 +372,67 @@ fun OrdersScreen(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .clickable { complaintType = typeKey }
+                                .padding(vertical = 2.dp)
+                                .testTag("complaint_reason_$typeKey")
                         ) {
                             RadioButton(selected = complaintType == typeKey, onClick = { complaintType = typeKey })
-                            Text(typeLabel, fontSize = 11.sp)
+                            Text(typeLabel, fontSize = 12.sp)
                         }
+                    }
+
+                    if (complaintType == "LEAKING_VALVE") {
+                        Spacer(modifier = Modifier.height(6.dp))
+                        Surface(
+                            color = Color(0xFFFEF2F2),
+                            shape = RoundedCornerShape(8.dp),
+                            border = BorderStroke(1.dp, Color(0xFFFECACA)),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Column(modifier = Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                                Text(
+                                    text = "If you smell gas now, use Report a safety concern",
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = Color(0xFF991B1B)
+                                )
+                                Button(
+                                    onClick = {
+                                        safetyConcernOrderId = showComplaintOrderId
+                                        safetyConcernDescription = ""
+                                        safetyConcernError = null
+                                        showComplaintOrderId = null
+                                        showSafetyConcernDialog = true
+                                    },
+                                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFDC2626)),
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .heightIn(min = 48.dp)
+                                        .testTag("complaint_leaking_safety_btn")
+                                ) {
+                                    Text("Report a safety concern", fontSize = 12.sp)
+                                }
+                            }
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(6.dp))
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { complaintPhotoAttached = !complaintPhotoAttached }
+                            .padding(vertical = 4.dp)
+                            .testTag("complaint_add_photo_toggle"),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text("Add photo", fontSize = 12.sp, fontWeight = FontWeight.Medium)
+                            Text("Demo toggle — attach photo evidence", fontSize = 10.sp, color = Color(0xFF64748B))
+                        }
+                        Switch(
+                            checked = complaintPhotoAttached,
+                            onCheckedChange = { complaintPhotoAttached = it }
+                        )
                     }
 
                     Spacer(modifier = Modifier.height(6.dp))
@@ -407,9 +440,30 @@ fun OrdersScreen(
                         value = complaintDetails,
                         onValueChange = { complaintDetails = it },
                         label = { Text("Describe the issue (optional)", fontSize = 11.sp) },
+                        placeholder = { Text("Share what happened", color = Color.Gray, fontSize = 11.sp) },
                         modifier = Modifier.fillMaxWidth(),
                         maxLines = 3
                     )
+
+                    Spacer(modifier = Modifier.height(6.dp))
+                    OutlinedButton(
+                        onClick = {
+                            safetyConcernOrderId = showComplaintOrderId
+                            safetyConcernDescription = ""
+                            safetyConcernError = null
+                            showComplaintOrderId = null
+                            showSafetyConcernDialog = true
+                        },
+                        border = BorderStroke(1.dp, Color(0xFFFCA5A5)),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(min = 48.dp)
+                            .testTag("complaint_smell_gas_safety_btn")
+                    ) {
+                        Icon(Icons.Default.Warning, contentDescription = null, tint = Color(0xFFDC2626), modifier = Modifier.size(14.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text("Smell of gas / leak at home? Report safety concern", fontSize = 11.sp, color = Color(0xFFDC2626))
+                    }
                 }
             },
             confirmButton = {
@@ -420,7 +474,12 @@ fun OrdersScreen(
                         } else {
                             complaintDetails.trim()
                         }
-                        val (ok, msg) = store.raiseComplaint(showComplaintOrderId ?: "", complaintType, finalDesc)
+                        val (ok, msg) = store.raiseComplaint(
+                            orderId = showComplaintOrderId ?: "",
+                            issueType = complaintType,
+                            description = finalDesc,
+                            photoAttached = complaintPhotoAttached
+                        )
                         onActionMessage(msg, !ok)
                         showComplaintOrderId = null
                     },
@@ -432,6 +491,100 @@ fun OrdersScreen(
             },
             dismissButton = {
                 TextButton(onClick = { showComplaintOrderId = null }) { Text("Cancel") }
+            }
+        )
+    }
+
+    // Emergency Safety Concern Dialog (triggered from Leaking valve / Smell of gas path)
+    if (showSafetyConcernDialog) {
+        AlertDialog(
+            onDismissRequest = { showSafetyConcernDialog = false },
+            title = {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Default.Warning, contentDescription = null, tint = Color(0xFFDC2626))
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text("Report a safety concern", fontWeight = FontWeight.Bold, fontSize = 15.sp, color = Color(0xFF991B1B))
+                }
+            },
+            text = {
+                Column(modifier = Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Surface(
+                        color = Color(0xFFFEF2F2),
+                        shape = RoundedCornerShape(8.dp),
+                        border = BorderStroke(1.dp, Color(0xFFFECACA)),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Column(modifier = Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                            Text(
+                                text = "Follow the approved BLUE GAS safety procedure (to be supplied by the client, Q07). For emergencies call Rescue 1122.",
+                                fontSize = 11.sp,
+                                color = Color(0xFF991B1B),
+                                lineHeight = 15.sp
+                            )
+                            Button(
+                                onClick = {
+                                    val dialIntent = Intent(Intent.ACTION_DIAL, Uri.parse("tel:1122"))
+                                    context.startActivity(dialIntent)
+                                },
+                                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFDC2626)),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .heightIn(min = 48.dp)
+                                    .testTag("call_1122_button")
+                            ) {
+                                Icon(Icons.Default.Phone, contentDescription = null, modifier = Modifier.size(14.dp))
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text("Call 1122", fontSize = 12.sp)
+                            }
+                        }
+                    }
+                    if (safetyConcernOrderId != null) {
+                        Text("Related order: $safetyConcernOrderId", fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
+                    }
+                    if (safetyConcernError != null) {
+                        Text(safetyConcernError!!, fontSize = 11.sp, color = Color(0xFFDC2626))
+                    }
+                    OutlinedTextField(
+                        value = safetyConcernDescription,
+                        onValueChange = {
+                            safetyConcernDescription = it
+                            safetyConcernError = null
+                        },
+                        label = { Text("Describe the safety concern *") },
+                        placeholder = { Text("e.g. Gas smell near cylinder valve", color = Color.Gray) },
+                        modifier = Modifier.fillMaxWidth(),
+                        minLines = 3,
+                        maxLines = 5
+                    )
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        if (safetyConcernDescription.isBlank()) {
+                            safetyConcernError = "Please describe the safety concern."
+                            return@Button
+                        }
+                        val (ok, msg) = store.raiseSafetyConcern(
+                            customerId = activeCustomer.id,
+                            description = safetyConcernDescription.trim(),
+                            orderId = safetyConcernOrderId
+                        )
+                        onActionMessage(msg, !ok)
+                        if (ok) {
+                            showSafetyConcernDialog = false
+                            safetyConcernDescription = ""
+                            safetyConcernOrderId = null
+                        }
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFDC2626)),
+                    modifier = Modifier.testTag("orders_safety_submit_btn")
+                ) {
+                    Text("Submit")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showSafetyConcernDialog = false }) { Text("Cancel") }
             }
         )
     }
