@@ -800,6 +800,10 @@ data class Order(
     var expressFeePaisa: Long = 0L,
     var notHomeCount: Int = 0,
     var rescheduleCount: Int = 0,
+    var awaitingCustomerReschedule: Boolean = false,
+    var lastCallAttemptAt: Long? = null,
+    var returningSerial: String? = null,
+    var notHomeRiderId: String? = null,
     var riderAtHubAt: Long? = null,
     var complaintReference: String? = null
 )

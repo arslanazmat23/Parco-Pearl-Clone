@@ -212,7 +212,7 @@ fun HomeScreen(
     val deliveryWindowOptions = remember(snapshot.version, snapshot.settings) {
         store.availableDeliveryWindows()
     }
-    LaunchedEffect(deliveryWindowOptions) {
+    LaunchedEffect(snapshot.version) {
         if (deliveryWindowOptions.isNotEmpty() && deliveryWindowOptions.none { it.label == selectedWindowLabel }) {
             selectedWindowLabel = deliveryWindowOptions.first().label
         } else if (deliveryWindowOptions.isEmpty()) {
@@ -1601,22 +1601,34 @@ fun HomeScreen(
         val reorderVariant = snapshot.productVariants.find { it.sku == reorderSku }
         val reorderSizeLabel = reorderVariant?.cylinderSizeKg?.let { "$it kg" } ?: (reorderVariant?.name ?: "LPG")
 
-        val savedAddress = customerAddresses.find { it.id == prevOrder.addressId }
+        val defaultSavedAddress = customerAddresses.find { it.id == prevOrder.addressId }
             ?: customerAddresses.firstOrNull { it.isDefault }
             ?: customerAddresses.firstOrNull()
             ?: activeAddress
 
+        var sheetAddressId by remember(snapshot.version, prevOrder.id) {
+            mutableStateOf(defaultSavedAddress.id)
+        }
+        var sheetPickupChosen by remember(snapshot.version, prevOrder.id) {
+            mutableStateOf(false)
+        }
+        var showSheetAddressPicker by remember(snapshot.version, prevOrder.id) {
+            mutableStateOf(false)
+        }
+
+        val savedAddress = customerAddresses.find { it.id == sheetAddressId } ?: defaultSavedAddress
         val wasDelivery = prevOrder.fulfilmentMode == FulfilmentMode.DELIVERY
-        val addressUnserviceableFallback = wasDelivery && !savedAddress.isServiceable
-        val reorderMode = if (addressUnserviceableFallback) FulfilmentMode.PICKUP else prevOrder.fulfilmentMode
+        val addressUnserviceableNeedsChoice = wasDelivery && !savedAddress.isServiceable && !sheetPickupChosen
+        val reorderMode = if (sheetPickupChosen) FulfilmentMode.PICKUP else prevOrder.fulfilmentMode
         val reorderCityHubs = snapshot.nodes.filter {
             it.pickupEnabled && it.type != FulfilmentPointType.PLANT && it.city.equals(savedAddress.city, ignoreCase = true)
         }
         val reorderPickupHubId = prevOrder.pickupPointId?.takeIf { pid -> reorderCityHubs.any { it.id == pid } }
             ?: reorderCityHubs.firstOrNull()?.id
             ?: ""
+        val fallbackHubName = reorderCityHubs.find { it.id == reorderPickupHubId }?.name ?: "the local hub"
 
-        var sheetWindowLabel by remember(prevOrder.id, deliveryWindowOptions) {
+        var sheetWindowLabel by remember(snapshot.version, prevOrder.id) {
             mutableStateOf(deliveryWindowOptions.firstOrNull()?.label ?: "")
         }
         var sheetServiceLevel by remember(prevOrder.id, snapshot.settings.expressEnabled, reorderMode) {
@@ -1708,18 +1720,78 @@ fun HomeScreen(
                     }
                 }
 
-                if (addressUnserviceableFallback) {
+                if (addressUnserviceableNeedsChoice) {
                     Surface(
                         color = Color(0xFFFEF2F2),
                         shape = RoundedCornerShape(8.dp),
+                        border = BorderStroke(1.dp, Color(0xFFFECACA)),
                         modifier = Modifier.fillMaxWidth()
                     ) {
-                        Text(
-                            text = "Your saved address is outside the delivery area — switched to Hub pickup.",
-                            fontSize = 11.sp,
-                            color = Color(0xFF991B1B),
-                            modifier = Modifier.padding(8.dp)
-                        )
+                        Column(
+                            modifier = Modifier.padding(10.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Text(
+                                text = "Your saved address can't be used for delivery right now.",
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                color = Color(0xFF991B1B)
+                            )
+                            if (reorderPickupHubId.isNotEmpty()) {
+                                Button(
+                                    onClick = { sheetPickupChosen = true },
+                                    colors = ButtonDefaults.buttonColors(containerColor = BlueGasPrimary),
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .heightIn(min = 48.dp)
+                                        .testTag("reorder_collect_hub_button")
+                                ) {
+                                    Text("Collect from $fallbackHubName instead", fontSize = 12.sp)
+                                }
+                            }
+                            OutlinedButton(
+                                onClick = { showSheetAddressPicker = !showSheetAddressPicker },
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .heightIn(min = 48.dp)
+                                    .testTag("reorder_choose_address_button")
+                            ) {
+                                Text("Choose another address", fontSize = 12.sp)
+                            }
+                            if (showSheetAddressPicker) {
+                                val altAddresses = customerAddresses.filter { it.isServiceable }
+                                if (altAddresses.isEmpty()) {
+                                    Text(
+                                        text = "No other serviceable delivery addresses on your account.",
+                                        fontSize = 11.sp,
+                                        color = Color(0xFF7F1D1D)
+                                    )
+                                } else {
+                                    altAddresses.forEach { addr ->
+                                        Surface(
+                                            color = Color.White,
+                                            shape = RoundedCornerShape(6.dp),
+                                            border = BorderStroke(1.dp, Color(0xFFCBD5E1)),
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .clickable {
+                                                    sheetAddressId = addr.id
+                                                    selectedAddressId = addr.id
+                                                    sheetPickupChosen = false
+                                                    showSheetAddressPicker = false
+                                                }
+                                        ) {
+                                            Text(
+                                                text = "${addr.label} · ${addr.street}, ${addr.area}",
+                                                fontSize = 11.sp,
+                                                color = Color(0xFF0F172A),
+                                                modifier = Modifier.padding(10.dp)
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
 

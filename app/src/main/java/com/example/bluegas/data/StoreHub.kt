@@ -87,6 +87,81 @@ internal fun BlueGasStore.stockHandedOver(order: Order) {
 }
 
 /**
+ * Releases a bound cylinder from [order] on exception recovery, fail-closed, or not-home return.
+ * Hub cylinders return to [InventoryState.INV_AVAIL]; rider-van cylinders are flagged
+ * [Cylinder.pendingHubScanIn] until physically scanned back at the hub.
+ */
+internal fun BlueGasStore.releaseOrderCylinder(
+    order: Order,
+    actor: String = AccountableRole.OPERATIONS.displayName,
+    reason: String = "Released from order ${order.id}"
+) {
+    order.allocatedSerial?.let { s ->
+        val cyl = cylinders.find { it.serialNumber == s }
+        cyl?.let {
+            val idx = cylinders.indexOf(it)
+            when (it.custody) {
+                CylinderCustody.HUB -> {
+                    cylinders[idx] = it.copy(
+                        status = InventoryState.INV_AVAIL,
+                        allocatedOrderId = null
+                    )
+                    cylinderCustodyEvents.add(
+                        CylinderCustodyEvent(
+                            id = "EVT-" + UUID.randomUUID().toString().take(6),
+                            serialNumber = s,
+                            fromCustody = CylinderCustody.HUB,
+                            toCustody = CylinderCustody.HUB,
+                            orderId = order.id,
+                            actor = actor
+                        )
+                    )
+                    logAudit(
+                        entityType = "Cylinder",
+                        entityId = s,
+                        action = "RELEASE_ALLOCATION",
+                        actor = actor,
+                        role = AccountableRole.OPERATIONS,
+                        details = "Released cylinder $s back to hub pool ($reason)"
+                    )
+                }
+                CylinderCustody.RIDER_VAN -> {
+                    cylinders[idx] = it.copy(
+                        status = InventoryState.INV_TRANSIT,
+                        custody = CylinderCustody.RIDER_VAN,
+                        allocatedOrderId = null,
+                        pendingHubScanIn = true,
+                        pointId = order.fulfilmentPointId ?: it.pointId
+                    )
+                    cylinderCustodyEvents.add(
+                        CylinderCustodyEvent(
+                            id = "EVT-" + UUID.randomUUID().toString().take(6),
+                            serialNumber = s,
+                            fromCustody = CylinderCustody.RIDER_VAN,
+                            toCustody = CylinderCustody.RIDER_VAN,
+                            orderId = order.id,
+                            actor = actor
+                        )
+                    )
+                    logAudit(
+                        entityType = "Cylinder",
+                        entityId = s,
+                        action = "PENDING_HUB_SCAN_IN",
+                        actor = actor,
+                        role = AccountableRole.OPERATIONS,
+                        details = "Cylinder $s in rider van released from ${order.id} ($reason); awaiting hub scan-in"
+                    )
+                }
+                else -> {
+                    cylinders[idx] = it.copy(allocatedOrderId = null)
+                }
+            }
+        }
+        order.allocatedSerial = null
+    }
+}
+
+/**
  * Scans a returned cylinder back into a hub after an order exception or failed trip.
  *
  * Requires [Cylinder.pendingHubScanIn] to be true and verifies that the cylinder belongs to an
@@ -116,10 +191,13 @@ fun BlueGasStore.hubScanInReturnedCylinder(
         return Pair(false, "Cylinder ${cyl.serialNumber} is not waiting to be scanned back in.")
     }
 
+    val returningOrder = orders.find { it.returningSerial.equals(cyl.serialNumber, ignoreCase = true) }
+    val returningRiderId = returningOrder?.notHomeRiderId
+
     val lastOrderId = cylinderCustodyEvents
         .lastOrNull { it.serialNumber == cyl.serialNumber && it.orderId != null }
         ?.orderId
-    val prevOrder = lastOrderId?.let { oid -> orders.find { it.id == oid } }
+    val prevOrder = lastOrderId?.let { oid -> orders.find { it.id == oid } } ?: returningOrder
     val expectedPointId = prevOrder?.let { it.pickupPointId ?: it.fulfilmentPointId } ?: cyl.pointId
 
     if (expectedPointId != null && expectedPointId != pointId) {
@@ -137,6 +215,11 @@ fun BlueGasStore.hubScanInReturnedCylinder(
         allocatedOrderId = null,
         pendingHubScanIn = false
     )
+
+    orders.filter { it.returningSerial.equals(cyl.serialNumber, ignoreCase = true) }.forEach { ord ->
+        ord.returningSerial = null
+        ord.notHomeRiderId = null
+    }
 
     val stock = stockBalances.find { it.pointId == pointId && it.skuId == cyl.sku }
     if (stock != null) {
@@ -172,13 +255,14 @@ fun BlueGasStore.hubScanInReturnedCylinder(
             actor = actor
         )
     )
+    val riderSuffix = if (!returningRiderId.isNullOrBlank()) " from rider $returningRiderId" else ""
     logAudit(
         entityType = "Cylinder",
         entityId = cyl.serialNumber,
         action = "HUB_SCAN_IN_RETURN",
         actor = actor,
         role = AccountableRole.HUB,
-        details = "Scanned returned cylinder ${cyl.serialNumber} back into $hubName"
+        details = "Scanned returned cylinder ${cyl.serialNumber} back into $hubName ($pointId)$riderSuffix"
     )
     notifyChanged()
     return Pair(true, "Cylinder ${cyl.serialNumber} scanned back into $hubName.")

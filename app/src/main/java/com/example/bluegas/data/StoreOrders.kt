@@ -232,10 +232,7 @@ fun BlueGasStore.createOrder(
     return Pair(initialOrder, null)
 }
 
-fun BlueGasStore.onConfirmed(order: Order) {
-    val now = clock()
-    order.confirmedAt = now
-
+internal fun BlueGasStore.applyDeliveryPromise(order: Order, now: Long = clock()) {
     val karachiCal = Calendar.getInstance(TimeZone.getTimeZone("Asia/Karachi"), Locale.US).apply {
         timeInMillis = now
     }
@@ -247,7 +244,7 @@ fun BlueGasStore.onConfirmed(order: Order) {
             order.promisedByAt = readyAt
             order.promiseLabel = "Ready by ${formatKarachiTime12h(readyAt)}"
         }
-        order.serviceLevel == ServiceLevel.EXPRESS -> {
+        order.serviceLevel == ServiceLevel.EXPRESS && order.windowEndAt == null -> {
             val expressBy = now + (settings.expressHours * 3_600_000L)
             order.promisedByAt = expressBy
             order.promiseLabel = "Express · within ${settings.expressHours} hours (by ${formatKarachiTime12h(expressBy)})"
@@ -257,17 +254,22 @@ fun BlueGasStore.onConfirmed(order: Order) {
             order.promiseLabel = order.deliveryWindowLabel
         }
         currentKarachiHour >= settings.standardCutoffHour -> {
-            val firstTomorrow = settings.deliveryWindowsHours.minByOrNull { it.first } ?: (10 to 12)
-            val promisedEnd = karachiDayHourMillis(now, addDays = 1, hour = firstTomorrow.second)
-            order.promisedByAt = promisedEnd
-            order.promiseLabel = "Tomorrow ${formatHourRange12h(firstTomorrow.first, firstTomorrow.second)}"
+            val promiseAt = karachiDayHourMillis(now, addDays = 1, hour = settings.standardSameDayByHour)
+            order.promisedByAt = promiseAt
+            order.promiseLabel = "Tomorrow by ${formatKarachiTime12h(promiseAt)}"
         }
         else -> {
-            val standardBy = now + (settings.promisedHandoverMinutes * 60000L)
-            order.promisedByAt = standardBy
-            order.promiseLabel = "Today by ${formatKarachiTime12h(standardBy)}"
+            val promiseAt = karachiDayHourMillis(now, addDays = 0, hour = settings.standardSameDayByHour)
+            order.promisedByAt = promiseAt
+            order.promiseLabel = "Today by ${formatKarachiTime12h(promiseAt)}"
         }
     }
+}
+
+fun BlueGasStore.onConfirmed(order: Order) {
+    val now = clock()
+    order.confirmedAt = now
+    applyDeliveryPromise(order, now)
 
     val promiseModeWord = if (order.fulfilmentMode == FulfilmentMode.PICKUP) "pickup" else "delivery"
     val confirmedMessage = if (order.paymentMethod == PaymentMethod.CASH_ON_DELIVERY) {
@@ -530,6 +532,7 @@ fun BlueGasStore.cancelOrder(
     }
     recordHistory(tCanc, "CANCELLED")
     order.cancelReason = reason
+    order.awaitingCustomerReschedule = false
 
     // Payment handling per v0.4 §12 & §10.6
     val payment = activePaymentFor(orderId)
@@ -730,53 +733,27 @@ fun BlueGasStore.raiseException(
 fun BlueGasStore.recoverException(
     orderId: String,
     target: OrderStatus,
-    reason: String
+    reason: String,
+    actor: String = AccountableRole.OPERATIONS.displayName
 ): Pair<Boolean, String> {
     val order = orders.find { it.id == orderId } ?: return Pair(false, "Order not found")
     if (order.status != OrderStatus.ORD_EXC) {
         return Pair(false, "Order is not in Fulfilment Exception.")
     }
 
-    val opsActor = AccountableRole.OPERATIONS.displayName
     order.exceptionRetryCount++
 
     if (target == OrderStatus.ORD_CANC) {
-        return cancelOrder(orderId, "Cancelled from exception recovery: $reason", opsActor, AccountableRole.OPERATIONS)
+        return cancelOrder(orderId, "Cancelled from exception recovery: $reason", actor, AccountableRole.OPERATIONS)
     }
 
     if (target == OrderStatus.ORD_FCLO) {
-        // Release all holds, reservations and bound cylinders
-        order.allocatedSerial?.let { s ->
-            val cyl = cylinders.find { it.serialNumber == s }
-            cyl?.let {
-                val idx = cylinders.indexOf(it)
-                if (it.custody == CylinderCustody.RIDER_VAN) {
-                    cylinders[idx] = it.copy(
-                        allocatedOrderId = null,
-                        pendingHubScanIn = true,
-                        pointId = order.fulfilmentPointId ?: it.pointId
-                    )
-                    cylinderCustodyEvents.add(
-                        CylinderCustodyEvent(
-                            id = "EVT-" + UUID.randomUUID().toString().take(6),
-                            serialNumber = s,
-                            fromCustody = CylinderCustody.RIDER_VAN,
-                            toCustody = CylinderCustody.RIDER_VAN,
-                            orderId = order.id,
-                            actor = opsActor
-                        )
-                    )
-                    logAudit("Cylinder", s, "PENDING_HUB_SCAN_IN", opsActor, AccountableRole.OPERATIONS, "Cylinder $s released on fail-closed of order $orderId; awaiting hub scan-in")
-                } else {
-                    cylinders[idx] = it.copy(status = InventoryState.INV_AVAIL, allocatedOrderId = null)
-                }
-            }
-            order.allocatedSerial = null
-        }
+        releaseOrderCylinder(order, actor, reason)
+        order.awaitingCustomerReschedule = false
         val tFclo = OrderStateMachine.transition(
             order = order,
             targetStatus = OrderStatus.ORD_FCLO,
-            actor = opsActor,
+            actor = actor,
             role = AccountableRole.OPERATIONS,
             trigger = "Failed closed: $reason"
         )
@@ -792,7 +769,7 @@ fun BlueGasStore.recoverException(
     val tRec = OrderStateMachine.transition(
         order = order,
         targetStatus = target,
-        actor = opsActor,
+        actor = actor,
         role = AccountableRole.OPERATIONS,
         trigger = "Recovered: $reason"
     )
@@ -800,84 +777,83 @@ fun BlueGasStore.recoverException(
         return Pair(false, tRec.errorMessage)
     }
     recordHistory(tRec, "RECOVERED")
+    order.awaitingCustomerReschedule = false
 
     if (target == OrderStatus.ORD_ASGN) {
         order.assignedAt = System.currentTimeMillis()
-        order.allocatedSerial?.let { s ->
-            val cyl = cylinders.find { it.serialNumber == s }
-            cyl?.let {
-                val idx = cylinders.indexOf(it)
-                when (it.custody) {
-                    CylinderCustody.HUB -> {
-                        cylinders[idx] = it.copy(
-                            status = InventoryState.INV_AVAIL,
-                            allocatedOrderId = null
-                        )
-                        cylinderCustodyEvents.add(
-                            CylinderCustodyEvent(
-                                id = "EVT-" + UUID.randomUUID().toString().take(6),
-                                serialNumber = s,
-                                fromCustody = CylinderCustody.HUB,
-                                toCustody = CylinderCustody.HUB,
-                                orderId = order.id,
-                                actor = opsActor
-                            )
-                        )
-                        logAudit("Cylinder", s, "RELEASE_ALLOCATION", opsActor, AccountableRole.OPERATIONS, "Released cylinder $s back to hub pool on exception recovery of $orderId")
-                    }
-                    CylinderCustody.RIDER_VAN -> {
-                        cylinders[idx] = it.copy(
-                            status = InventoryState.INV_TRANSIT,
-                            custody = CylinderCustody.RIDER_VAN,
-                            allocatedOrderId = null,
-                            pendingHubScanIn = true,
-                            pointId = order.fulfilmentPointId ?: it.pointId
-                        )
-                        cylinderCustodyEvents.add(
-                            CylinderCustodyEvent(
-                                id = "EVT-" + UUID.randomUUID().toString().take(6),
-                                serialNumber = s,
-                                fromCustody = CylinderCustody.RIDER_VAN,
-                                toCustody = CylinderCustody.RIDER_VAN,
-                                orderId = order.id,
-                                actor = opsActor
-                            )
-                        )
-                        logAudit("Cylinder", s, "PENDING_HUB_SCAN_IN", opsActor, AccountableRole.OPERATIONS, "Cylinder $s in rider van released from $orderId; awaiting hub scan-in")
-                    }
-                    else -> {
-                        cylinders[idx] = it.copy(allocatedOrderId = null)
-                    }
-                }
-            }
-        }
-        order.allocatedSerial = null
+        releaseOrderCylinder(order, actor, "exception recovery of $orderId")
         order.assignedRiderId = null
         order.riderTaskStatus = null
         order.riderCylinderVerified = false
         order.riderOfferedAt = null
     } else if (target == OrderStatus.ORD_PREP) {
         // Release previous cylinder to allow re-allocation
-        order.allocatedSerial?.let { s ->
-            val cyl = cylinders.find { it.serialNumber == s }
-            cyl?.let {
-                val idx = cylinders.indexOf(it)
-                if (it.custody == CylinderCustody.RIDER_VAN) {
-                    cylinders[idx] = it.copy(
-                        allocatedOrderId = null,
-                        pendingHubScanIn = true,
-                        pointId = order.fulfilmentPointId ?: it.pointId
-                    )
-                } else {
-                    cylinders[idx] = it.copy(status = InventoryState.INV_AVAIL, allocatedOrderId = null)
-                }
-            }
-            order.allocatedSerial = null
-        }
+        releaseOrderCylinder(order, actor, "reset to prep on $orderId")
     }
 
     notifyChanged()
     return Pair(true, "Order $orderId recovered to ${target.canonicalLabel}.")
+}
+
+/**
+ * Allows a customer whose delivery order is awaiting reschedule after a not-home attempt
+ * to pick a future delivery window and re-queue the order for hub/rider fulfilment
+ * without creating a new booking or a new payment attempt.
+ */
+fun BlueGasStore.customerRescheduleAfterNotHome(
+    orderId: String,
+    option: DeliveryWindowOption
+): Pair<Boolean, String> {
+    val order = orders.find { it.id == orderId }
+        ?: return Pair(false, "Order not found.")
+    if (order.status != OrderStatus.ORD_EXC || !order.awaitingCustomerReschedule) {
+        return Pair(false, "This order is not waiting for a new delivery time.")
+    }
+    if (order.rescheduleCount >= settings.freeRedeliveries) {
+        return Pair(false, "Free re-deliveries have been used. Our team will call you.")
+    }
+    if (option.isAsap || option.endAt == null || option.endAt <= clock()) {
+        return Pair(false, "Please choose an upcoming delivery time window.")
+    }
+
+    order.deliveryWindowLabel = option.label
+    order.windowStartAt = option.startAt
+    order.windowEndAt = option.endAt
+    applyDeliveryPromise(order)
+    order.rescheduleCount += 1
+    order.awaitingCustomerReschedule = false
+
+    val customerActor = customers.find { it.id == order.customerId }?.name ?: "Customer"
+    val (recOk, recMsg) = recoverException(
+        orderId = orderId,
+        target = OrderStatus.ORD_ASGN,
+        reason = "Customer picked a new time: ${option.label}",
+        actor = "$customerActor (customer)"
+    )
+    if (!recOk) {
+        order.rescheduleCount = (order.rescheduleCount - 1).coerceAtLeast(0)
+        order.awaitingCustomerReschedule = true
+        return Pair(false, recMsg)
+    }
+
+    addNotification(
+        surface = AppSurface.CUSTOMER,
+        title = "New delivery time confirmed",
+        message = "Your order ${order.id} will be delivered during ${option.label}.",
+        canonicalStatus = order.status.canonicalLabel,
+        orderId = order.id,
+        code = "NTF-03"
+    )
+    logAudit(
+        entityType = "Order",
+        entityId = order.id,
+        action = "CUSTOMER_RESCHEDULE_NOT_HOME",
+        actor = customerActor,
+        role = AccountableRole.OPERATIONS,
+        details = "Rescheduled delivery to ${option.label} (attempt ${order.rescheduleCount})"
+    )
+    notifyChanged()
+    return Pair(true, "New delivery time confirmed: ${option.label}.")
 }
 
 // Backward compatibility helpers

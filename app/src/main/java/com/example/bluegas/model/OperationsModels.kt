@@ -326,6 +326,7 @@ data class PlatformSettings(
     val deliveryWindowsHours: List<Pair<Int, Int>> = listOf(10 to 12, 12 to 14, 14 to 16, 16 to 18, 18 to 20), // To-Be P3 [Recommended]
     val tomorrowWindowsEnabled: Boolean = true,                               // To-Be P3 [Recommended]
     val standardCutoffHour: Int = 17,                                         // delivery promise [To decide]
+    val standardSameDayByHour: Int = 21,                                      // delivery promise [To decide]
     val expressEnabled: Boolean = false,                                      // [To decide]
     val expressFeePaisa: Long = 20000L,                                       // [To decide]
     val expressHours: Int = 2,                                                // [To decide]

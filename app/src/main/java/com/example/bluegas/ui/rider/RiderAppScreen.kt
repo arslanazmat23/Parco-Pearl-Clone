@@ -25,11 +25,14 @@ import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import java.util.Locale
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
@@ -92,6 +95,7 @@ private fun isPendingForRider(order: Order, riderId: String): Boolean {
  * @return True if the order should appear in the Active deliveries list.
  */
 private fun isActiveForRider(order: Order, riderId: String): Boolean {
+    if (order.returningSerial != null && order.notHomeRiderId == riderId) return true
     return order.assignedRiderId == riderId &&
             !order.status.isTerminal &&
             !isPendingForRider(order, riderId) &&
@@ -250,9 +254,15 @@ fun RiderAppScreen(store: BlueGasStore) {
             .sortedByDescending { it.openedAt }
     }
 
+    val completedReturnedToHubLogs = remember(appState.version, activeRider.id) {
+        appState.auditLogs
+            .filter { it.action == "HUB_SCAN_IN_RETURN" && it.details.contains("from rider ${activeRider.id}") }
+            .sortedByDescending { it.timestamp }
+    }
+
     val pendingTotalCount = pendingOrders.size + pendingCollections.size
     val activeTotalCount = activeOrders.size + activeCollections.size
-    val completedTotalCount = completedOrders.size + completedCollections.size
+    val completedTotalCount = completedOrders.size + completedCollections.size + completedReturnedToHubLogs.size
 
     // Calculate pending COD cash to hand over using store helper
     val pendingCashPaisa = remember(appState.version, activeRider.id) {
@@ -784,6 +794,9 @@ fun RiderAppScreen(store: BlueGasStore) {
                                 items(activeOrders, key = { "active_ord_${it.id}" }) { ord ->
                                     ActiveOrderCard(
                                         order = ord,
+                                        store = store,
+                                        activeRiderId = activeRider.id,
+                                        riderHubName = riderHubName,
                                         snapshot = appState,
                                         onVerifyCylinder = {
                                             showVerifyCylinderOrderId = ord.id
@@ -827,6 +840,13 @@ fun RiderAppScreen(store: BlueGasStore) {
                                     CompletedCollectionCard(
                                         returnCase = rc,
                                         hubName = riderHubName,
+                                        snapshot = appState
+                                    )
+                                }
+                                items(completedReturnedToHubLogs, key = { "done_ret_${it.id}" }) { audit ->
+                                    CompletedReturnToHubCard(
+                                        audit = audit,
+                                        defaultHubName = riderHubName,
                                         snapshot = appState
                                     )
                                 }
@@ -1138,9 +1158,8 @@ fun RiderAppScreen(store: BlueGasStore) {
     if (showIssueOrderId != null) {
         val ord = appState.orders.find { it.id == showIssueOrderId }
 
-        // Exactly 3 radio options as required by S6.2
+        // Road/refusal issue options (not-home has its own call + wait flow on ActiveOrderCard)
         val issueOptions = listOf(
-            "Customer not answering or not available" to ExceptionReason.DELIVERY_FAILURE_OR_CUSTOMER_UNAVAILABLE,
             "Cannot reach the address" to ExceptionReason.VALIDATION_OUT_OF_AREA,
             "Customer refused the cylinder" to ExceptionReason.GOODS_REJECTED_AT_DOOR
         )
@@ -1480,6 +1499,7 @@ fun RiderAppScreen(store: BlueGasStore) {
                                 "START_TRIP" -> "Start trip"
                                 "ARRIVE_AT_DOORSTEP" -> "Arrived"
                                 "REPORT_ISSUE" -> "Report problem"
+                                "NOT_HOME" -> "Customer not home"
                                 "COMPLETE_HANDOVER" -> "Complete delivery"
                                 else -> evt.action
                             }
@@ -1825,9 +1845,13 @@ private fun PendingOrderCard(
 /**
  * Card representing an active delivery task progressing from depot verification to doorstep handover.
  */
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun ActiveOrderCard(
     order: Order,
+    store: BlueGasStore,
+    activeRiderId: String,
+    riderHubName: String,
     snapshot: SharedAppState,
     onVerifyCylinder: () -> Unit,
     onStartDelivery: () -> Unit,
@@ -1840,6 +1864,18 @@ private fun ActiveOrderCard(
     val cust = snapshot.customers.find { it.id == order.customerId }
     val addr = snapshot.addresses.find { it.id == order.addressId }
     var addressExpanded by remember { mutableStateOf(false) }
+
+    val isReturningToHub = order.returningSerial != null && order.notHomeRiderId == activeRiderId
+    var notHomeWaitStartedAt by rememberSaveable(order.id) { mutableStateOf<Long?>(null) }
+    var notHomeDemoSkipped by rememberSaveable(order.id) { mutableStateOf(false) }
+    var needCallWarning by remember(order.id, order.lastCallAttemptAt) { mutableStateOf(false) }
+    var tickerNow by remember(order.id, notHomeWaitStartedAt) { mutableStateOf(store.clock()) }
+    LaunchedEffect(notHomeWaitStartedAt, notHomeDemoSkipped) {
+        while (notHomeWaitStartedAt != null && !notHomeDemoSkipped) {
+            tickerNow = store.clock()
+            delay(500L)
+        }
+    }
 
     val hasPendingOutbox = remember(snapshot.riderOutbox, order.id) {
         snapshot.riderOutbox.any { it.orderId == order.id && it.syncStatus == "PENDING" }
@@ -1959,21 +1995,24 @@ private fun ActiveOrderCard(
             ) {
                 OutlinedButton(
                     onClick = {
+                        store.riderLogCallAttempt(order.id, activeRiderId)
+                        needCallWarning = false
                         val phone = cust?.phone
                         if (!phone.isNullOrBlank()) {
                             try {
                                 val intent = Intent(Intent.ACTION_DIAL, Uri.parse("tel:$phone"))
                                 context.startActivity(intent)
                             } catch (_: Exception) {
-                                onActionMessage("No phone dialer application available.", true)
+                                onActionMessage("Calling $phone… (demo)", false)
                             }
                         } else {
-                            onActionMessage("Customer phone number not available.", true)
+                            onActionMessage("Calling customer… (demo)", false)
                         }
                     },
                     modifier = Modifier
                         .weight(1f)
                         .height(48.dp)
+                        .testTag("rider_call_customer_btn_${order.id}")
                 ) {
                     Icon(Icons.Default.Call, contentDescription = null, modifier = Modifier.size(16.dp))
                     Spacer(modifier = Modifier.width(4.dp))
@@ -2069,7 +2108,30 @@ private fun ActiveOrderCard(
             // ACTION CONTROLS PER STATUS (S1.5)
             Spacer(modifier = Modifier.height(12.dp))
 
-            if (hasPendingOutbox) {
+            if (isReturningToHub) {
+                Surface(
+                    color = Color(0xFFFAF5FF),
+                    shape = RoundedCornerShape(8.dp),
+                    border = BorderStroke(1.dp, Color(0xFFE9D5FF)),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("return_to_hub_notice_${order.id}")
+                ) {
+                    Row(
+                        modifier = Modifier.padding(12.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(Icons.Default.Inventory, contentDescription = null, tint = Color(0xFF6B21A8), modifier = Modifier.size(18.dp))
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            text = "Take cylinder ${order.returningSerial} back to $riderHubName. The hub will scan it in.",
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            color = Color(0xFF6B21A8)
+                        )
+                    }
+                }
+            } else if (hasPendingOutbox) {
                 // S1.5: Replace main action button with disabled amber chip
                 Surface(
                     color = Color(0xFFFEF3C7),
@@ -2263,6 +2325,129 @@ private fun ActiveOrderCard(
                     }
 
                     else -> {}
+                }
+
+                // Not-home rule flow in Dispatched / At Handover (G-32)
+                if (order.status == OrderStatus.ORD_DISP || order.status == OrderStatus.ORD_ATHO) {
+                    Spacer(modifier = Modifier.height(8.dp))
+                    if (notHomeWaitStartedAt == null) {
+                        OutlinedButton(
+                            onClick = {
+                                if (order.lastCallAttemptAt == null) {
+                                    needCallWarning = true
+                                } else {
+                                    needCallWarning = false
+                                    notHomeDemoSkipped = false
+                                    notHomeWaitStartedAt = store.clock()
+                                }
+                            },
+                            colors = ButtonDefaults.outlinedButtonColors(contentColor = Color(0xFF92400E)),
+                            border = BorderStroke(1.dp, Color(0xFFF59E0B)),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .heightIn(min = 48.dp)
+                                .testTag("customer_not_available_btn_${order.id}")
+                        ) {
+                            Icon(Icons.Default.PersonOff, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("Customer not available", fontSize = 12.sp)
+                        }
+                        if (needCallWarning && order.lastCallAttemptAt == null) {
+                            Spacer(modifier = Modifier.height(6.dp))
+                            Surface(
+                                color = Color(0xFFFEF3C7),
+                                shape = RoundedCornerShape(6.dp),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Text(
+                                    text = "Call the customer first.",
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = Color(0xFF92400E),
+                                    modifier = Modifier.padding(8.dp)
+                                )
+                            }
+                        }
+                    } else {
+                        val waitTotalMs = snapshot.settings.notHomeWaitMinutes * 60_000L
+                        val elapsedMs = (tickerNow - notHomeWaitStartedAt!!).coerceAtLeast(0L)
+                        val remainingMs = (waitTotalMs - elapsedMs).coerceAtLeast(0L)
+                        val waitComplete = notHomeDemoSkipped || remainingMs <= 0L
+                        val remSecs = (remainingMs / 1000L).coerceAtLeast(0L)
+                        val mmss = String.format(Locale.US, "%02d:%02d", remSecs / 60L, remSecs % 60L)
+
+                        Surface(
+                            color = Color(0xFFFFFBEB),
+                            shape = RoundedCornerShape(8.dp),
+                            border = BorderStroke(1.dp, Color(0xFFF59E0B)),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Column(
+                                modifier = Modifier.padding(10.dp),
+                                verticalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                FlowRow(
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                    verticalArrangement = Arrangement.spacedBy(6.dp),
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    Text(
+                                        text = if (waitComplete) {
+                                            "Wait finished (${snapshot.settings.notHomeWaitMinutes} min)"
+                                        } else {
+                                            "Waiting for the customer — $mmss"
+                                        },
+                                        fontSize = 12.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        color = Color(0xFF92400E),
+                                        modifier = Modifier.align(Alignment.CenterVertically)
+                                    )
+                                    if (!waitComplete) {
+                                        Surface(
+                                            color = Color(0xFFE2E8F0),
+                                            shape = RoundedCornerShape(6.dp),
+                                            modifier = Modifier
+                                                .clickable { notHomeDemoSkipped = true }
+                                                .testTag("demo_skip_wait_btn_${order.id}")
+                                        ) {
+                                            Text(
+                                                text = "Demo: skip wait",
+                                                fontSize = 10.sp,
+                                                fontWeight = FontWeight.SemiBold,
+                                                color = Color(0xFF475569),
+                                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 5.dp)
+                                            )
+                                        }
+                                    }
+                                }
+                                if (waitComplete) {
+                                    Button(
+                                        onClick = {
+                                            val (ok, msg) = store.riderMarkNotHome(
+                                                orderId = order.id,
+                                                riderId = activeRiderId,
+                                                callAttemptedAt = order.lastCallAttemptAt,
+                                                waitStartedAt = notHomeWaitStartedAt!!,
+                                                demoSkip = notHomeDemoSkipped
+                                            )
+                                            if (ok) {
+                                                notHomeWaitStartedAt = null
+                                                notHomeDemoSkipped = false
+                                            }
+                                            onActionMessage(msg, !ok)
+                                        },
+                                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFD97706)),
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .heightIn(min = 48.dp)
+                                            .testTag("confirm_not_home_btn_${order.id}")
+                                    ) {
+                                        Text("Confirm customer not available", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -2751,6 +2936,60 @@ private fun CompletedCollectionCard(
             )
             Text(
                 text = "Handed in at $hubName · $handInTime",
+                fontSize = 12.sp,
+                color = Color(0xFF166534),
+                fontWeight = FontWeight.Medium
+            )
+        }
+    }
+}
+
+@Composable
+private fun CompletedReturnToHubCard(
+    audit: AuditLog,
+    defaultHubName: String,
+    snapshot: SharedAppState
+) {
+    val hubName = snapshot.nodes.find { audit.details.contains("(${it.id})") }?.name ?: defaultHubName
+    val timeText = formatTimeOnly(audit.timestamp)
+
+    Card(
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        border = BorderStroke(1.dp, Color(0xFFCBD5E1)),
+        shape = RoundedCornerShape(12.dp),
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 4.dp)
+            .testTag("completed_return_to_hub_card_${audit.id}")
+    ) {
+        Column(
+            modifier = Modifier.padding(14.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Surface(color = Color(0xFFF3E8FF), shape = RoundedCornerShape(4.dp)) {
+                    Text(
+                        text = "Returned cylinder",
+                        fontSize = 10.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = Color(0xFF6B21A8),
+                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                    )
+                }
+                Text(
+                    text = audit.entityId,
+                    fontSize = 11.sp,
+                    fontFamily = FontFamily.Monospace,
+                    fontWeight = FontWeight.SemiBold,
+                    color = Color(0xFF475569)
+                )
+            }
+            Text(
+                text = "Returned to $hubName · $timeText",
                 fontSize = 12.sp,
                 color = Color(0xFF166534),
                 fontWeight = FontWeight.Medium

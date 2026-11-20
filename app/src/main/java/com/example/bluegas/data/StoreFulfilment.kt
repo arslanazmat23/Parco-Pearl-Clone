@@ -912,6 +912,167 @@ fun BlueGasStore.riderReportIssue(
     riderReportIssue(orderId, reason, details, safetyConcern, riderId)
 
 /**
+ * Records a call attempt to the customer before starting or completing a not-home wait.
+ */
+fun BlueGasStore.riderLogCallAttempt(
+    orderId: String,
+    riderId: String? = null
+): Pair<Boolean, String> {
+    val order = orders.find { it.id == orderId } ?: return Pair(false, "Order not found.")
+    val effectiveRiderId = riderId ?: getActiveRider()?.id
+    if (order.assignedRiderId != effectiveRiderId) {
+        return Pair(false, "Order is not assigned to this rider.")
+    }
+    val now = clock()
+    order.lastCallAttemptAt = now
+    val actorName = riders.find { it.id == effectiveRiderId }?.name ?: getActiveRider()?.name ?: "Rider"
+    logAudit(
+        entityType = "Order",
+        entityId = order.id,
+        action = "RIDER_CALL_CUSTOMER",
+        actor = actorName,
+        role = AccountableRole.OPERATIONS,
+        details = "Rider logged call attempt to customer for order ${order.id}"
+    )
+    notifyChanged()
+    return Pair(true, "Call attempt logged.")
+}
+
+/**
+ * Marks the customer as not home after verifying a call attempt and doorstep wait interval.
+ * Never delegates to [riderReportIssue]; transitions via [raiseException] cleanly, releases
+ * the cylinder to pending hub scan-in, records [Order.returningSerial]/[Order.notHomeRiderId],
+ * and either sets [Order.awaitingCustomerReschedule] or alerts Operations when free re-deliveries
+ * are exhausted. Supports offline queuing and idempotent replay.
+ */
+fun BlueGasStore.riderMarkNotHome(
+    orderId: String,
+    riderId: String? = null,
+    callAttemptedAt: Long? = null,
+    waitStartedAt: Long,
+    demoSkip: Boolean = false,
+    isReplay: Boolean = false
+): Pair<Boolean, String> {
+    val order = orders.find { it.id == orderId } ?: return Pair(false, "Order not found.")
+    val effectiveRiderId = riderId ?: getActiveRider()?.id
+    if (!isReplay && order.assignedRiderId != effectiveRiderId) {
+        return Pair(false, "Order is not assigned to this rider.")
+    }
+    if (order.status != OrderStatus.ORD_DISP && order.status != OrderStatus.ORD_ATHO) {
+        return Pair(false, "Not-home can only be marked after starting delivery or arriving.")
+    }
+
+    val effectiveCallAt = callAttemptedAt ?: order.lastCallAttemptAt
+        ?: return Pair(false, "Call the customer first.")
+
+    val requiredWaitMs = settings.notHomeWaitMinutes * 60_000L
+    val elapsedMs = clock() - waitStartedAt
+    if (!demoSkip && elapsedMs < requiredWaitMs) {
+        return Pair(false, "Wait ${settings.notHomeWaitMinutes} minutes after calling before marking customer not home.")
+    }
+
+    if (isRiderOffline && !isReplay) {
+        if (riderOutbox.any { it.orderId == orderId && it.action == "NOT_HOME" && it.syncStatus == "PENDING" }) {
+            return Pair(true, "Already saved — it will be sent when you are back online.")
+        }
+        val payload = mapOf(
+            "callAttemptedAt" to effectiveCallAt.toString(),
+            "waitStartedAt" to waitStartedAt.toString(),
+            "demoSkip" to demoSkip.toString(),
+            "riderId" to (effectiveRiderId ?: "")
+        )
+        riderOutbox.add(
+            OfflineOutboxEvent(
+                sequenceNumber = outboxSequenceCounter++,
+                idempotencyKey = "IDEMP-OFF-" + UUID.randomUUID().toString().take(8),
+                orderId = orderId,
+                action = "NOT_HOME",
+                fromStatus = order.status,
+                toStatus = OrderStatus.ORD_EXC,
+                scannedSerial = order.allocatedSerial,
+                reasonCode = ExceptionReason.DELIVERY_FAILURE_OR_CUSTOMER_UNAVAILABLE.name,
+                payloadNotes = "Customer not home",
+                handoverPayload = payload
+            )
+        )
+        notifyChanged()
+        return Pair(true, "Not-home report saved — it will be sent when you are back online.")
+    }
+
+    if (order.lastCallAttemptAt == null) {
+        order.lastCallAttemptAt = effectiveCallAt
+    }
+
+    val riderName = riders.find { it.id == effectiveRiderId }?.name ?: getActiveRider()?.name ?: "Rider"
+    val (excOk, excMsg) = raiseException(
+        orderId = orderId,
+        reason = ExceptionReason.DELIVERY_FAILURE_OR_CUSTOMER_UNAVAILABLE,
+        details = "Customer not home after call and wait.",
+        actor = riderName
+    )
+    if (!excOk) {
+        return Pair(false, excMsg)
+    }
+
+    val boundSerial = order.allocatedSerial
+    releaseOrderCylinder(order, actor = riderName, reason = "Customer not home")
+    if (boundSerial != null) {
+        order.returningSerial = boundSerial
+        order.notHomeRiderId = effectiveRiderId
+    }
+
+    order.notHomeCount += 1
+    val withinLimit = order.rescheduleCount < settings.freeRedeliveries
+    order.awaitingCustomerReschedule = withinLimit
+
+    if (withinLimit) {
+        addNotification(
+            surface = AppSurface.CUSTOMER,
+            title = "We missed you",
+            message = "Sorry we missed you for order ${order.id}. Open Tracking or My Orders to pick a new delivery time.",
+            canonicalStatus = order.status.canonicalLabel,
+            orderId = order.id,
+            code = "NTF-13"
+        )
+    } else {
+        val custName = customers.find { it.id == order.customerId }?.name ?: "Customer"
+        addNotification(
+            surface = AppSurface.CUSTOMER,
+            title = "We missed you",
+            message = "Sorry we missed you for order ${order.id}. Our team will call you to arrange delivery.",
+            canonicalStatus = order.status.canonicalLabel,
+            orderId = order.id,
+            code = "NTF-13"
+        )
+        addNotification(
+            surface = AppSurface.STAFF,
+            title = "Not home — customer waiting for a call",
+            message = "Order ${order.id} ($custName) used its free re-deliveries. Please call the customer.",
+            canonicalStatus = order.status.canonicalLabel,
+            orderId = order.id,
+            code = "NTF-13",
+            staffRole = StaffSubRole.OPERATIONS
+        )
+    }
+
+    logAudit(
+        entityType = "Order",
+        entityId = order.id,
+        action = "RIDER_NOT_HOME",
+        actor = riderName,
+        role = AccountableRole.OPERATIONS,
+        details = "Marked not home (demoSkip=$demoSkip, returningSerial=$boundSerial, awaitingReschedule=$withinLimit)"
+    )
+    notifyChanged()
+    val msg = if (withinLimit) {
+        "Marked not home. Customer can pick a new delivery time; take cylinder back to hub."
+    } else {
+        "Marked not home. Operations alerted to call the customer; take cylinder back to hub."
+    }
+    return Pair(true, msg)
+}
+
+/**
  * Compares customer-provided handover PIN against the assigned PIN on the order.
  *
  * @param orderId Identifier of the order being delivered.
@@ -1439,6 +1600,23 @@ fun BlueGasStore.replayRiderOutbox(): Pair<Boolean, String> {
                 val reason = try { ExceptionReason.valueOf(event.reasonCode ?: "DELIVERY_FAILURE_OR_CUSTOMER_UNAVAILABLE") } catch (_: Exception) { ExceptionReason.DELIVERY_FAILURE_OR_CUSTOMER_UNAVAILABLE }
                 val safetyConcern = event.handoverPayload?.get("safetyConcern") == "true"
                 val (ok, _) = riderReportIssue(event.orderId, reason, event.payloadNotes ?: "Offline report", safetyConcern = safetyConcern, isReplay = true)
+                event.syncStatus = if (ok) "APPLIED" else "REJECTED"
+                if (ok) applied++ else rejected++
+            }
+            "NOT_HOME" -> {
+                val p = event.handoverPayload ?: emptyMap()
+                val callAt = p["callAttemptedAt"]?.toLongOrNull()
+                val waitAt = p["waitStartedAt"]?.toLongOrNull() ?: event.timestamp
+                val demoSkip = p["demoSkip"]?.toBooleanStrictOrNull() ?: false
+                val rId = p["riderId"]?.takeIf { it.isNotBlank() }
+                val (ok, _) = riderMarkNotHome(
+                    orderId = event.orderId,
+                    riderId = rId,
+                    callAttemptedAt = callAt,
+                    waitStartedAt = waitAt,
+                    demoSkip = demoSkip,
+                    isReplay = true
+                )
                 event.syncStatus = if (ok) "APPLIED" else "REJECTED"
                 if (ok) applied++ else rejected++
             }

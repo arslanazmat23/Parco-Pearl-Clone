@@ -48,6 +48,9 @@ fun StaffAdminScreen(
         mutableStateOf(currentSettings.deliveryWindowsHours.joinToString(", ") { "${it.first}-${it.second}" })
     }
     var standardCutoffHour by remember(currentSettings.standardCutoffHour) { mutableStateOf(currentSettings.standardCutoffHour.toString()) }
+    var standardSameDayByHour by remember(currentSettings.standardSameDayByHour) { mutableStateOf(currentSettings.standardSameDayByHour.toString()) }
+    var notHomeWaitMinutes by remember(currentSettings.notHomeWaitMinutes) { mutableStateOf(currentSettings.notHomeWaitMinutes.toString()) }
+    var freeRedeliveries by remember(currentSettings.freeRedeliveries) { mutableStateOf(currentSettings.freeRedeliveries.toString()) }
     var expressEnabled by remember(currentSettings.expressEnabled) { mutableStateOf(currentSettings.expressEnabled) }
     var expressFeeRs by remember(currentSettings.expressFeePaisa) { mutableStateOf((currentSettings.expressFeePaisa / 100L).toString()) }
     var expressHours by remember(currentSettings.expressHours) { mutableStateOf(currentSettings.expressHours.toString()) }
@@ -358,6 +361,36 @@ fun StaffAdminScreen(
                                 singleLine = true,
                                 modifier = Modifier.fillMaxWidth().testTag("admin_standard_cutoff_input")
                             )
+                            Spacer(modifier = Modifier.height(6.dp))
+
+                            OutlinedTextField(
+                                value = standardSameDayByHour,
+                                onValueChange = { standardSameDayByHour = it.filter { ch -> ch.isDigit() } },
+                                label = { Text("Same-day standard promise hour [9-23]") },
+                                supportingText = { Text("Demo value · delivery promise (default 21 = 9 pm)", fontSize = 10.sp) },
+                                singleLine = true,
+                                modifier = Modifier.fillMaxWidth().testTag("admin_standard_same_day_by_input")
+                            )
+                            Spacer(modifier = Modifier.height(6.dp))
+
+                            OutlinedTextField(
+                                value = notHomeWaitMinutes,
+                                onValueChange = { notHomeWaitMinutes = it.filter { ch -> ch.isDigit() } },
+                                label = { Text("Not-home doorstep wait time (minutes) [1-30]") },
+                                supportingText = { Text("Demo value", fontSize = 10.sp) },
+                                singleLine = true,
+                                modifier = Modifier.fillMaxWidth().testTag("admin_not_home_wait_input")
+                            )
+                            Spacer(modifier = Modifier.height(6.dp))
+
+                            OutlinedTextField(
+                                value = freeRedeliveries,
+                                onValueChange = { freeRedeliveries = it.filter { ch -> ch.isDigit() } },
+                                label = { Text("Free re-deliveries allowed [0-3]") },
+                                supportingText = { Text("Demo value", fontSize = 10.sp) },
+                                singleLine = true,
+                                modifier = Modifier.fillMaxWidth().testTag("admin_free_redeliveries_input")
+                            )
                             Spacer(modifier = Modifier.height(8.dp))
 
                             // Express delivery
@@ -472,6 +505,21 @@ fun StaffAdminScreen(
                                         onBanner("Enter a valid same-day cut-off hour (8–22).")
                                         return@Button
                                     }
+                                    val parsedSameDayBy = standardSameDayByHour.trim().toIntOrNull()
+                                    if (parsedSameDayBy == null) {
+                                        onBanner("Enter a valid same-day promise hour (9–23).")
+                                        return@Button
+                                    }
+                                    val parsedWaitMinutes = notHomeWaitMinutes.trim().toIntOrNull()
+                                    if (parsedWaitMinutes == null) {
+                                        onBanner("Enter a valid not-home wait time (1–30 minutes).")
+                                        return@Button
+                                    }
+                                    val parsedFreeRedeliveries = freeRedeliveries.trim().toIntOrNull()
+                                    if (parsedFreeRedeliveries == null) {
+                                        onBanner("Enter a valid free re-deliveries count (0–3).")
+                                        return@Button
+                                    }
                                     val parsedExpressFeeRs = expressFeeRs.trim().toLongOrNull()
                                     if (parsedExpressFeeRs == null || parsedExpressFeeRs < 0L) {
                                         onBanner("Enter a valid non-negative Express delivery fee in Rs.")
@@ -504,6 +552,9 @@ fun StaffAdminScreen(
                                         tomorrowWindowsEnabled = tomorrowWindowsEnabled,
                                         deliveryWindowsHours = parsedWindows,
                                         standardCutoffHour = parsedCutoff,
+                                        standardSameDayByHour = parsedSameDayBy,
+                                        notHomeWaitMinutes = parsedWaitMinutes,
+                                        freeRedeliveries = parsedFreeRedeliveries,
                                         expressEnabled = expressEnabled,
                                         expressFeePaisa = parsedExpressFeeRs * 100L,
                                         expressHours = parsedExpressHours,
@@ -707,16 +758,6 @@ private fun ToBeOptionsReadOnlyCard(
                 label = "Maximum orders per rider trip",
                 value = "${settings.riderBatchMax} orders",
                 isRecommended = true
-            )
-            ToBeSettingRow(
-                label = "Not-home doorstep wait time",
-                value = "${settings.notHomeWaitMinutes} minutes",
-                isDemoValue = true
-            )
-            ToBeSettingRow(
-                label = "Free re-deliveries allowed",
-                value = "${settings.freeRedeliveries}",
-                isDemoValue = true
             )
             ToBeSettingRow(
                 label = "Customer SMS alerts",

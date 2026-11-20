@@ -55,6 +55,15 @@ fun BlueGasStore.updateSettings(
     if (new.standardCutoffHour !in 8..22) {
         return Pair(false, "Same-day standard cut-off hour must be between 8 am and 10 pm.")
     }
+    if (new.standardSameDayByHour <= new.standardCutoffHour || new.standardSameDayByHour > 23) {
+        return Pair(false, "Same-day promise hour must be after the cut-off hour and up to 11 pm.")
+    }
+    if (new.notHomeWaitMinutes !in 1..30) {
+        return Pair(false, "Not-home wait time must be between 1 and 30 minutes.")
+    }
+    if (new.freeRedeliveries !in 0..3) {
+        return Pair(false, "Free re-deliveries must be between 0 and 3.")
+    }
     if (new.expressFeePaisa < 0L) {
         return Pair(false, "Express delivery fee cannot be negative.")
     }
@@ -81,6 +90,9 @@ fun BlueGasStore.updateSettings(
     if (old.deliveryWindowsHours != sortedWindows) changedFields.add("deliveryWindowsHours: ${sortedWindows.size} slots")
     if (old.tomorrowWindowsEnabled != new.tomorrowWindowsEnabled) changedFields.add("tomorrowWindowsEnabled: ${old.tomorrowWindowsEnabled} -> ${new.tomorrowWindowsEnabled}")
     if (old.standardCutoffHour != new.standardCutoffHour) changedFields.add("standardCutoffHour: ${old.standardCutoffHour} -> ${new.standardCutoffHour}")
+    if (old.standardSameDayByHour != new.standardSameDayByHour) changedFields.add("standardSameDayByHour: ${old.standardSameDayByHour} -> ${new.standardSameDayByHour}")
+    if (old.notHomeWaitMinutes != new.notHomeWaitMinutes) changedFields.add("notHomeWaitMinutes: ${old.notHomeWaitMinutes} -> ${new.notHomeWaitMinutes}m")
+    if (old.freeRedeliveries != new.freeRedeliveries) changedFields.add("freeRedeliveries: ${old.freeRedeliveries} -> ${new.freeRedeliveries}")
     if (old.expressEnabled != new.expressEnabled) changedFields.add("expressEnabled: ${old.expressEnabled} -> ${new.expressEnabled}")
     if (old.expressFeePaisa != new.expressFeePaisa) changedFields.add("expressFeePaisa: ${old.expressFeePaisa} -> ${new.expressFeePaisa}")
     if (old.expressHours != new.expressHours) changedFields.add("expressHours: ${old.expressHours} -> ${new.expressHours}h")

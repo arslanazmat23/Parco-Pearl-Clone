@@ -225,10 +225,10 @@ class Chunk6StoreTests {
         requireNotNull(lateOrder)
         val (payOk, payMsg) = store.payOnline(lateOrder.id, "SUCCESS")
         assertTrue(payMsg, payOk)
-        assertEquals("Tomorrow 10 am–12 pm", lateOrder.promiseLabel)
+        assertEquals("Tomorrow by 9 pm", lateOrder.promiseLabel)
 
         val lateNotif = store.notifications.last { it.orderId == lateOrder.id && it.title == "Order Confirmed" }
-        assertTrue(lateNotif.message.contains("Tomorrow 10 am–12 pm"))
+        assertTrue(lateNotif.message.contains("Tomorrow by 9 pm"))
         assertTrue(lateNotif.channels.contains(NotifyChannel.SMS))
     }
 

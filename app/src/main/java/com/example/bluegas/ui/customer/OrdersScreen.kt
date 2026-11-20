@@ -695,6 +695,18 @@ private fun CustomerOrderCard(
                 )
             }
 
+            if (order.status == OrderStatus.ORD_EXC &&
+                (order.awaitingCustomerReschedule || order.notHomeCount > 0)
+            ) {
+                Spacer(modifier = Modifier.height(8.dp))
+                MissedDeliveryRescheduleCard(
+                    order = order,
+                    store = store,
+                    snapshot = snapshot,
+                    onActionMessage = onActionMessage
+                )
+            }
+
             // Action Buttons
             Spacer(modifier = Modifier.height(10.dp))
             Row(

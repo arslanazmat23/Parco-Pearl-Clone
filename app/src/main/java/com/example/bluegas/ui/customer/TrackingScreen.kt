@@ -517,6 +517,20 @@ fun TrackingScreen(
                     }
                 }
 
+                // Section 1B: Not-home reschedule or callback notice (G-23)
+                if (currentOrder.status == OrderStatus.ORD_EXC &&
+                    (currentOrder.awaitingCustomerReschedule || currentOrder.notHomeCount > 0)
+                ) {
+                    item {
+                        MissedDeliveryRescheduleCard(
+                            order = currentOrder,
+                            store = store,
+                            snapshot = snapshot,
+                            onActionMessage = postMessage
+                        )
+                    }
+                }
+
                 // Section 2: Payment Status and Actions Card
                 item {
                     val orderPayments = snapshot.payments.filter { it.orderId == currentOrder.id }
@@ -1496,5 +1510,118 @@ private fun isStepCurrent(current: OrderStatus, target: OrderStatus): Boolean {
         OrderStatus.ORD_ATHO -> current == OrderStatus.ORD_ATHO || current == OrderStatus.ORD_INSP || current == OrderStatus.ORD_ADJ
         OrderStatus.ORD_COMP -> current == OrderStatus.ORD_HOC || current == OrderStatus.ORD_COMP
         else -> false
+    }
+}
+
+/**
+ * Shared customer card rendered on both Tracking and Orders screens when an order
+ * is in Fulfilment Exception following a not-home doorstep attempt (G-23).
+ *
+ * When [Order.awaitingCustomerReschedule] is true, displays selectable future delivery
+ * time windows and confirms re-assignment directly via [BlueGasStore.customerRescheduleAfterNotHome].
+ * When free re-deliveries are exhausted, informs the customer that Operations will call.
+ */
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+internal fun MissedDeliveryRescheduleCard(
+    order: Order,
+    store: BlueGasStore,
+    snapshot: SharedAppState,
+    onActionMessage: (String, Boolean) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    if (order.status != OrderStatus.ORD_EXC) return
+    if (!order.awaitingCustomerReschedule && order.notHomeCount <= 0) return
+
+    Card(
+        colors = CardDefaults.cardColors(containerColor = Color(0xFFFFFBEB)),
+        shape = RoundedCornerShape(12.dp),
+        border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFFF59E0B)),
+        modifier = modifier
+            .fillMaxWidth()
+            .testTag("missed_delivery_card_${order.id}")
+    ) {
+        Column(
+            modifier = Modifier.padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            FlowRow(
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                verticalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+                Text(
+                    text = "We missed you",
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 14.sp,
+                    color = Color(0xFF92400E)
+                )
+                RecommendedPill()
+            }
+
+            if (order.awaitingCustomerReschedule) {
+                val futureWindows = remember(snapshot.version, snapshot.settings) {
+                    store.availableDeliveryWindows().filter { !it.isAsap }
+                }
+                var selectedWindowLabel by remember(order.id, snapshot.version) {
+                    mutableStateOf(futureWindows.firstOrNull()?.label ?: "")
+                }
+                val chosenWindow = futureWindows.find { it.label == selectedWindowLabel }
+                    ?: futureWindows.firstOrNull()
+
+                Text(
+                    text = "Pick a new delivery time and we'll send your order out again.",
+                    fontSize = 12.sp,
+                    color = Color(0xFF78350F),
+                    lineHeight = 16.sp
+                )
+
+                if (futureWindows.isEmpty()) {
+                    Text(
+                        text = "No delivery time windows are open right now. Our team will contact you.",
+                        fontSize = 11.sp,
+                        color = Color(0xFF991B1B)
+                    )
+                } else {
+                    FlowRow(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalArrangement = Arrangement.spacedBy(6.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        futureWindows.forEach { opt ->
+                            val isSelected = chosenWindow?.label == opt.label
+                            FilterChip(
+                                selected = isSelected,
+                                onClick = { selectedWindowLabel = opt.label },
+                                label = { Text(opt.label, fontSize = 11.sp) },
+                                modifier = Modifier.testTag("reschedule_window_chip_${order.id}")
+                            )
+                        }
+                    }
+
+                    Button(
+                        onClick = {
+                            val target = chosenWindow ?: return@Button
+                            val (ok, msg) = store.customerRescheduleAfterNotHome(order.id, target)
+                            onActionMessage(msg, !ok)
+                        },
+                        enabled = chosenWindow != null,
+                        colors = ButtonDefaults.buttonColors(containerColor = BlueGasPrimary),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(min = 48.dp)
+                            .testTag("confirm_new_time_btn_${order.id}")
+                    ) {
+                        Text("Confirm new time", fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                    }
+                }
+            } else {
+                Text(
+                    text = "We missed you. Our team will call you to arrange delivery.",
+                    fontSize = 12.sp,
+                    color = Color(0xFF78350F),
+                    lineHeight = 16.sp
+                )
+            }
+        }
     }
 }

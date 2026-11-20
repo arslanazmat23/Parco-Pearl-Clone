@@ -498,6 +498,35 @@ fun StaffOperationsScreen(
                                     color = Color(0xFF475569)
                                 )
                             }
+                            if (ord.awaitingCustomerReschedule) {
+                                Spacer(modifier = Modifier.height(6.dp))
+                                Surface(
+                                    color = Color(0xFFF1F5F9),
+                                    shape = RoundedCornerShape(4.dp)
+                                ) {
+                                    Text(
+                                        text = "Waiting for the customer to pick a new time",
+                                        fontSize = 10.sp,
+                                        fontWeight = FontWeight.SemiBold,
+                                        color = Color(0xFF475569),
+                                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
+                                    )
+                                }
+                            } else if (ord.notHomeCount > 0) {
+                                Spacer(modifier = Modifier.height(6.dp))
+                                Surface(
+                                    color = Color(0xFFFEF3C7),
+                                    shape = RoundedCornerShape(4.dp)
+                                ) {
+                                    Text(
+                                        text = "Not home — customer waiting for a call",
+                                        fontSize = 10.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        color = Color(0xFF92400E),
+                                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
+                                    )
+                                }
+                            }
 
                             Spacer(modifier = Modifier.height(8.dp))
                             Text("Recovery actions:", fontWeight = FontWeight.Bold, fontSize = 10.sp, color = Color(0xFF334155))
